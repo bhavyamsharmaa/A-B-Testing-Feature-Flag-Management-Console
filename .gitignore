@@ -1,0 +1,49 @@
+# ─── OS / editor ─────────────────────────────────────────────
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# ─── Secrets / local env ─────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Go ──────────────────────────────────────────────────────
+# Vendored deps (we rely on the module cache; go.mod/go.sum ARE tracked)
+/vendor/
+# Compiled binaries
+/bin/
+/out/
+/dist/
+helios-api
+/cmd/api/api
+/cmd/evalsvc/evalsvc
+*.exe
+*.test
+# Coverage / profiling
+coverage.out
+cover.out
+coverage.txt
+*.prof
+
+# ─── Node / React / TypeScript (console/) ────────────────────
+node_modules/
+console/dist/
+console/build/
+console/.next/
+console/out/
+console/coverage/
+console/.turbo/
+console/.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.eslintcache
+
+# ─── Docker / misc ───────────────────────────────────────────
+*.pid
+*.log

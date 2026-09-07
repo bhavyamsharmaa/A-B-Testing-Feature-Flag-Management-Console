@@ -1,0 +1,406 @@
+openapi: 3.0.3
+info:
+  title: Helios API
+  version: "1.0"
+  description: >
+    A/B Testing & Feature Flag Management Console.
+    Two planes: control (admin CRUD, low volume, strongly consistent)
+    and data (evaluation, high volume, must survive control plane outage).
+
+servers:
+  - url: https://api.helios.internal/api/v1
+
+tags:
+  - name: evaluation
+    description: Data plane — hot path, latency-budgeted
+  - name: flags
+  - name: segments
+  - name: experiments
+  - name: events
+  - name: kill-switch
+  - name: audit
+
+paths:
+  # ============================================================
+  # DATA PLANE
+  # ============================================================
+  /evaluate:
+    post:
+      tags: [evaluation]
+      summary: Evaluate 1-100 flags for a given context
+      description: p99 < 50ms budget (US-09 / Goals G1)
+      security: [{ sdkKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [context, flagKeys]
+              properties:
+                context:
+                  $ref: '#/components/schemas/EvaluationContext'
+                flagKeys:
+                  type: array
+                  items: { type: string }
+                  maxItems: 100
+      responses:
+        '200':
+          description: Evaluation results, one per requested flag key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  evaluations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EvaluationResult'
+
+  /sdk/stream:
+    get:
+      tags: [evaluation]
+      summary: SSE stream of ruleset updates for an environment
+      description: p95 < 2s to apply on client (Goals G3). SDKs also poll every 30s as a Redis-outage fallback.
+      security: [{ sdkKey: [] }]
+      responses:
+        '200':
+          description: text/event-stream of RulesetUpdate events
+
+  /events:
+    post:
+      tags: [events]
+      summary: Batched metric/exposure events
+      description: Async, best-effort, at-most-once delivery from the SDK buffer (US-10).
+      security: [{ sdkKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                events:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/MetricEvent'
+      responses:
+        '202':
+          description: Accepted for async processing
+
+  /environments/{env}/flags/{key}/kill:
+    post:
+      tags: [kill-switch]
+      summary: Emergency kill — disable a flag globally
+      description: >
+        p95 < 2s propagation to all connected SDKs (US-08). Idempotent.
+        Requires editor role or higher; never blocked by escalation (RBAC table, US-06).
+      security: [{ serverKey: [] }]
+      parameters:
+        - $ref: '#/components/parameters/EnvPath'
+        - $ref: '#/components/parameters/FlagKeyPath'
+      responses:
+        '200':
+          description: Kill switch engaged and audited at severity=critical
+        '404': { description: Flag or environment not found }
+
+  # ============================================================
+  # CONTROL PLANE — FLAGS
+  # ============================================================
+  /environments/{env}/flags:
+    get:
+      tags: [flags]
+      parameters: [ { $ref: '#/components/parameters/EnvPath' } ]
+      responses:
+        '200':
+          description: List of flags with per-environment config
+    post:
+      tags: [flags]
+      summary: Create a flag (US-01)
+      description: Created disabled=false in every environment by default (AC-1).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FlagCreateRequest' }
+      responses:
+        '201': { description: Created }
+        '409':
+          description: FLAG_KEY_EXISTS — duplicate key (AC-2)
+        '400':
+          description: Type-mismatched variation (AC-2)
+
+  /environments/{env}/flags/{key}:
+    parameters:
+      - $ref: '#/components/parameters/EnvPath'
+      - $ref: '#/components/parameters/FlagKeyPath'
+    patch:
+      tags: [flags]
+      summary: Update flag config — targeting rules, rollout, enabled state
+      description: >
+        Lowering a rollout percentage revokes access already granted; the console
+        must warn before this save (US-03 AC-3). Raising is monotonic and safe.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FlagConfigUpdateRequest' }
+      responses:
+        '200': { description: Updated }
+    delete:
+      tags: [flags]
+      responses:
+        '204': { description: Deleted }
+        '409':
+          description: IN_USE — flag/variation still referenced by a rule (blocked unless forced by Admin)
+
+  # ============================================================
+  # CONTROL PLANE — SEGMENTS
+  # ============================================================
+  /environments/{env}/segments:
+    get:
+      tags: [segments]
+      parameters: [ { $ref: '#/components/parameters/EnvPath' } ]
+      responses:
+        '200': { description: List segments }
+    post:
+      tags: [segments]
+      summary: Create a segment (US-02)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SegmentCreateRequest' }
+      responses:
+        '201': { description: Created }
+
+  /environments/{env}/segments/{key}:
+    delete:
+      tags: [segments]
+      parameters:
+        - $ref: '#/components/parameters/EnvPath'
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Deleted }
+        '409':
+          description: SEGMENT_IN_USE — referenced by an active flag
+
+  # ============================================================
+  # CONTROL PLANE — EXPERIMENTS
+  # ============================================================
+  /environments/{env}/experiments:
+    post:
+      tags: [experiments]
+      summary: Create an experiment (US-04)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExperimentCreateRequest' }
+      responses:
+        '201':
+          description: Created. Response includes computed required sample size per arm (AC-3).
+        '409':
+          description: CONFLICTING_EXPERIMENT — only one running experiment per flag
+
+  /environments/{env}/experiments/{id}:
+    patch:
+      tags: [experiments]
+      summary: Update an experiment
+      description: Split and primary metric are immutable once running; changing them mid-flight is rejected (AC-2).
+      parameters:
+        - $ref: '#/components/parameters/EnvPath'
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { description: Updated }
+        '409': { description: Immutable field changed while running }
+
+  /environments/{env}/experiments/{id}/results:
+    get:
+      tags: [experiments]
+      summary: Statistical results dashboard (US-05)
+      parameters:
+        - $ref: '#/components/parameters/EnvPath'
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Per-arm conversion rate, p-value, 95% CI, and verdict
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExperimentResults' }
+
+  # ============================================================
+  # AUDIT
+  # ============================================================
+  /environments/{env}/audit-logs:
+    get:
+      tags: [audit]
+      parameters:
+        - $ref: '#/components/parameters/EnvPath'
+        - name: resourceType
+          in: query
+          schema: { type: string }
+        - name: resourceId
+          in: query
+          schema: { type: string }
+      responses:
+        '200': { description: Paginated audit entries, secrets redacted }
+
+components:
+  securitySchemes:
+    sdkKey:
+      type: apiKey
+      in: header
+      name: X-Helios-SDK-Key
+    serverKey:
+      type: apiKey
+      in: header
+      name: X-Helios-Server-Key
+
+  parameters:
+    EnvPath:
+      name: env
+      in: path
+      required: true
+      schema: { type: string }
+    FlagKeyPath:
+      name: key
+      in: path
+      required: true
+      schema: { type: string }
+
+  schemas:
+    EvaluationContext:
+      type: object
+      required: [subjectKey]
+      properties:
+        subjectKey: { type: string }
+        attributes:
+          type: object
+          additionalProperties: true
+
+    EvaluationResult:
+      type: object
+      properties:
+        flagKey: { type: string }
+        variationId: { type: string }
+        value: {}
+        reason:
+          type: string
+          enum: [TARGETING_MATCH, ROLLOUT, FALLTHROUGH, FLAG_DISABLED, FLAG_NOT_FOUND, TYPE_MISMATCH]
+        experimentId:
+          type: string
+          nullable: true
+
+    MetricEvent:
+      type: object
+      required: [clientUuid, subjectKey, eventName]
+      properties:
+        clientUuid: { type: string, format: uuid }
+        subjectKey: { type: string }
+        eventName: { type: string }
+        experimentId: { type: string, nullable: true }
+        properties:
+          type: object
+          additionalProperties: true
+        occurredAt: { type: string, format: date-time }
+
+    FlagCreateRequest:
+      type: object
+      required: [key, name, variationType, variations]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        variationType:
+          type: string
+          enum: [boolean, string, number, json]
+        variations:
+          type: array
+          minItems: 2
+          maxItems: 20
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              value: {}
+
+    FlagConfigUpdateRequest:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        targetingRules:
+          type: array
+          items: { type: object }
+        rollout:
+          type: object
+          description: variationId -> basis points, must sum to 100000
+        fallthroughVariationId: { type: string }
+
+    SegmentCreateRequest:
+      type: object
+      required: [key, name, rules]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        rules:
+          type: array
+          items:
+            type: object
+            required: [attribute, operator, value]
+            properties:
+              attribute: { type: string }
+              operator:
+                type: string
+                enum: [equals, in, contains, greaterThan, exists]
+              value: {}
+
+    ExperimentCreateRequest:
+      type: object
+      required: [flagId, name, primaryMetricKey, trafficSplit]
+      properties:
+        flagId: { type: string, format: uuid }
+        name: { type: string }
+        primaryMetricKey: { type: string }
+        trafficSplit:
+          type: object
+          description: variationId -> integer basis points, must sum to 100000
+        baselineRate: { type: number }
+        minDetectableEffect: { type: number }
+
+    ExperimentResults:
+      type: object
+      properties:
+        verdict:
+          type: string
+          enum: [INSUFFICIENT_DATA, INVALID_SRM, SIGNIFICANT, NOT_SIGNIFICANT]
+        arms:
+          type: array
+          items:
+            type: object
+            properties:
+              variationId: { type: string }
+              exposures: { type: integer }
+              conversions: { type: integer }
+              conversionRate: { type: number }
+        pValue: { type: number, nullable: true, description: "hidden (null) when verdict is INVALID_SRM" }
+        confidenceInterval:
+          type: array
+          items: { type: number }
+          minItems: 2
+          maxItems: 2
+        srmPValue: { type: number }
