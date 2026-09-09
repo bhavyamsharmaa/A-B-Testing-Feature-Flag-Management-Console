@@ -4,54 +4,57 @@ A control plane for feature flags and A/B experiments — decouples deploying co
 
 ## Tech stack
 
-- Go — backend / evaluation API
-- React + TypeScript — admin console
+- Go — backend (control plane + evaluation data plane)
+- React + TypeScript (Vite) — admin console
 - PostgreSQL — persistent store
 - Redis — ruleset fan-out
 
 ## Prerequisites
 
-- Go 1.22+
+- Go 1.24+
 - Node 22+
 - Docker + Docker Compose
 
 ## Setup
 
 ```bash
-# Clone
 git clone https://github.com/bhavyamsharmaa/A-B-Testing-Feature-Flag-Management-Console.git helios
 cd helios
 
-# Install dependencies
-go mod download
-(cd console && npm install)
+# Backend dependencies (backend/ is its own Go module — run go commands there)
+cd backend && go mod download && cd ..
 
-# Environment variables (backend reads these; PORT is optional, defaults to 8080)
-export DATABASE_URL="postgres://helios:helios@localhost:5432/helios?sslmode=disable"
-export REDIS_ADDR="localhost:6379"
-export PORT="8080"
+# Frontend dependencies
+cd frontend && npm install && cd ..
 
 # Start Postgres + Redis
-docker compose up -d postgres redis
+docker compose up -d
 ```
+
+The backend reads configuration from the environment (see `.env.example`); defaults
+target the docker-compose services:
+
+| Variable | Default |
+| --- | --- |
+| `PORT` | `8080` |
+| `DATABASE_URL` | `postgres://helios:helios@localhost:5432/helios?sslmode=disable` |
+| `REDIS_ADDR` | `localhost:6379` |
 
 ## Run
 
 ```bash
-# Backend (from repo root)
-go run ./cmd/api
+# Backend  → http://localhost:8080
+cd backend && go run ./cmd/api
 
-# Frontend
-cd console && npm run dev
+# Frontend → http://localhost:5173  (proxies /api to the backend)
+cd frontend && npm run dev
 ```
 
-Migrations in `db/migrations/` are applied automatically the first time the Postgres
-container initializes its volume. To re-run them against a running database:
-
-```bash
-docker compose exec -T postgres psql -U helios -d helios -f /docker-entrypoint-initdb.d/0001_init.sql
-```
+SQL files in `backend/db/migrations/` are applied automatically the first time the
+Postgres container initializes its volume (`docker compose down -v` to reset).
 
 ## Where the code lives
 
-Backend in [`cmd/`](cmd/) and [`internal/`](internal/); frontend in [`console/`](console/).
+- [`backend/`](backend/) — Go module. `cmd/api` entrypoint; `internal/controlplane` (flags, segments, experiments, RBAC, audit) and `internal/dataplane` (evaluation engine).
+- [`frontend/`](frontend/) — React + TypeScript app: `src/{components,pages,api,types}`.
+- [`api/openapi.yaml`](api/openapi.yaml) — shared API contract, the source of truth both sides reference.

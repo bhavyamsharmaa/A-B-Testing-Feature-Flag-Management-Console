@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -10,13 +8,13 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./db/migrations:/docker-entrypoint-initdb.d
+      - helios_pgdata:/var/lib/postgresql/data
+      - ./backend/db/migrations:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U helios"]
+      test: ["CMD-SHELL", "pg_isready -U helios -d helios"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -26,21 +24,7 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
-      retries: 5
-
-  api:
-    build:
-      context: .
-      dockerfile: cmd/api/Dockerfile
-    depends_on:
-      postgres: { condition: service_healthy }
-      redis: { condition: service_healthy }
-    environment:
-      DATABASE_URL: postgres://helios:helios@postgres:5432/helios?sslmode=disable
-      REDIS_ADDR: redis:6379
-      PORT: "8080"
-    ports:
-      - "8080:8080"
+      retries: 10
 
 volumes:
-  pgdata:
+  helios_pgdata:
