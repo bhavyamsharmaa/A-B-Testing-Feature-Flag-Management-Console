@@ -1,70 +1,57 @@
-# Helios — A/B Testing & Feature Flag Management Console
+# Helios
 
-Group G221 · Bhavyam Sharma & Hashanasherastha Behera · Mentor: Harshit Batra
-Track: Product Development — Developer Tools · Delivery window: 3 months (M1/M2/M3)
+A control plane for feature flags and A/B experiments — decouples deploying code from releasing it.
 
-Control plane (writes) and data plane (reads) are split at the package level to
-mirror the PRD's architecture: the evaluation hot path never makes a database call.
+## Tech stack
 
-## Repo layout
+- Go — backend / evaluation API
+- React + TypeScript — admin console
+- PostgreSQL — persistent store
+- Redis — ruleset fan-out
 
-```
-cmd/
-  api/            Control-plane HTTP server (Admin API + evaluate/events/kill endpoints for now)
-  evalsvc/        (future) standalone, horizontally-scaled evaluation service
-internal/
-  flags/          Flag & flag_config domain logic
-  segments/       Segment domain logic
-  experiments/    Experiment lifecycle, sample-size calc
-  audit/          Audit log writer (same-transaction inserts)
-  rbac/           Role checks, server-side enforcement
-  evaluation/      <-- start here. Bucketing + in-memory engine (US-03, US-09)
-db/migrations/     SQL schema (0001_init.sql covers flags/segments/experiments/audit)
-api/openapi.yaml   Frozen API contract (Week 1 deliverable per PRD delivery plan)
-console/            React + TypeScript admin UI (not yet scaffolded)
-```
+## Prerequisites
 
-## Local setup
+- Go 1.22+
+- Node 22+
+- Docker + Docker Compose
+
+## Setup
 
 ```bash
-docker compose up -d postgres redis   # schema in db/migrations auto-applies on first boot
-go mod tidy
-go run ./cmd/api
-curl localhost:8080/healthz
+# Clone
+git clone https://github.com/bhavyamsharmaa/A-B-Testing-Feature-Flag-Management-Console.git helios
+cd helios
+
+# Install dependencies
+go mod download
+(cd console && npm install)
+
+# Environment variables (backend reads these; PORT is optional, defaults to 8080)
+export DATABASE_URL="postgres://helios:helios@localhost:5432/helios?sslmode=disable"
+export REDIS_ADDR="localhost:6379"
+export PORT="8080"
+
+# Start Postgres + Redis
+docker compose up -d postgres redis
 ```
 
-## What's already here vs. what's next
+## Run
 
-**Done (this scaffold):**
-- Full schema for flags/flag_configs/segments/experiments/exposures/metric_events/audit_logs,
-  with the PRD's normative constraints encoded as DB constraints where possible
-  (one running experiment per flag, 2–20 variations, append-only audit log).
-- `internal/evaluation`: the bucketing algorithm (`hash(flagKey+salt+subjectKey) % 100000`,
-  never `rand()`) and the lock-free `Engine` with the required-fallback `Evaluate()` signature.
-- OpenAPI contract for all six PRD-listed endpoints plus flag/segment/experiment CRUD.
-- docker-compose for local Postgres + Redis, Dockerfile for the API.
+```bash
+# Backend (from repo root)
+go run ./cmd/api
 
-**Your Week 1 target, concretely, is:**
-1. Wire `cmd/api/main.go`'s TODO route block to real handlers in `internal/flags`,
-   `internal/segments` (basic CRUD against Postgres — the engine's `Ruleset` doesn't
-   need to be populated from these yet, that's M2).
-2. `POST /environments/{env}/flags` → insert into `flags` + `flag_configs`, return 409 on
-   duplicate key (unique constraint is already there, just needs a mapped error).
-3. Console shell: React + TS, flag list + create-flag form calling the above.
-4. **Gate for M1**: a flag created in the console evaluates correctly via `POST /evaluate`
-   — that means `internal/evaluation.Engine` needs *some* path (even a naive DB-backed
-   ruleset load, not yet Redis pub/sub) wired into the `/evaluate` handler by end of Week 4.
+# Frontend
+cd console && npm run dev
+```
 
-**Explicitly NOT Week 1:** Redis pub/sub fan-out, SSE stream, RBAC middleware, audit
-writes, statistics service. Those are M2/M3 per the delivery plan — don't let scope
-creep from those into the Week 1 target.
+Migrations in `db/migrations/` are applied automatically the first time the Postgres
+container initializes its volume. To re-run them against a running database:
 
-## Suggested split (per PRD's engineer boundary)
+```bash
+docker compose exec -T postgres psql -U helios -d helios -f /docker-entrypoint-initdb.d/0001_init.sql
+```
 
-- **Engineer A (evaluation path):** `internal/evaluation`, later `internal/experiments`
-  statistics, `cmd/evalsvc`.
-- **Engineer B (control path):** `internal/flags`, `internal/segments`, `internal/rbac`,
-  `internal/audit`, `console/`.
+## Where the code lives
 
-The API contract in `api/openapi.yaml` is the integration boundary — freeze it before
-diverging into these two tracks, per the PRD's stated risk mitigation.
+Backend in [`cmd/`](cmd/) and [`internal/`](internal/); frontend in [`console/`](console/).
