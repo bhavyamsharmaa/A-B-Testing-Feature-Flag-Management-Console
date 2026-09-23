@@ -8,6 +8,8 @@ info:
     of truth for the API shape: backend handlers under /backend and the frontend
     API client under /frontend are both expected to conform to it.
 servers:
+  - url: https://TODO-your-render-service.onrender.com
+    description: Production (Render)
   - url: http://localhost:8080
     description: Local development (Go backend)
 

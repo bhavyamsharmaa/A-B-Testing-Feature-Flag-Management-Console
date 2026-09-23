@@ -1,8 +1,9 @@
 // Command api is the entrypoint for the Helios backend HTTP server.
 //
-// This is a skeleton: it boots, reads configuration from the environment, and
-// serves a liveness probe. Control-plane and data-plane routes are mounted here
-// once their handlers exist (see internal/controlplane and internal/dataplane).
+// This is a skeleton: it boots, reads configuration from the environment,
+// connects to Postgres, and serves a DB-aware liveness probe.
+// Control-plane and data-plane routes are mounted here once their handlers
+// exist (see internal/controlplane and internal/dataplane).
 package main
 
 import (
@@ -16,16 +17,21 @@ import (
 	"time"
 
 	"helios/backend/internal/platform/config"
+	"helios/backend/internal/platform/db"
+	"helios/backend/internal/platform/health"
 )
 
 func main() {
 	cfg := config.Load()
 
+	pool, err := db.Connect(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("could not connect to database: %v", err)
+	}
+	defer pool.Close()
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
+	mux.HandleFunc("GET /healthz", health.Handler(pool))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
