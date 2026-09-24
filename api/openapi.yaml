@@ -1,12 +1,16 @@
 openapi: 3.1.0
 info:
   title: Helios API
-  version: 0.1.0
+  version: 0.2.0
   description: >-
-    Shared contract for the Helios control plane (flag / segment / experiment
-    CRUD, RBAC, audit) and data plane (flag evaluation). This file is the source
-    of truth for the API shape: backend handlers under /backend and the frontend
-    API client under /frontend are both expected to conform to it.
+    Shared contract for the Helios control plane (flag CRUD, RBAC, audit) and
+    data plane (flag evaluation). This file is the source of truth for the API
+    shape: backend handlers under /backend and the frontend API client under
+    /frontend are both expected to conform to it.
+
+    Control-plane routes take a Supabase Auth access token and check the
+    caller's role in {env} (viewer < editor < approver < admin). Every non-2xx
+    JSON response has the Error shape.
 servers:
   - url: https://TODO-your-render-service.onrender.com
     description: Production (Render)
@@ -22,15 +26,434 @@ paths:
   /healthz:
     get:
       tags: [system]
-      summary: Liveness probe
+      summary: Liveness probe — 200 only if the database is reachable
+      security: []
       responses:
         "200":
-          description: Service is up
+          description: Service is up and the database answered a ping
           content:
             text/plain:
+              schema: { type: string, example: ok }
+        "503":
+          description: Database unreachable
+          content:
+            text/plain:
+              schema: { type: string, example: db unreachable }
+
+  /me:
+    get:
+      tags: [control-plane]
+      summary: The current user and their role in each environment
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Me" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /environments/{env}/members:
+    parameters: [{ $ref: "#/components/parameters/EnvPath" }]
+    post:
+      tags: [control-plane]
+      summary: Grant or change a user's role in this environment (admin)
+      description: >-
+        The user must already have signed up through Supabase Auth. Identify
+        them by exactly one of userId or email. Demoting the environment's
+        last admin is refused with 409 LAST_ADMIN.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemberUpsertRequest" }
+      responses:
+        "201":
+          description: Role granted or changed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Member" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "USER_NOT_FOUND or ENVIRONMENT_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: LAST_ADMIN, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{env}/members/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      tags: [control-plane]
+      summary: Remove a user's role in this environment (admin)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "204": { description: Removed }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: MEMBER_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: LAST_ADMIN, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{env}/flags:
+    parameters: [{ $ref: "#/components/parameters/EnvPath" }]
+    get:
+      tags: [control-plane]
+      summary: List flags with their config in this environment (any role)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Flags, ordered by key
+          content:
+            application/json:
               schema:
-                type: string
-                example: ok
+                type: object
+                required: [flags]
+                properties:
+                  flags:
+                    type: array
+                    items: { $ref: "#/components/schemas/Flag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [control-plane]
+      summary: Create a flag (editor+)
+      description: >-
+        The flag is created in every environment, disabled everywhere, so
+        creation never changes user-visible behaviour (US-01 AC-1).
+        Fallthrough defaults to the first variation.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FlagCreateRequest" }
+      responses:
+        "201":
+          description: Created; returned with its config in {env}
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Flag" }
+        "400": { description: "INVALID_REQUEST, or TYPE_MISMATCH when a variation value doesn't match variationType", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: FLAG_KEY_EXISTS, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{env}/flags/{key}:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - $ref: "#/components/parameters/FlagKeyPath"
+    get:
+      tags: [control-plane]
+      summary: Get one flag's config in this environment (any role)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: The flag
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Flag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/FlagNotFound" }
+    patch:
+      tags: [control-plane]
+      summary: Update the flag's config in this environment
+      description: >-
+        Editor+ in non-production environments; approver+ in production.
+        Absent fields are unchanged; targetingRules or rollout set to null are
+        cleared. Lowering a rollout revokes access already granted, so the
+        console should warn before saving that (US-03 AC-3).
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FlagConfigUpdateRequest" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Flag" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/FlagNotFound" }
+    delete:
+      tags: [control-plane]
+      summary: Delete the flag from every environment (admin)
+      description: >-
+        A flag's definition is shared across environments, so this removes it
+        everywhere and therefore requires admin in every environment, not
+        just {env}. Refused with 409 IN_USE while the flag is enabled with
+        targeting rules anywhere, unless force=true.
+      security: [{ supabaseJWT: [] }]
+      parameters:
+        - { name: force, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/FlagNotFound" }
+        "409": { description: IN_USE, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{env}/flags/{key}/kill:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - $ref: "#/components/parameters/FlagKeyPath"
+    post:
+      tags: [control-plane]
+      summary: Emergency kill — disable the flag in this environment (editor+, any environment)
+      description: >-
+        Allowed for editors even in production: a blocked kill during an
+        incident costs more than an unnecessary one (US-06). Idempotent, and
+        audited at severity=critical on every call (US-08).
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Flag is disabled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Flag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/FlagNotFound" }
+
+  /evaluate:
+    post:
+      tags: [data-plane]
+      summary: Evaluate 1-100 flags for a context
+      description: >-
+        Authenticated by SDK key, not user JWT; the key decides the
+        environment. A flag that's missing or disabled comes back with a null
+        value and the caller serves its own fallback. Any non-200 (including
+        503) also means "serve fallback".
+      security: [{ sdkKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [context, flagKeys]
+              properties:
+                context: { $ref: "#/components/schemas/EvaluationContext" }
+                flagKeys:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+                  maxItems: 100
+      responses:
+        "200":
+          description: One result per requested key, in request order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [evaluations]
+                properties:
+                  evaluations:
+                    type: array
+                    items: { $ref: "#/components/schemas/EvaluationResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { description: "EVALUATION_UNAVAILABLE — serve fallbacks", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
 components:
-  schemas: {}
+  securitySchemes:
+    supabaseJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Supabase Auth access token (ES256 or RS256), verified against the
+        project's public keys at <SUPABASE_URL>/auth/v1/.well-known/jwks.json.
+        HS256 tokens, the anon key, and service_role tokens are rejected.
+    sdkKey:
+      type: apiKey
+      in: header
+      name: X-Helios-SDK-Key
+
+  parameters:
+    EnvPath:
+      name: env
+      in: path
+      required: true
+      schema: { type: string, example: production }
+    FlagKeyPath:
+      name: key
+      in: path
+      required: true
+      schema: { type: string, example: new-checkout }
+
+  responses:
+    BadRequest:
+      description: INVALID_REQUEST
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unauthorized:
+      description: UNAUTHORIZED — missing, invalid, or expired credentials
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Forbidden:
+      description: FORBIDDEN — the caller's role in {env} is too low
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    FlagNotFound:
+      description: FLAG_NOT_FOUND or ENVIRONMENT_NOT_FOUND
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: FLAG_KEY_EXISTS }
+        message: { type: string }
+
+    Role:
+      type: string
+      enum: [viewer, editor, approver, admin]
+
+    Me:
+      type: object
+      required: [id, email, roles]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        roles:
+          type: array
+          items:
+            type: object
+            required: [environment, role]
+            properties:
+              environment: { type: string }
+              role: { $ref: "#/components/schemas/Role" }
+
+    MemberUpsertRequest:
+      type: object
+      required: [role]
+      properties:
+        userId: { type: string, format: uuid }
+        email: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+
+    Member:
+      type: object
+      required: [userId, email, environment, role]
+      properties:
+        userId: { type: string, format: uuid }
+        email: { type: string }
+        environment: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+
+    Variation:
+      type: object
+      required: [id, value]
+      properties:
+        id: { type: string }
+        value: { description: "Must match the flag's variationType; at most 4 KB" }
+
+    FlagCreateRequest:
+      type: object
+      required: [key, name, variationType, variations]
+      properties:
+        key: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$" }
+        name: { type: string }
+        description: { type: string }
+        variationType:
+          type: string
+          enum: [boolean, string, number, json]
+        variations:
+          type: array
+          minItems: 2
+          maxItems: 20
+          description: Order matters — it defines rollout bucket ranges.
+          items: { $ref: "#/components/schemas/Variation" }
+
+    Clause:
+      type: object
+      required: [attribute, operator]
+      description: >-
+        A missing or null context attribute makes every operator false
+        (US-02 AC-2).
+      properties:
+        attribute: { type: string }
+        operator:
+          type: string
+          enum: [equals, in, contains, greaterThan, exists]
+        value: { description: "Scalar for equals/contains, non-empty array for in, number for greaterThan; ignored for exists" }
+
+    TargetingRule:
+      type: object
+      required: [clauses, variationId]
+      description: All clauses must match. Rules evaluate top-down; first match wins.
+      properties:
+        clauses:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/Clause" }
+        variationId: { type: string }
+
+    FlagConfigUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        enabled: { type: boolean }
+        targetingRules:
+          type: [array, "null"]
+          items: { $ref: "#/components/schemas/TargetingRule" }
+        rollout:
+          type: [object, "null"]
+          description: variationId -> integer basis points, summing to exactly 100000
+          additionalProperties: { type: integer, minimum: 0 }
+        fallthroughVariationId: { type: string }
+
+    Flag:
+      type: object
+      description: A flag's definition plus its config in one environment.
+      required: [key, name, description, variationType, variations, environment, config, createdAt, updatedAt]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        variationType: { type: string, enum: [boolean, string, number, json] }
+        variations:
+          type: array
+          items: { $ref: "#/components/schemas/Variation" }
+        environment: { type: string }
+        config:
+          type: object
+          required: [enabled, targetingRules, rollout, fallthroughVariationId, version, updatedAt]
+          properties:
+            enabled: { type: boolean }
+            targetingRules:
+              type: array
+              items: { $ref: "#/components/schemas/TargetingRule" }
+            rollout:
+              type: [object, "null"]
+              additionalProperties: { type: integer }
+            fallthroughVariationId: { type: string }
+            version: { type: integer, description: Bumped on every change }
+            updatedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    EvaluationContext:
+      type: object
+      required: [subjectKey]
+      properties:
+        subjectKey: { type: string }
+        attributes:
+          type: object
+          additionalProperties: true
+
+    EvaluationResult:
+      type: object
+      required: [flagKey, variationId, value, reason, experimentId]
+      properties:
+        flagKey: { type: string }
+        variationId: { type: [string, "null"] }
+        value: { description: "null when no variation applies — serve your fallback" }
+        reason:
+          type: string
+          enum: [TARGETING_MATCH, ROLLOUT, FALLTHROUGH, FLAG_DISABLED, FLAG_NOT_FOUND, TYPE_MISMATCH]
+        experimentId: { type: [string, "null"] }

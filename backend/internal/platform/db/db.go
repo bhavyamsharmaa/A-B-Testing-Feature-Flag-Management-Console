@@ -4,8 +4,10 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,7 +18,19 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(connectCtx, databaseURL)
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("db: parse config: %w", err)
+	}
+	// Supabase's transaction pooler (port 6543) doesn't support the named
+	// prepared statements pgx uses by default; queries fail there even though
+	// Ping succeeds. The simple protocol works with every Supabase connection
+	// mode. An explicit default_query_exec_mode in the URL still wins.
+	if !strings.Contains(databaseURL, "default_query_exec_mode") {
+		cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	}
+
+	pool, err := pgxpool.NewWithConfig(connectCtx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("db: create pool: %w", err)
 	}
