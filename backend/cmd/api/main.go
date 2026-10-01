@@ -18,12 +18,15 @@ import (
 	"helios/backend/internal/controlplane/flags"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/dataplane/evaluation"
+	"helios/backend/internal/dataplane/stream"
 	"helios/backend/internal/platform/apikey"
 	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/config"
 	"helios/backend/internal/platform/cors"
 	"helios/backend/internal/platform/db"
+	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/health"
+	"helios/backend/internal/platform/redisx"
 )
 
 // sdkKeyCacheTTL bounds how long a revoked SDK key keeps working.
@@ -49,10 +52,28 @@ func main() {
 		log.Fatalf("could not load Supabase signing keys: %v", err)
 	}
 
+	// Redis is a propagation optimization, not a correctness dependency —
+	// unlike the Supabase JWKS check above, a connection failure here is a
+	// warning, not log.Fatal. /evaluate reads Postgres directly regardless
+	// of whether this succeeds; only /sdk/stream and mutation fan-out
+	// degrade (fan-out silently no-ops; /sdk/stream returns 503).
+	var publisher events.Publisher = events.NoopPublisher{}
+	var subscriber events.Subscriber = events.NoopSubscriber{}
+	if cfg.RedisURL == "" {
+		log.Printf("WARNING: REDIS_URL not set; flag-change propagation disabled (evaluation is unaffected)")
+	} else if redisClient, err := redisx.Connect(appCtx, cfg.RedisURL); err != nil {
+		log.Printf("WARNING: could not connect to Redis, flag-change propagation disabled: %v", err)
+	} else {
+		log.Printf("connected to Redis")
+		publisher = redisx.Publisher{Client: redisClient}
+		subscriber = redisx.Subscriber{Client: redisClient}
+		defer redisClient.Close()
+	}
+
 	authn := verifier.Middleware
 	guard := rbac.NewGuard(pool)
 	members := rbac.NewMemberHandlers(pool)
-	fl := flags.NewHandlers(pool)
+	fl := flags.NewHandlers(pool, publisher)
 	sdkKeys := apikey.NewVerifier(pool, sdkKeyCacheTTL)
 
 	// protected wraps an /environments/{env}/... handler: verify the JWT,
@@ -79,6 +100,7 @@ func main() {
 	mux.Handle("POST /environments/{env}/flags/{key}/kill", protected(rbac.Min(rbac.Editor), fl.Kill))
 
 	mux.Handle("POST /evaluate", sdkKeys.Middleware(evaluation.Handler(pool)))
+	mux.Handle("GET /sdk/stream", sdkKeys.Middleware(stream.Handler(subscriber)))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

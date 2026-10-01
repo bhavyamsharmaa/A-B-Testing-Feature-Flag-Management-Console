@@ -4,10 +4,12 @@
 package flags
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -19,15 +21,43 @@ import (
 	"helios/backend/internal/controlplane/audit"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/dataplane/evaluation"
+	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/httpx"
 )
 
 type Handlers struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	events events.Publisher
 }
 
-func NewHandlers(pool *pgxpool.Pool) *Handlers {
-	return &Handlers{pool: pool}
+func NewHandlers(pool *pgxpool.Pool, publisher events.Publisher) *Handlers {
+	return &Handlers{pool: pool, events: publisher}
+}
+
+// flagEvent is published to events.FlagsChannel after a mutation commits.
+// It's informational only — SDKs use it as a cue to re-pull /evaluate or
+// /sdk/stream's next full state, not as the state itself, so its shape
+// isn't part of the public API contract.
+type flagEvent struct {
+	Action  string `json:"action"`
+	FlagKey string `json:"flagKey"`
+	Enabled bool   `json:"enabled"`
+	Version int64  `json:"version"`
+}
+
+// publish is best-effort and runs after the transaction has already
+// committed: a Redis hiccup here must never look like the mutation itself
+// failed, so errors are logged, not returned to the caller (PRD: Redis down
+// degrades propagation, never correctness).
+func (h *Handlers) publish(ctx context.Context, environmentID, action, flagKey string, enabled bool, version int64) {
+	payload, err := json.Marshal(flagEvent{Action: action, FlagKey: flagKey, Enabled: enabled, Version: version})
+	if err != nil {
+		log.Printf("flags: marshal event for %s: %v", flagKey, err)
+		return
+	}
+	if err := h.events.Publish(ctx, events.FlagsChannel(environmentID), payload); err != nil {
+		log.Printf("flags: publish event for %s: %v", flagKey, err)
+	}
 }
 
 type configView struct {
@@ -164,6 +194,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternal(w, r, err)
 		return
 	}
+	h.publish(ctx, access.Env.ID, "created", view.Key, view.Config.Enabled, view.Config.Version)
 	httpx.WriteJSON(w, http.StatusCreated, view)
 }
 
@@ -330,6 +361,7 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		httpx.WriteInternal(w, r, err)
 	default:
+		h.publish(ctx, access.Env.ID, "updated", view.Key, view.Config.Enabled, view.Config.Version)
 		httpx.WriteJSON(w, http.StatusOK, view)
 	}
 }
@@ -443,6 +475,7 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		httpx.WriteInternal(w, r, err)
 	default:
+		h.publish(ctx, access.Env.ID, "deleted", key, false, 0)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -503,6 +536,7 @@ func (h *Handlers) Kill(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternal(w, r, err)
 		return
 	}
+	h.publish(ctx, access.Env.ID, "killed", view.Key, view.Config.Enabled, view.Config.Version)
 	httpx.WriteJSON(w, http.StatusOK, view)
 }
 

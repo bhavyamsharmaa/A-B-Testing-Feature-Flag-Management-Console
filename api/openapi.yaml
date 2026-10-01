@@ -260,6 +260,30 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "503": { description: "EVALUATION_UNAVAILABLE — serve fallbacks", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
+  /sdk/stream:
+    get:
+      tags: [data-plane]
+      summary: Server-Sent Events feed of flag-change notifications
+      description: >-
+        Authenticated by SDK key, same as /evaluate — the key decides the
+        environment. Purely a propagation optimization: if unavailable
+        (no broker configured, or it's unreachable), this fails fast with
+        503 rather than hanging, and the SDK should fall back to polling
+        /evaluate. /evaluate's correctness never depends on this endpoint.
+      security: [{ sdkKey: [] }]
+      responses:
+        "200":
+          description: >-
+            text/event-stream. Each event is `event: flag_update` with a
+            JSON data payload: {action, flagKey, enabled, version}. This
+            shape is a change notification, not the full flag state — treat
+            it as a cue to re-fetch, not as authoritative data.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { description: STREAM_UNAVAILABLE, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
 components:
   securitySchemes:
     supabaseJWT:
