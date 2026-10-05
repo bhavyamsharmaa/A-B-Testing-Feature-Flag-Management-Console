@@ -8,6 +8,41 @@
   --color-border: #23232e;
   --color-accent: #7c5cff;
   --color-accent-hover: #6a49f5;
+
+  --animate-orb-a: orb-a 22s ease-in-out infinite;
+  --animate-orb-b: orb-b 28s ease-in-out infinite;
+  --animate-orb-c: orb-c 34s ease-in-out infinite;
+  --animate-fade-up: fade-up 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  --animate-grid-drift: grid-drift 40s linear infinite;
+  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+
+  @keyframes orb-a {
+    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+    33% { transform: translate3d(14vw, 10vh, 0) scale(1.15); }
+    66% { transform: translate3d(-6vw, 18vh, 0) scale(0.95); }
+  }
+  @keyframes orb-b {
+    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+    40% { transform: translate3d(-16vw, -8vh, 0) scale(1.2); }
+    75% { transform: translate3d(8vw, -16vh, 0) scale(0.9); }
+  }
+  @keyframes orb-c {
+    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+    50% { transform: translate3d(-10vw, 12vh, 0) scale(1.25); }
+  }
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes grid-drift {
+    from { background-position: 0 0; }
+    to { background-position: 56px 56px; }
+  }
+  @keyframes shimmer {
+    0% { opacity: 0.35; }
+    50% { opacity: 0.8; }
+    100% { opacity: 0.35; }
+  }
 }
 
 html,
@@ -20,4 +55,15 @@ body {
   background: var(--color-bg);
   color: #ececf1;
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Honour the OS "reduce motion" setting: keep the look, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

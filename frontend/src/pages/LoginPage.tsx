@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Navigate } from 'react-router-dom'
 import { isAuthRetryableFetchError } from '@supabase/supabase-js'
 import { useAuth } from '../auth/AuthProvider'
+import { Logo } from '../components/Logo'
 import { Splash } from '../components/Splash'
 import { supabase } from '../lib/supabase'
 
@@ -40,11 +41,11 @@ export default function LoginPage() {
 
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
-      <form onSubmit={onSubmit} className="w-full max-w-sm rounded-xl border border-border bg-surface p-6">
-        <h1 className="text-xl font-semibold">
-          <span className="text-accent">Helios</span> console
+      <form onSubmit={onSubmit} className="w-full max-w-sm animate-fade-up rounded-2xl border border-white/10 bg-surface/70 p-7 shadow-[0_0_80px_-20px_rgba(124,92,255,0.45)] backdrop-blur-xl">
+        <h1>
+          <Logo className="text-xl" />
         </h1>
-        <p className="mt-1 text-sm text-zinc-400">Sign in to manage feature flags.</p>
+        <p className="mt-2 text-sm text-zinc-400">Sign in to manage feature flags.</p>
 
         <label className="mt-6 block text-sm text-zinc-300" htmlFor="email">
           Email
@@ -57,7 +58,7 @@ export default function LoginPage() {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           disabled={submitting}
-          className="mt-1 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent disabled:opacity-60"
+          className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/20 disabled:opacity-60"
         />
 
         <label className="mt-4 block text-sm text-zinc-300" htmlFor="password">
@@ -71,7 +72,7 @@ export default function LoginPage() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           disabled={submitting}
-          className="mt-1 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent disabled:opacity-60"
+          className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/20 disabled:opacity-60"
         />
 
         {error && (
@@ -83,7 +84,7 @@ export default function LoginPage() {
         <button
           type="submit"
           disabled={submitting}
-          className="mt-6 w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+          className="mt-6 w-full rounded-lg bg-gradient-to-r from-accent to-indigo-500 px-3 py-2.5 text-sm font-medium text-white shadow-[0_8px_24px_-8px_rgba(124,92,255,0.8)] transition hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
         >
           {submitting ? 'Signing in…' : 'Sign in'}
         </button>

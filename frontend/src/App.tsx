@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthProvider'
 import { RequireAuth } from './auth/RequireAuth'
+import { Background } from './components/Background'
 import { Splash } from './components/Splash'
 import ConsolePage from './pages/ConsolePage'
 import LoginPage from './pages/LoginPage'
@@ -14,6 +15,7 @@ function RootRedirect() {
 export default function App() {
   return (
     <BrowserRouter>
+      <Background />
       <AuthProvider>
         <Routes>
           <Route path="/" element={<RootRedirect />} />
