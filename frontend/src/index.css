@@ -1,0 +1,23 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+
+@theme {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --color-bg: #08080b;
+  --color-surface: #101016;
+  --color-border: #23232e;
+  --color-accent: #7c5cff;
+  --color-accent-hover: #6a49f5;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: #ececf1;
+  font-family: var(--font-sans);
+}

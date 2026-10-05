@@ -1,8 +1,29 @@
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { AuthProvider, useAuth } from './auth/AuthProvider'
+import { RequireAuth } from './auth/RequireAuth'
+import { Splash } from './components/Splash'
+import ConsolePage from './pages/ConsolePage'
+import LoginPage from './pages/LoginPage'
+
+function RootRedirect() {
+  const { session, loading } = useAuth()
+  if (loading) return <Splash />
+  return <Navigate to={session ? '/console' : '/login'} replace />
+}
+
 export default function App() {
   return (
-    <main>
-      <h1>Helios</h1>
-      <p>Feature flag &amp; A/B testing console — frontend skeleton.</p>
-    </main>
+    <BrowserRouter>
+      <AuthProvider>
+        <Routes>
+          <Route path="/" element={<RootRedirect />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route element={<RequireAuth />}>
+            <Route path="/console" element={<ConsolePage />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AuthProvider>
+    </BrowserRouter>
   )
 }

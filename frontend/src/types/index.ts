@@ -1,7 +1,14 @@
-// Shared API types.
-//
-// Generate these from ../../../api/openapi.yaml once the contract stabilizes
-// (e.g. with openapi-typescript). Hand-written types can live here in the
-// meantime.
+// Shared API types. Mirrors ../../../api/openapi.yaml (Me, Role, Error).
 
-export {}
+export type Role = 'viewer' | 'editor' | 'approver' | 'admin'
+
+export interface EnvironmentRole {
+  environment: string
+  role: Role
+}
+
+export interface Me {
+  id: string
+  email: string
+  roles: EnvironmentRole[]
+}
