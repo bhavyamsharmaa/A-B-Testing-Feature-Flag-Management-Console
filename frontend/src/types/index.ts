@@ -12,3 +12,29 @@ export interface Me {
   email: string
   roles: EnvironmentRole[]
 }
+
+export interface Variation {
+  id: string
+  value: unknown
+}
+
+export interface FlagConfig {
+  enabled: boolean
+  targetingRules: unknown[]
+  rollout: Record<string, number> | null
+  fallthroughVariationId: string
+  version: number
+  updatedAt: string
+}
+
+export interface Flag {
+  key: string
+  name: string
+  description: string
+  variationType: 'boolean' | 'string' | 'number' | 'json'
+  variations: Variation[]
+  environment: string
+  config: FlagConfig
+  createdAt: string
+  updatedAt: string
+}
