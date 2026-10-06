@@ -16,3 +16,7 @@ export const config = {
   supabaseUrl: (env.VITE_SUPABASE_URL ?? '').trim(),
   supabasePublishableKey: (env.VITE_SUPABASE_PUBLISHABLE_KEY ?? '').trim(),
 }
+
+// Public demo page only (/demo). Deliberately not in REQUIRED: the console must
+// keep working without it. Like every VITE_* value it ships in the bundle.
+export const heliosSdkKey = (env.VITE_HELIOS_SDK_KEY ?? '').trim()

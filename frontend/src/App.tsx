@@ -4,6 +4,7 @@ import { RequireAuth } from './auth/RequireAuth'
 import { Background } from './components/Background'
 import { Splash } from './components/Splash'
 import ConsolePage from './pages/ConsolePage'
+import DemoPage from './pages/DemoPage'
 import LoginPage from './pages/LoginPage'
 
 function RootRedirect() {
@@ -20,6 +21,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/demo" element={<DemoPage />} />
           <Route element={<RequireAuth />}>
             <Route path="/console" element={<ConsolePage />} />
           </Route>
