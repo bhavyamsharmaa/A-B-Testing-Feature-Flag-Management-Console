@@ -28,3 +28,19 @@ export function toggleDisabledReason(role: Role | null, env: string): string {
   if (role === 'viewer') return 'Viewers have read-only access'
   return isProduction(env) ? 'Changing production requires the approver role' : 'Requires the editor role'
 }
+
+/**
+ * Deleting removes a flag from EVERY environment, so the backend requires admin
+ * in all of them, not just the one being viewed. /me only lists environments the
+ * user holds a role in, so an environment with no role at all can't be seen here;
+ * the server's 403 names it if that is the case.
+ */
+export function canDelete(roles: EnvironmentRole[], env: string): boolean {
+  return roleIn(roles, env) === 'admin' && roles.every((r) => r.role === 'admin')
+}
+
+export function deleteDisabledReason(roles: EnvironmentRole[], env: string): string {
+  if (roleIn(roles, env) !== 'admin') return 'Only admins can delete flags'
+  const others = roles.filter((r) => r.role !== 'admin').map((r) => `${r.environment} (${r.role})`)
+  return `Deleting removes a flag from every environment, so you must be an admin in all of them. You are not an admin in: ${others.join(', ')}`
+}

@@ -49,3 +49,11 @@ export function setFlagRollout(env: string, key: string, rollout: Record<string,
 export function setFlagTargetingRules(env: string, key: string, rules: TargetingRule[]): Promise<Flag> {
   return apiClient.patch<Flag>(flagPath(env, key), { targetingRules: rules })
 }
+
+/**
+ * Deletes the flag from EVERY environment. A flag that is enabled with targeting
+ * rules anywhere is refused with 409 IN_USE unless `force` is set (?force=true).
+ */
+export function deleteFlag(env: string, key: string, force: boolean): Promise<void> {
+  return apiClient.delete<void>(`${flagPath(env, key)}${force ? '?force=true' : ''}`)
+}

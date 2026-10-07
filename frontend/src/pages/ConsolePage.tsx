@@ -221,9 +221,20 @@ export default function ConsolePage() {
           env={env}
           prod={prod}
           role={role}
+          roles={roles}
           canEdit={canToggle(role, env)}
           onClose={() => setConfiguring(null)}
           onSaved={replace}
+          onDeleted={(key) => {
+            setConfiguring(null)
+            setNotice({ kind: 'success', text: `Deleted ${key} from every environment.` })
+            void reload()
+          }}
+          onGone={() => {
+            setConfiguring(null)
+            setNotice({ kind: 'error', text: 'That flag no longer exists. The list has been refreshed.' })
+            void reload()
+          }}
         />
       )}
 

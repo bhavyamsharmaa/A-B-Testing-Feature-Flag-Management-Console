@@ -11,8 +11,9 @@ import {
   savedOnBp,
 } from '../lib/rollout'
 import { SLOW_HINT, useSlowHint } from '../lib/useSlowHint'
-import type { Flag, Role } from '../types'
+import type { EnvironmentRole, Flag, Role } from '../types'
 import { ConfirmDialog } from './ConfirmDialog'
+import { DeleteFlagSection, type DeleteState } from './DeleteFlagSection'
 import { ProductionStrip } from './ProductionStrip'
 import { RolloutControl } from './RolloutControl'
 import { TargetingSection, type TargetingState } from './TargetingSection'
@@ -22,16 +23,20 @@ interface Props {
   env: string
   prod: boolean
   role: Role | null
+  /** The user's roles in every environment (from /me), to decide whether deleting is allowed. */
+  roles: EnvironmentRole[]
   /** Whether the user's role may change this flag here (same rule as toggling). */
   canEdit: boolean
   onClose: () => void
   /** Called with the server's version of the flag after a successful save. */
   onSaved: (flag: Flag) => void
+  onDeleted: (key: string) => void
+  onGone: () => void
 }
 
 type Dialog = 'discard' | 'lower' | 'prod' | null
 
-export function FlagDrawer({ flag, env, prod, role, canEdit, onClose, onSaved }: Props) {
+export function FlagDrawer({ flag, env, prod, role, roles, canEdit, onClose, onSaved, onDeleted, onGone }: Props) {
   const [current, setCurrent] = useState(flag)
   const bools = booleanVariations(current)
   const savedBp = bools ? savedOnBp(current, bools) : 0
@@ -46,6 +51,7 @@ export function FlagDrawer({ flag, env, prod, role, canEdit, onClose, onSaved }:
   const [dialogError, setDialogError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(true)
   const [targeting, setTargeting] = useState<TargetingState>({ dirty: false, busy: false, dialogOpen: false })
+  const [deleting, setDeleting] = useState<DeleteState>({ dialogOpen: false, busy: false })
   const slow = useSlowHint(saving || refreshing)
 
   // Latest values for the async refresh below, so it never overwrites an edit in progress.
@@ -78,7 +84,7 @@ export function FlagDrawer({ flag, env, prod, role, canEdit, onClose, onSaved }:
   useEffect(() => closeRef.current?.focus(), [])
 
   function requestClose() {
-    if (saving || targeting.busy) return
+    if (saving || targeting.busy || deleting.busy) return
     if (dirty || targeting.dirty) setDialog('discard')
     else onClose()
   }
@@ -86,7 +92,7 @@ export function FlagDrawer({ flag, env, prod, role, canEdit, onClose, onSaved }:
   // Esc closes the drawer, unless a confirmation is open (it handles Esc itself).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dialog === null && !targeting.dialogOpen) requestClose()
+      if (e.key === 'Escape' && dialog === null && !targeting.dialogOpen && !deleting.dialogOpen) requestClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -292,6 +298,16 @@ export function FlagDrawer({ flag, env, prod, role, canEdit, onClose, onSaved }:
             </div>
           )}
         </section>
+
+        <DeleteFlagSection
+          flagKey={current.key}
+          env={env}
+          prod={prod}
+          roles={roles}
+          onDeleted={onDeleted}
+          onGone={onGone}
+          onStateChange={setDeleting}
+        />
       </aside>
 
       {dialog && (
