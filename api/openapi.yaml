@@ -187,7 +187,9 @@ paths:
         A flag's definition is shared across environments, so this removes it
         everywhere and therefore requires admin in every environment, not
         just {env}. Refused with 409 IN_USE while the flag is enabled with
-        targeting rules anywhere, unless force=true.
+        targeting rules anywhere, unless force=true. Refused with 409
+        HAS_RUNNING_EXPERIMENT while any environment has a running experiment
+        on the flag, even with force=true; stop the experiment first.
       security: [{ supabaseJWT: [] }]
       parameters:
         - { name: force, in: query, schema: { type: boolean, default: false } }
@@ -196,7 +198,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/FlagNotFound" }
-        "409": { description: IN_USE, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: "IN_USE, or HAS_RUNNING_EXPERIMENT (not bypassed by force)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /environments/{env}/flags/{key}/kill:
     parameters:
@@ -273,6 +275,124 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: ENVIRONMENT_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # --- Experiments -------------------------------------------------------
+  # Planned, not yet paths: POST /track (SDK-key authenticated event
+  # ingestion, including the reserved "$exposure" event) and
+  # GET /environments/{env}/experiments/{key}/results.
+
+  /environments/{env}/experiments:
+    parameters: [{ $ref: "#/components/parameters/EnvPath" }]
+    get:
+      tags: [control-plane]
+      summary: List experiments in this environment (any role)
+      description: Newest first, capped at 200 rows (not paginated yet).
+      security: [{ supabaseJWT: [] }]
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/ExperimentStatus" } }
+        - { name: flagKey, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: Experiments
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [experiments]
+                properties:
+                  experiments:
+                    type: array
+                    maxItems: 200
+                    items: { $ref: "#/components/schemas/Experiment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [control-plane]
+      summary: Create a draft experiment (editor+)
+      description: >-
+        Creates a draft on one flag in {env}. It does not affect evaluation
+        until started. The flag must have at least 2 variations. Metric
+        eventName values starting with "$" are reserved and rejected.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExperimentCreateRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Experiment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/FlagNotFound" }
+        "409": { description: EXPERIMENT_KEY_EXISTS, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{env}/experiments/{key}:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - $ref: "#/components/parameters/ExperimentKeyPath"
+    get:
+      tags: [control-plane]
+      summary: Get one experiment (any role)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: The experiment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Experiment" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ExperimentNotFound" }
+
+  /environments/{env}/experiments/{key}/start:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - $ref: "#/components/parameters/ExperimentKeyPath"
+    post:
+      tags: [control-plane]
+      summary: Start a draft experiment (editor+)
+      description: >-
+        Requires the flag to be enabled in {env}. Records the flag's current
+        targeting, rollout and fallthrough so later edits can be reported as
+        configChangedSinceStart. Editing the flag while the experiment runs is
+        not blocked.
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Running
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Experiment" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ExperimentNotFound" }
+        "409": { description: "INVALID_TRANSITION (not a draft), FLAG_DISABLED, or EXPERIMENT_ALREADY_RUNNING (another experiment is running on this flag in {env})", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{env}/experiments/{key}/stop:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - $ref: "#/components/parameters/ExperimentKeyPath"
+    post:
+      tags: [control-plane]
+      summary: Stop a running experiment (approver+)
+      description: Stopped is terminal; run a new experiment to measure again.
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Stopped
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Experiment" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ExperimentNotFound" }
+        "409": { description: INVALID_TRANSITION (not running), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /evaluate:
     post:
@@ -364,8 +484,16 @@ components:
       in: path
       required: true
       schema: { type: string, example: new-checkout }
+    ExperimentKeyPath:
+      name: key
+      in: path
+      required: true
+      schema: { type: string, example: checkout-test }
 
   responses:
+    ExperimentNotFound:
+      description: EXPERIMENT_NOT_FOUND or ENVIRONMENT_NOT_FOUND
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     BadRequest:
       description: INVALID_REQUEST
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -484,6 +612,64 @@ components:
           description: variationId -> integer basis points, summing to exactly 100000
           additionalProperties: { type: integer, minimum: 0 }
         fallthroughVariationId: { type: string }
+
+    ExperimentStatus:
+      type: string
+      enum: [draft, running, stopped]
+
+    ExperimentMetric:
+      type: object
+      required: [name, eventName, type, isPrimary]
+      properties:
+        name: { type: string, maxLength: 128 }
+        eventName:
+          type: string
+          description: Must not start with "$" (reserved for Helios events such as $exposure).
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+        type:
+          type: string
+          description: conversion counts once per subject; value records every event with a numeric value.
+          enum: [conversion, value]
+        isPrimary: { type: boolean }
+
+    ExperimentCreateRequest:
+      type: object
+      required: [flagKey, key, name, metrics]
+      properties:
+        flagKey: { type: string }
+        key: { type: string, description: Same rules as a flag key, pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$' }
+        name: { type: string, maxLength: 200 }
+        hypothesis: { type: string, maxLength: 2000 }
+        metrics:
+          type: array
+          minItems: 1
+          maxItems: 10
+          description: Exactly one must be primary; names and eventNames must be unique.
+          items: { $ref: "#/components/schemas/ExperimentMetric" }
+
+    Experiment:
+      type: object
+      required: [id, key, name, hypothesis, flagKey, environment, status, startedAt, stoppedAt, metrics, configChangedSinceStart, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        key: { type: string }
+        name: { type: string }
+        hypothesis: { type: string }
+        flagKey: { type: string }
+        environment: { type: string }
+        status: { $ref: "#/components/schemas/ExperimentStatus" }
+        startedAt: { type: [string, "null"], format: date-time }
+        stoppedAt: { type: [string, "null"], format: date-time }
+        metrics:
+          type: array
+          items: { $ref: "#/components/schemas/ExperimentMetric" }
+        configChangedSinceStart:
+          type: boolean
+          description: >-
+            The flag's targeting, rollout or fallthrough in this environment
+            differs from when the experiment started (or, once stopped, from
+            when it stopped). Informational; flag edits are not blocked.
+        createdAt: { type: string, format: date-time }
 
     Flag:
       type: object

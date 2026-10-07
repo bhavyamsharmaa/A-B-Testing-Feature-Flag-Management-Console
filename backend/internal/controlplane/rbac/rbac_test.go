@@ -19,16 +19,20 @@ func TestMatrix(t *testing.T) {
 	edit := action{"edit/toggle flag", FlagWrite}
 	kill := action{"kill switch", Min(Editor)}
 	members := action{"manage members", Min(Admin)}
+	expRead := action{"read experiments", Min(Viewer)}
+	expCreate := action{"create experiment", Min(Editor)}
+	expStart := action{"start experiment", Min(Editor)}
+	expStop := action{"stop experiment", Min(Approver)}
 
 	allowed := map[Role]map[string][]Environment{
-		Viewer:   {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}},
-		Editor:   {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging}, kill.name: {dev, staging, prod}},
-		Approver: {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging, prod}, kill.name: {dev, staging, prod}},
-		Admin:    {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging, prod}, kill.name: {dev, staging, prod}, members.name: {dev, staging, prod}},
+		Viewer:   {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}, expRead.name: {dev, staging, prod}},
+		Editor:   {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging}, kill.name: {dev, staging, prod}, expRead.name: {dev, staging, prod}, expCreate.name: {dev, staging, prod}, expStart.name: {dev, staging, prod}},
+		Approver: {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging, prod}, kill.name: {dev, staging, prod}, expRead.name: {dev, staging, prod}, expCreate.name: {dev, staging, prod}, expStart.name: {dev, staging, prod}, expStop.name: {dev, staging, prod}},
+		Admin:    {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging, prod}, kill.name: {dev, staging, prod}, members.name: {dev, staging, prod}, expRead.name: {dev, staging, prod}, expCreate.name: {dev, staging, prod}, expStart.name: {dev, staging, prod}, expStop.name: {dev, staging, prod}},
 	}
 
 	for role, grants := range allowed {
-		for _, a := range []action{read, auditRead, create, edit, kill, members} {
+		for _, a := range []action{read, auditRead, create, edit, kill, members, expRead, expCreate, expStart, expStop} {
 			for _, env := range []Environment{dev, staging, prod} {
 				want := false
 				for _, e := range grants[a.name] {

@@ -10,6 +10,10 @@ import (
 
 var flagKeyRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
+// ValidKey reports whether s is an acceptable flag key. Experiment keys follow
+// the same rules, so the check is shared.
+func ValidKey(s string) bool { return flagKeyRE.MatchString(s) }
+
 // maxVariationBytes is the PRD's 4 KB payload cap: Helios is not a general
 // config store (§1 Non-goals).
 const maxVariationBytes = 4096

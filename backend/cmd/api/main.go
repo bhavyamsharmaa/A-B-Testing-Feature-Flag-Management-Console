@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"helios/backend/internal/controlplane/auditlog"
+	"helios/backend/internal/controlplane/experiments"
 	"helios/backend/internal/controlplane/flags"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/dataplane/evaluation"
@@ -76,6 +77,7 @@ func main() {
 	members := rbac.NewMemberHandlers(pool)
 	fl := flags.NewHandlers(pool, publisher)
 	al := auditlog.NewHandlers(pool)
+	ex := experiments.NewHandlers(pool)
 	sdkKeys := apikey.NewVerifier(pool, sdkKeyCacheTTL)
 
 	// protected wraps an /environments/{env}/... handler: verify the JWT,
@@ -103,6 +105,13 @@ func main() {
 
 	// Same requirement as listing flags: any role in {env}.
 	mux.Handle("GET /environments/{env}/audit-logs", protected(rbac.Min(rbac.Viewer), al.List))
+
+	// Editors create and start; stopping needs an approver; any role reads.
+	mux.Handle("GET /environments/{env}/experiments", protected(rbac.Min(rbac.Viewer), ex.List))
+	mux.Handle("GET /environments/{env}/experiments/{key}", protected(rbac.Min(rbac.Viewer), ex.Get))
+	mux.Handle("POST /environments/{env}/experiments", protected(rbac.Min(rbac.Editor), ex.Create))
+	mux.Handle("POST /environments/{env}/experiments/{key}/start", protected(rbac.Min(rbac.Editor), ex.Start))
+	mux.Handle("POST /environments/{env}/experiments/{key}/stop", protected(rbac.Min(rbac.Approver), ex.Stop))
 
 	mux.Handle("POST /evaluate", sdkKeys.Middleware(evaluation.Handler(pool)))
 	mux.Handle("GET /sdk/stream", sdkKeys.Middleware(stream.Handler(subscriber)))

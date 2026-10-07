@@ -374,12 +374,28 @@ type errNotAdminEverywhere struct{ environments []string }
 
 func (e errNotAdminEverywhere) Error() string { return "not admin everywhere" }
 
+// errHasRunningExperiment lists "env/experiment-key" for each running
+// experiment on the flag.
+type errHasRunningExperiment struct{ experiments []string }
+
+func (e errHasRunningExperiment) Error() string { return "has running experiment" }
+
+// writeHasRunningExperiment is a 409 even with ?force=true: force skips the
+// in-use warning, not the need to stop an experiment whose data would be lost.
+func writeHasRunningExperiment(w http.ResponseWriter, running []string) {
+	httpx.WriteError(w, http.StatusConflict, "HAS_RUNNING_EXPERIMENT",
+		"flag has a running experiment ("+strings.Join(running, ", ")+"); stop it before deleting the flag")
+}
+
 // Delete handles DELETE /environments/{env}/flags/{key}.
 //
 // A flag's definition is shared by every environment, so deleting it removes
 // it everywhere. The route requires admin in {env}; this handler additionally
 // requires admin in every other environment, so a dev-only admin can't
 // delete a flag that production depends on.
+//
+// It's refused with 409 HAS_RUNNING_EXPERIMENT while any environment has a
+// running experiment on the flag, even with ?force=true.
 //
 // It's refused with 409 IN_USE while the flag is enabled with targeting
 // rules in any environment, unless ?force=true.
@@ -423,6 +439,22 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 			return errNotAdminEverywhere{notAdmin}
 		}
 
+		rows, err = tx.Query(ctx, `
+			SELECT e.key || '/' || x.key FROM experiments x
+			JOIN environments e ON e.id = x.environment_id
+			WHERE x.flag_id = $1::uuid AND x.status = 'running'
+			ORDER BY e.key, x.key`, flagID)
+		if err != nil {
+			return err
+		}
+		running, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
+		if len(running) > 0 {
+			return errHasRunningExperiment{running}
+		}
+
 		if !force {
 			rows, err := tx.Query(ctx, `
 				SELECT e.key FROM flag_configs fc
@@ -463,12 +495,15 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 
 	var inUse errInUse
 	var notAdmin errNotAdminEverywhere
+	var hasRunning errHasRunningExperiment
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		writeFlagNotFound(w, key)
 	case errors.As(err, &notAdmin):
 		httpx.WriteError(w, http.StatusForbidden, "FORBIDDEN",
 			"deleting a flag removes it from every environment; you are not an admin in: "+strings.Join(notAdmin.environments, ", "))
+	case errors.As(err, &hasRunning):
+		writeHasRunningExperiment(w, hasRunning.experiments)
 	case errors.As(err, &inUse):
 		httpx.WriteError(w, http.StatusConflict, "IN_USE",
 			"flag is enabled with active targeting rules in: "+strings.Join(inUse.environments, ", ")+"; disable it first or pass ?force=true")
