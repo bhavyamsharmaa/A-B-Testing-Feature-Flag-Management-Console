@@ -6,6 +6,7 @@ import { ConsoleHeader } from '../components/ConsoleHeader'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { CreateFlagModal } from '../components/CreateFlagModal'
 import { EnvSwitcher } from '../components/EnvSwitcher'
+import { FlagDrawer } from '../components/FlagDrawer'
 import { FlagTable } from '../components/FlagTable'
 import { Notice, type NoticeState } from '../components/Notice'
 import { ProductionStrip } from '../components/ProductionStrip'
@@ -28,6 +29,7 @@ export default function ConsolePage() {
   const [notice, setNotice] = useState<NoticeState | null>(null)
   const [creating, setCreating] = useState(false)
   const [pending, setPending] = useState<Pending | null>(null)
+  const [configuring, setConfiguring] = useState<Flag | null>(null)
   const [dialogError, setDialogError] = useState<string | null>(null)
 
   const slow = useSlowHint(loading || busyKeys.size > 0)
@@ -36,6 +38,7 @@ export default function ConsolePage() {
   useEffect(() => {
     setNotice(null)
     setPending(null)
+    setConfiguring(null)
     setKilledKeys(new Set())
   }, [env])
 
@@ -192,6 +195,7 @@ export default function ConsolePage() {
                 killAllowed={canKill(role)}
                 onToggle={(f) => void onToggleClick(f)}
                 onKill={onKillClick}
+                onConfigure={setConfiguring}
               />
             )}
           </div>
@@ -207,6 +211,19 @@ export default function ConsolePage() {
             setNotice({ kind: 'success', text: `Created ${key}. It is disabled in every environment.` })
             void reload()
           }}
+        />
+      )}
+
+      {configuring && env && (
+        <FlagDrawer
+          key={configuring.key}
+          flag={configuring}
+          env={env}
+          prod={prod}
+          role={role}
+          canEdit={canToggle(role, env)}
+          onClose={() => setConfiguring(null)}
+          onSaved={replace}
         />
       )}
 

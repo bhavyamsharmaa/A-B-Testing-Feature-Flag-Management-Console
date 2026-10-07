@@ -35,3 +35,12 @@ export function setFlagEnabled(env: string, key: string, enabled: boolean): Prom
 export function killFlag(env: string, key: string): Promise<Flag> {
   return apiClient.post<Flag>(`${flagPath(env, key)}/kill`)
 }
+
+export function getFlag(env: string, key: string): Promise<Flag> {
+  return apiClient.get<Flag>(flagPath(env, key))
+}
+
+/** PATCH is a partial update: sending only `rollout` leaves enabled, rules and fallthrough alone. */
+export function setFlagRollout(env: string, key: string, rollout: Record<string, number>): Promise<Flag> {
+  return apiClient.patch<Flag>(flagPath(env, key), { rollout })
+}

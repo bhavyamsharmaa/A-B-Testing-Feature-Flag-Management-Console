@@ -1,3 +1,4 @@
+import { TOTAL_BP, booleanVariations, formatPercent, hasRollout, savedOnBp } from '../lib/rollout'
 import type { Flag } from '../types'
 
 interface Props {
@@ -9,12 +10,13 @@ interface Props {
   killAllowed: boolean
   onToggle: (flag: Flag) => void
   onKill: (flag: Flag) => void
+  onConfigure: (flag: Flag) => void
 }
 
 const fmt = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDisabledReason, killAllowed, onToggle, onKill }: Props) {
+export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDisabledReason, killAllowed, onToggle, onKill, onConfigure }: Props) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[720px] text-left text-sm">
@@ -24,7 +26,7 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
             <th className="px-3 py-2 font-medium">Status</th>
             <th className="px-3 py-2 font-medium">Version</th>
             <th className="px-3 py-2 font-medium">Last updated</th>
-            <th className="px-3 py-2 text-right font-medium">Kill</th>
+            <th className="px-3 py-2 text-right font-medium">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -32,13 +34,22 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
             const enabled = flag.config.enabled
             const busy = busyKeys.has(flag.key)
             const killed = killedKeys.has(flag.key) && !enabled
+            // Badge only for a boolean flag with a rollout set below 100%.
+            const bools = booleanVariations(flag)
+            const onBp = bools && hasRollout(flag) ? savedOnBp(flag, bools) : null
             return (
               <tr
                 key={flag.key}
                 className={`border-t border-white/5 transition ${killed ? 'bg-red-500/[0.06]' : ''}`}
               >
                 <td className={`px-3 py-3 ${enabled ? '' : 'opacity-60'}`}>
-                  <div className="font-mono text-[13px] text-zinc-100">{flag.key}</div>
+                  <button
+                    onClick={() => onConfigure(flag)}
+                    title="Configure this flag"
+                    className="text-left font-mono text-[13px] text-zinc-100 underline-offset-2 transition hover:text-accent hover:underline"
+                  >
+                    {flag.key}
+                  </button>
                   <div className="text-xs text-zinc-400">{flag.name}</div>
                 </td>
 
@@ -72,6 +83,14 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
                     ) : (
                       <span className="text-xs text-zinc-500">Disabled</span>
                     )}
+                    {onBp !== null && onBp < TOTAL_BP && (
+                      <span
+                        title={`Rolled out: ${formatPercent(onBp)} of users get ON`}
+                        className="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-medium text-accent"
+                      >
+                        {formatPercent(onBp)}
+                      </span>
+                    )}
                   </div>
                 </td>
 
@@ -83,20 +102,28 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
                 </td>
 
                 <td className="px-3 py-3 text-right">
-                  <button
-                    onClick={() => onKill(flag)}
-                    disabled={!killAllowed || !enabled || busy}
-                    title={
-                      !killAllowed
-                        ? 'Viewers have read-only access'
-                        : !enabled
-                          ? 'Already disabled'
-                          : undefined
-                    }
-                    className="rounded-lg border border-red-500/50 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-300 transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-transparent disabled:text-zinc-600 disabled:hover:bg-transparent disabled:hover:text-zinc-600"
-                  >
-                    Kill
-                  </button>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => onConfigure(flag)}
+                      className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-accent/60 hover:bg-accent/10 hover:text-white"
+                    >
+                      Configure
+                    </button>
+                    <button
+                      onClick={() => onKill(flag)}
+                      disabled={!killAllowed || !enabled || busy}
+                      title={
+                        !killAllowed
+                          ? 'Viewers have read-only access'
+                          : !enabled
+                            ? 'Already disabled'
+                            : undefined
+                      }
+                      className="rounded-lg border border-red-500/50 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-300 transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-transparent disabled:text-zinc-600 disabled:hover:bg-transparent disabled:hover:text-zinc-600"
+                    >
+                      Kill
+                    </button>
+                  </div>
                 </td>
               </tr>
             )
