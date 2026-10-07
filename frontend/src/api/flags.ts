@@ -1,4 +1,4 @@
-import type { Flag } from '../types'
+import type { Flag, TargetingRule } from '../types'
 import { apiClient } from './client'
 
 const flagsPath = (env: string) => `/environments/${encodeURIComponent(env)}/flags`
@@ -43,4 +43,9 @@ export function getFlag(env: string, key: string): Promise<Flag> {
 /** PATCH is a partial update: sending only `rollout` leaves enabled, rules and fallthrough alone. */
 export function setFlagRollout(env: string, key: string, rollout: Record<string, number>): Promise<Flag> {
   return apiClient.patch<Flag>(flagPath(env, key), { rollout })
+}
+
+/** Sends only the rules: PATCH is partial, so enabled, rollout and fallthrough are left alone. [] clears them. */
+export function setFlagTargetingRules(env: string, key: string, rules: TargetingRule[]): Promise<Flag> {
+  return apiClient.patch<Flag>(flagPath(env, key), { targetingRules: rules })
 }

@@ -91,6 +91,14 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
                         {formatPercent(onBp)}
                       </span>
                     )}
+                    {flag.config.targetingRules.length > 0 && (
+                      <span
+                        title="Targeting rules run before the rollout"
+                        className="rounded-full bg-indigo-500/15 px-2 py-0.5 text-[11px] font-medium text-indigo-300"
+                      >
+                        {flag.config.targetingRules.length} {flag.config.targetingRules.length === 1 ? 'rule' : 'rules'}
+                      </span>
+                    )}
                   </div>
                 </td>
 

@@ -18,9 +18,22 @@ export interface Variation {
   value: unknown
 }
 
+/** One test on a context attribute. `value` is omitted for the `exists` operator. */
+export interface Clause {
+  attribute: string
+  operator: string
+  value?: unknown
+}
+
+/** Serves `variationId` when every clause matches (they are ANDed). Rules run top to bottom. */
+export interface TargetingRule {
+  clauses: Clause[]
+  variationId: string
+}
+
 export interface FlagConfig {
   enabled: boolean
-  targetingRules: unknown[]
+  targetingRules: TargetingRule[]
   rollout: Record<string, number> | null
   fallthroughVariationId: string
   version: number

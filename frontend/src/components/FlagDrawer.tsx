@@ -15,6 +15,7 @@ import type { Flag, Role } from '../types'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ProductionStrip } from './ProductionStrip'
 import { RolloutControl } from './RolloutControl'
+import { TargetingSection, type TargetingState } from './TargetingSection'
 
 interface Props {
   flag: Flag
@@ -44,6 +45,7 @@ export function FlagDrawer({ flag, env, prod, role, canEdit, onClose, onSaved }:
   const [dialog, setDialog] = useState<Dialog>(null)
   const [dialogError, setDialogError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(true)
+  const [targeting, setTargeting] = useState<TargetingState>({ dirty: false, busy: false, dialogOpen: false })
   const slow = useSlowHint(saving || refreshing)
 
   // Latest values for the async refresh below, so it never overwrites an edit in progress.
@@ -76,15 +78,15 @@ export function FlagDrawer({ flag, env, prod, role, canEdit, onClose, onSaved }:
   useEffect(() => closeRef.current?.focus(), [])
 
   function requestClose() {
-    if (saving) return
-    if (dirty) setDialog('discard')
+    if (saving || targeting.busy) return
+    if (dirty || targeting.dirty) setDialog('discard')
     else onClose()
   }
 
   // Esc closes the drawer, unless a confirmation is open (it handles Esc itself).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dialog === null) requestClose()
+      if (e.key === 'Escape' && dialog === null && !targeting.dialogOpen) requestClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -146,7 +148,7 @@ export function FlagDrawer({ flag, env, prod, role, canEdit, onClose, onSaved }:
         role="dialog"
         aria-modal="true"
         aria-labelledby="drawer-title"
-        className="absolute right-0 top-0 h-full w-full max-w-md animate-slide-in overflow-y-auto border-l border-white/10 bg-surface p-6 shadow-2xl"
+        className="absolute right-0 top-0 h-full w-full max-w-md animate-slide-in sm:max-w-2xl overflow-y-auto border-l border-white/10 bg-surface p-6 shadow-2xl"
       >
         <ProductionStrip show={prod} />
 
@@ -196,6 +198,20 @@ export function FlagDrawer({ flag, env, prod, role, canEdit, onClose, onSaved }:
             </span>
           </div>
         </dl>
+
+        <TargetingSection
+          flag={current}
+          env={env}
+          prod={prod}
+          canEdit={canEdit}
+          disabledReason={reason}
+          otherBusy={saving}
+          onSaved={(updated) => {
+            setCurrent(updated)
+            onSaved(updated)
+          }}
+          onStateChange={setTargeting}
+        />
 
         <section className="mt-7 border-t border-white/10 pt-6">
           <h3 className="text-xs font-medium uppercase tracking-wider text-zinc-500">Rollout</h3>
@@ -256,7 +272,7 @@ export function FlagDrawer({ flag, env, prod, role, canEdit, onClose, onSaved }:
               <div className="flex gap-2">
                 <button
                   onClick={() => void onSaveClick()}
-                  disabled={!dirty || !canEdit || saving}
+                  disabled={!dirty || !canEdit || saving || targeting.busy}
                   title={!canEdit ? reason : undefined}
                   className="rounded-lg bg-gradient-to-r from-accent to-indigo-500 px-4 py-2 text-sm font-medium text-white shadow-[0_8px_24px_-8px_rgba(124,92,255,0.8)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
                 >
@@ -295,7 +311,12 @@ export function FlagDrawer({ flag, env, prod, role, canEdit, onClose, onSaved }:
           onConfirm={() => void onDialogConfirm()}
           onCancel={() => setDialog(null)}
         >
-          {dialog === 'discard' && <p>Your pending rollout change ({formatPercent(pendingBp)} ON) has not been saved.</p>}
+          {dialog === 'discard' && (
+            <>
+              {dirty && <p>Your pending rollout change ({formatPercent(pendingBp)} ON) has not been saved.</p>}
+              {targeting.dirty && <p>Your targeting rule changes have not been saved.</p>}
+            </>
+          )}
           {dialog === 'lower' && (
             <>
               <p>
