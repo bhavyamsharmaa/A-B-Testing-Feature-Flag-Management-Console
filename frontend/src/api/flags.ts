@@ -57,3 +57,24 @@ export function setFlagTargetingRules(env: string, key: string, rules: Targeting
 export function deleteFlag(env: string, key: string, force: boolean): Promise<void> {
   return apiClient.delete<void>(`${flagPath(env, key)}${force ? '?force=true' : ''}`)
 }
+
+/** Creates a flag of any type. Boolean creation keeps using createBooleanFlag. */
+export function createFlag(
+  env: string,
+  input: {
+    key: string
+    name: string
+    description: string
+    variationType: 'string' | 'number' | 'json'
+    variations: { id: string; value: unknown }[]
+  },
+): Promise<Flag> {
+  const description = input.description.trim()
+  return apiClient.post<Flag>(flagsPath(env), {
+    key: input.key,
+    name: input.name.trim(),
+    ...(description ? { description } : {}),
+    variationType: input.variationType,
+    variations: input.variations,
+  })
+}

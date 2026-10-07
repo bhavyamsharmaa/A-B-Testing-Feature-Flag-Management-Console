@@ -17,6 +17,8 @@ import { DeleteFlagSection, type DeleteState } from './DeleteFlagSection'
 import { ProductionStrip } from './ProductionStrip'
 import { RolloutControl } from './RolloutControl'
 import { TargetingSection, type TargetingState } from './TargetingSection'
+import { VariationsList } from './VariationsList'
+import { WeightsSection, type WeightsState } from './WeightsSection'
 
 interface Props {
   flag: Flag
@@ -52,6 +54,7 @@ export function FlagDrawer({ flag, env, prod, role, roles, canEdit, onClose, onS
   const [refreshing, setRefreshing] = useState(true)
   const [targeting, setTargeting] = useState<TargetingState>({ dirty: false, busy: false, dialogOpen: false })
   const [deleting, setDeleting] = useState<DeleteState>({ dialogOpen: false, busy: false })
+  const [weights, setWeights] = useState<WeightsState>({ dirty: false, busy: false, dialogOpen: false })
   const slow = useSlowHint(saving || refreshing)
 
   // Latest values for the async refresh below, so it never overwrites an edit in progress.
@@ -84,15 +87,15 @@ export function FlagDrawer({ flag, env, prod, role, roles, canEdit, onClose, onS
   useEffect(() => closeRef.current?.focus(), [])
 
   function requestClose() {
-    if (saving || targeting.busy || deleting.busy) return
-    if (dirty || targeting.dirty) setDialog('discard')
+    if (saving || targeting.busy || deleting.busy || weights.busy) return
+    if (dirty || targeting.dirty || weights.dirty) setDialog('discard')
     else onClose()
   }
 
   // Esc closes the drawer, unless a confirmation is open (it handles Esc itself).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dialog === null && !targeting.dialogOpen && !deleting.dialogOpen) requestClose()
+      if (e.key === 'Escape' && dialog === null && !targeting.dialogOpen && !deleting.dialogOpen && !weights.dialogOpen) requestClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -205,13 +208,15 @@ export function FlagDrawer({ flag, env, prod, role, roles, canEdit, onClose, onS
           </div>
         </dl>
 
+        <VariationsList flag={current} />
+
         <TargetingSection
           flag={current}
           env={env}
           prod={prod}
           canEdit={canEdit}
           disabledReason={reason}
-          otherBusy={saving}
+          otherBusy={saving || weights.busy}
           onSaved={(updated) => {
             setCurrent(updated)
             onSaved(updated)
@@ -227,9 +232,19 @@ export function FlagDrawer({ flag, env, prod, role, roles, canEdit, onClose, onS
           )}
 
           {!bools ? (
-            <p className="mt-3 text-sm text-zinc-400">
-              Percentage rollout is available for boolean flags with one true and one false variation only.
-            </p>
+            <WeightsSection
+              flag={current}
+              env={env}
+              prod={prod}
+              canEdit={canEdit}
+              disabledReason={reason}
+              otherBusy={targeting.busy}
+              onSaved={(updated) => {
+                setCurrent(updated)
+                onSaved(updated)
+              }}
+              onStateChange={setWeights}
+            />
           ) : (
             <div className="mt-3 space-y-4">
               {!enabled && (
@@ -331,6 +346,7 @@ export function FlagDrawer({ flag, env, prod, role, roles, canEdit, onClose, onS
             <>
               {dirty && <p>Your pending rollout change ({formatPercent(pendingBp)} ON) has not been saved.</p>}
               {targeting.dirty && <p>Your targeting rule changes have not been saved.</p>}
+              {weights.dirty && <p>Your rollout weight changes have not been saved.</p>}
             </>
           )}
           {dialog === 'lower' && (

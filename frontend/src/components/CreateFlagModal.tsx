@@ -1,8 +1,21 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { createBooleanFlag } from '../api/flags'
+import { createBooleanFlag, createFlag } from '../api/flags'
 import { ApiError } from '../api/client'
 import { describeError } from '../lib/errors'
 import { SLOW_HINT, useSlowHint } from '../lib/useSlowHint'
+import {
+  defaultRows,
+  mapServerError,
+  rowsForType,
+  toVariations,
+  validateRows,
+  type DraftVariation,
+  type NonBooleanType,
+  type ServerRowError,
+  type Validation,
+  type VariationType,
+} from '../lib/variations'
+import { VariationsEditor } from './VariationsEditor'
 
 // Same rule the backend enforces (flags/validate.go).
 const KEY_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/
@@ -22,7 +35,20 @@ export function CreateFlagModal({ env, onClose, onCreated }: Props) {
   const [nameError, setNameError] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [type, setType] = useState<VariationType>('boolean')
+  const [rows, setRows] = useState<DraftVariation[]>([])
+  const [validation, setValidation] = useState<Validation | null>(null)
+  const [serverRowError, setServerRowError] = useState<ServerRowError | null>(null)
   const slow = useSlowHint(submitting)
+
+  function onTypeChange(next: VariationType) {
+    setValidation(null)
+    setServerRowError(null)
+    setFormError(null)
+    setType(next)
+    // Ids carry over between non-boolean types; values reset, since "5" the text is not 5 the number.
+    setRows((prev) => (next === 'boolean' ? [] : prev.length > 0 ? rowsForType(next, prev) : defaultRows(next)))
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -40,15 +66,27 @@ export function CreateFlagModal({ env, onClose, onCreated }: Props) {
     setKeyError(kErr)
     setNameError(nErr)
     setFormError(null)
-    if (kErr || nErr) return
+    setServerRowError(null)
+    const checked = type === 'boolean' ? null : validateRows(type, rows)
+    setValidation(checked)
+    if (kErr || nErr || (checked && !checked.ok)) return
 
     setSubmitting(true)
     try {
-      await createBooleanFlag(env, { key: k, name, description })
+      if (type === 'boolean') {
+        await createBooleanFlag(env, { key: k, name, description })
+      } else {
+        await createFlag(env, { key: k, name, description, variationType: type, variations: toVariations(type, rows) })
+      }
       onCreated(k)
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && err.code === 'FLAG_KEY_EXISTS') {
         setKeyError(`A flag with the key "${k}" already exists. Choose a different key.`)
+      } else if (err instanceof ApiError && err.status === 400 && type !== 'boolean') {
+        // TYPE_MISMATCH and INVALID_REQUEST: show it on the variation it names, else on the form.
+        const onRow = mapServerError(err.message, rows)
+        if (onRow) setServerRowError(onRow)
+        else setFormError(describeError(err, 'create flags'))
       } else {
         setFormError(describeError(err, 'create flags'))
       }
@@ -74,13 +112,15 @@ export function CreateFlagModal({ env, onClose, onCreated }: Props) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-title"
-        className="w-full max-w-md animate-fade-up rounded-2xl border border-white/10 bg-surface p-6"
+        className={`w-full animate-fade-up rounded-2xl border border-white/10 bg-surface p-6 ${
+          type === 'boolean' ? 'max-w-md' : 'max-h-[90vh] max-w-2xl overflow-y-auto'
+        }`}
       >
         <h2 id="create-title" className="text-lg font-semibold">
           Create flag
         </h2>
         <p className="mt-1 text-sm text-zinc-400">
-          Creates a boolean flag in <span className="font-medium text-zinc-200">every</span> environment, disabled
+          Creates a {type} flag in <span className="font-medium text-zinc-200">every</span> environment, disabled
           everywhere. Turning it on is a separate step.
         </p>
 
@@ -136,6 +176,38 @@ export function CreateFlagModal({ env, onClose, onCreated }: Props) {
           disabled={submitting}
           className={`${input} ${ok}`}
         />
+
+        <label htmlFor="flag-type" className="mt-4 block text-sm text-zinc-300">
+          Type
+        </label>
+        <select
+          id="flag-type"
+          value={type}
+          onChange={(e) => onTypeChange(e.target.value as VariationType)}
+          disabled={submitting}
+          className={`${input} ${ok}`}
+        >
+          <option value="boolean">Boolean (on / off)</option>
+          <option value="string">String</option>
+          <option value="number">Number</option>
+          <option value="json">JSON</option>
+        </select>
+
+        {type !== 'boolean' && (
+          <div className="mt-4">
+            <VariationsEditor
+              type={type as NonBooleanType}
+              rows={rows}
+              validation={validation}
+              serverError={serverRowError}
+              disabled={submitting}
+              onChange={(next) => {
+                setRows(next)
+                setServerRowError(null)
+              }}
+            />
+          </div>
+        )}
 
         {slow && <p className="mt-3 text-sm text-amber-300">{SLOW_HINT}</p>}
         {formError && (

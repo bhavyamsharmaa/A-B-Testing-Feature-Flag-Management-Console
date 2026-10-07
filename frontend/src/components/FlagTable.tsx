@@ -51,6 +51,12 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
                     {flag.key}
                   </button>
                   <div className="text-xs text-zinc-400">{flag.name}</div>
+                  <div className="mt-1 flex items-center gap-1.5 text-[11px] text-zinc-500">
+                    <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-zinc-400">{flag.variationType}</span>
+                    {(flag.variationType !== 'boolean' || flag.variations.length !== 2) && (
+                      <span>{flag.variations.length} variations</span>
+                    )}
+                  </div>
                 </td>
 
                 <td className="px-3 py-3">
