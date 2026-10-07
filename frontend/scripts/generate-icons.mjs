@@ -1,7 +1,8 @@
 // Generates the raster icons from public/favicon.svg. Run with `npm run icons`.
 // sharp is a devDependency used only here; nothing from it ships in the build.
 //
-//   public/favicon.ico          16 + 32 px, PNG-in-ICO (every current browser reads it)
+//   public/favicon.ico          16 + 32 + 48 px, PNG-in-ICO (every current browser reads it)
+//   public/favicon-32.png       32 px, the mark on a transparent background
 //   public/apple-touch-icon.png 180 px, opaque (iOS fills transparency with black)
 //   public/icon-192.png         192 px, mark on the dark app tile
 //   public/icon-512.png         512 px, mark on the dark app tile
@@ -55,8 +56,9 @@ const write = (name, data) => {
   console.log(`wrote public/${name} (${data.length} bytes)`)
 }
 
-const faviconImages = await Promise.all([16, 32].map(async (size) => ({ size, data: await mark(size) })))
+const faviconImages = await Promise.all([16, 32, 48].map(async (size) => ({ size, data: await mark(size) })))
 write('favicon.ico', ico(faviconImages))
+write('favicon-32.png', await mark(32))
 write('apple-touch-icon.png', await tile(180))
 write('icon-192.png', await tile(192))
 write('icon-512.png', await tile(512))
