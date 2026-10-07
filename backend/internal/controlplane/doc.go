@@ -8,4 +8,5 @@
 //   - experiments: A/B experiment lifecycle
 //   - rbac:        server-side role enforcement
 //   - audit:       append-only log of every mutation
+//   - auditlog:    read-only queries over that log
 package controlplane

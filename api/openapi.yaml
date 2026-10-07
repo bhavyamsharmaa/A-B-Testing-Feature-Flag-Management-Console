@@ -220,6 +220,60 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/FlagNotFound" }
 
+  /environments/{env}/audit-logs:
+    parameters: [{ $ref: "#/components/parameters/EnvPath" }]
+    get:
+      tags: [control-plane]
+      summary: Read the audit log for this environment (any role)
+      description: >-
+        Newest first (id descending), keyset-paginated: pass the previous
+        page's nextCursor as `before` to get the next page. Read-only.
+
+        Returns entries recorded against {env}, plus entries that belong to
+        no single environment, marked `scope: global`. Today that is
+        flag.create, because a flag is created in every environment at once,
+        so those entries appear in every environment's log.
+
+        Diffs are returned exactly as recorded. Writers redact API keys
+        (api_key.create stores "[REDACTED]"), but flag and member diffs
+        contain whatever the user entered, such as variation values,
+        targeting-rule values and member emails.
+      security: [{ supabaseJWT: [] }]
+      parameters:
+        - name: limit
+          in: query
+          description: Page size. Values above 200 are clamped to 200.
+          schema: { type: integer, minimum: 1, default: 50 }
+        - name: before
+          in: query
+          description: Cursor. Return only entries with id less than this.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: action
+          in: query
+          description: Exact match, e.g. flag.kill
+          schema: { type: string, pattern: "^[A-Za-z0-9_.-]{1,64}$" }
+        - name: resourceType
+          in: query
+          description: Exact match, e.g. flag or member
+          schema: { type: string, pattern: "^[A-Za-z0-9_.-]{1,64}$" }
+        - name: resourceId
+          in: query
+          description: Exact match, e.g. a flag key or a user id
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - name: severity
+          in: query
+          schema: { type: string, enum: [info, critical] }
+      responses:
+        "200":
+          description: A page of entries
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditLogList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: ENVIRONMENT_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /evaluate:
     post:
       tags: [data-plane]
@@ -460,6 +514,36 @@ components:
             updatedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+
+    AuditLogEntry:
+      type: object
+      required: [id, createdAt, actorEmail, action, resourceType, resourceId, severity, diffBefore, diffAfter, scope]
+      properties:
+        id: { type: integer, format: int64 }
+        createdAt: { type: string, format: date-time }
+        actorEmail: { type: string }
+        action: { type: string, example: flag.kill }
+        resourceType: { type: string, example: flag }
+        resourceId: { type: string, example: ui-test-flag }
+        severity: { type: string, enum: [info, critical] }
+        diffBefore: { description: State before the change; null when the resource did not exist }
+        diffAfter: { description: State after the change; null when the resource no longer exists }
+        scope:
+          type: string
+          enum: [environment, global]
+          description: global = not tied to one environment (flag.create); shown in every environment's log.
+
+    AuditLogList:
+      type: object
+      required: [entries, nextCursor]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AuditLogEntry" }
+        nextCursor:
+          type: [integer, "null"]
+          format: int64
+          description: Pass as `before` for the next page; null when there are no more entries.
 
     EvaluationContext:
       type: object

@@ -14,20 +14,21 @@ func TestMatrix(t *testing.T) {
 		req  Requirement
 	}
 	read := action{"read flags", Min(Viewer)}
+	auditRead := action{"read audit log", Min(Viewer)}
 	create := action{"create flag", Min(Editor)}
 	edit := action{"edit/toggle flag", FlagWrite}
 	kill := action{"kill switch", Min(Editor)}
 	members := action{"manage members", Min(Admin)}
 
 	allowed := map[Role]map[string][]Environment{
-		Viewer:   {read.name: {dev, staging, prod}},
-		Editor:   {read.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging}, kill.name: {dev, staging, prod}},
-		Approver: {read.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging, prod}, kill.name: {dev, staging, prod}},
-		Admin:    {read.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging, prod}, kill.name: {dev, staging, prod}, members.name: {dev, staging, prod}},
+		Viewer:   {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}},
+		Editor:   {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging}, kill.name: {dev, staging, prod}},
+		Approver: {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging, prod}, kill.name: {dev, staging, prod}},
+		Admin:    {read.name: {dev, staging, prod}, auditRead.name: {dev, staging, prod}, create.name: {dev, staging, prod}, edit.name: {dev, staging, prod}, kill.name: {dev, staging, prod}, members.name: {dev, staging, prod}},
 	}
 
 	for role, grants := range allowed {
-		for _, a := range []action{read, create, edit, kill, members} {
+		for _, a := range []action{read, auditRead, create, edit, kill, members} {
 			for _, env := range []Environment{dev, staging, prod} {
 				want := false
 				for _, e := range grants[a.name] {

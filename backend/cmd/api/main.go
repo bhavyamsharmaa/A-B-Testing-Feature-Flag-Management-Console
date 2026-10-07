@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"helios/backend/internal/controlplane/auditlog"
 	"helios/backend/internal/controlplane/flags"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/dataplane/evaluation"
@@ -74,6 +75,7 @@ func main() {
 	guard := rbac.NewGuard(pool)
 	members := rbac.NewMemberHandlers(pool)
 	fl := flags.NewHandlers(pool, publisher)
+	al := auditlog.NewHandlers(pool)
 	sdkKeys := apikey.NewVerifier(pool, sdkKeyCacheTTL)
 
 	// protected wraps an /environments/{env}/... handler: verify the JWT,
@@ -98,6 +100,9 @@ func main() {
 	// kill costs a disabled feature, a blocked one during an incident costs
 	// prolonged user harm (PRD US-06).
 	mux.Handle("POST /environments/{env}/flags/{key}/kill", protected(rbac.Min(rbac.Editor), fl.Kill))
+
+	// Same requirement as listing flags: any role in {env}.
+	mux.Handle("GET /environments/{env}/audit-logs", protected(rbac.Min(rbac.Viewer), al.List))
 
 	mux.Handle("POST /evaluate", sdkKeys.Middleware(evaluation.Handler(pool)))
 	mux.Handle("GET /sdk/stream", sdkKeys.Middleware(stream.Handler(subscriber)))
