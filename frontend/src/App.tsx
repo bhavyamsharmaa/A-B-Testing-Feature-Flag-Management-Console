@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './auth/AuthProvider'
 import { RequireAuth } from './auth/RequireAuth'
 import { Background } from './components/Background'
 import { Splash } from './components/Splash'
+import AuditPage from './pages/AuditPage'
 import ConsolePage from './pages/ConsolePage'
 import DemoPage from './pages/DemoPage'
 import LoginPage from './pages/LoginPage'
@@ -24,6 +25,7 @@ export default function App() {
           <Route path="/demo" element={<DemoPage />} />
           <Route element={<RequireAuth />}>
             <Route path="/console" element={<ConsolePage />} />
+            <Route path="/console/audit" element={<AuditPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -1,61 +1,27 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { killFlag, setFlagEnabled } from '../api/flags'
-import { useAuth } from '../auth/AuthProvider'
+import { AccessGate } from '../components/AccessGate'
+import { ConsoleCard } from '../components/ConsoleCard'
+import { ConsoleHeader } from '../components/ConsoleHeader'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { CreateFlagModal } from '../components/CreateFlagModal'
 import { EnvSwitcher } from '../components/EnvSwitcher'
 import { FlagTable } from '../components/FlagTable'
-import { Logo } from '../components/Logo'
 import { Notice, type NoticeState } from '../components/Notice'
+import { ProductionStrip } from '../components/ProductionStrip'
 import { describeError } from '../lib/errors'
-import { canCreate, canKill, canToggle, isProduction, roleIn, toggleDisabledReason } from '../lib/permissions'
+import { canCreate, canKill, canToggle, toggleDisabledReason } from '../lib/permissions'
+import { useConsoleEnv } from '../lib/useConsoleEnv'
 import { useFlags } from '../lib/useFlags'
 import { SLOW_HINT, useSlowHint } from '../lib/useSlowHint'
 import type { Flag } from '../types'
 
-const ENV_ORDER = ['dev', 'staging', 'production']
-const STORAGE_KEY = 'helios.selectedEnv'
-
-function readStoredEnv(): string | null {
-  try {
-    return localStorage.getItem(STORAGE_KEY)
-  } catch {
-    return null
-  }
-}
-
 type Pending = { kind: 'toggle'; flag: Flag; enable: boolean } | { kind: 'kill'; flag: Flag }
 
 export default function ConsolePage() {
-  const { session, me, meLoading, meError, reloadMe, signOut } = useAuth()
-  const email = me?.email ?? session?.user.email ?? ''
-
-  // Environments the user has a role in: dev, staging, production, then the rest.
-  const roles = useMemo(() => {
-    const rank = (e: string) => (ENV_ORDER.includes(e) ? ENV_ORDER.indexOf(e) : ENV_ORDER.length)
-    return [...(me?.roles ?? [])].sort((a, b) => rank(a.environment) - rank(b.environment) || a.environment.localeCompare(b.environment))
-  }, [me])
-
-  const [preferredEnv, setPreferredEnv] = useState<string | null>(readStoredEnv)
-  const envNames = roles.map((r) => r.environment)
-  const env = envNames.includes(preferredEnv ?? '')
-    ? (preferredEnv as string)
-    : envNames.includes('dev')
-      ? 'dev'
-      : (envNames[0] ?? null)
-
-  function selectEnv(next: string) {
-    setPreferredEnv(next)
-    try {
-      localStorage.setItem(STORAGE_KEY, next)
-    } catch {
-      /* private mode: the choice just won't persist */
-    }
-  }
+  const { email, me, meLoading, meError, reloadMe, signOut, roles, env, selectEnv, role, prod } = useConsoleEnv()
 
   const { flags, loading, error, reload, replace } = useFlags(env)
-  const role = env ? roleIn(roles, env) : null
-  const prod = env ? isProduction(env) : false
 
   const [busyKeys, setBusyKeys] = useState<Set<string>>(new Set())
   const [killedKeys, setKilledKeys] = useState<Set<string>>(new Set())
@@ -161,56 +127,12 @@ export default function ConsolePage() {
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-10">
-      {prod && (
-        <div className="mb-6 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-center text-xs font-semibold uppercase tracking-widest text-red-300">
-          Production: changes affect live users
-        </div>
-      )}
+      <ProductionStrip show={prod} />
 
-      <header className="flex animate-fade-up items-center justify-between">
-        <h1>
-          <Logo className="text-xl" />
-        </h1>
-        <div className="flex items-center gap-3">
-          <span className="hidden text-sm text-zinc-400 sm:inline">{email}</span>
-          <button
-            onClick={() => void signOut()}
-            className="rounded-lg border border-white/10 bg-white/[0.03] px-3.5 py-1.5 text-sm text-zinc-300 backdrop-blur transition hover:border-accent/60 hover:bg-accent/10 hover:text-white"
-          >
-            Sign out
-          </button>
-        </div>
-      </header>
+      <ConsoleHeader email={email} onSignOut={() => void signOut()} />
 
-      <section
-        className={`mt-8 animate-fade-up rounded-2xl border bg-surface/70 p-5 backdrop-blur-xl ${
-          prod
-            ? 'border-red-500/30 shadow-[0_0_80px_-30px_rgba(239,68,68,0.5)]'
-            : 'border-white/10 shadow-[0_0_80px_-30px_rgba(124,92,255,0.45)]'
-        }`}
-        style={{ animationDelay: '0.1s' }}
-      >
-        {meLoading && (
-          <div className="space-y-2" role="status" aria-label="Loading your access">
-            <div className="h-10 animate-shimmer rounded-lg bg-white/[0.06]" />
-            <div className="h-10 animate-shimmer rounded-lg bg-white/[0.06]" style={{ animationDelay: '0.15s' }} />
-          </div>
-        )}
-
-        {meError && !meLoading && (
-          <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-            <p>{meError}</p>
-            <button onClick={reloadMe} className="mt-2 underline">
-              Retry
-            </button>
-          </div>
-        )}
-
-        {me && !meLoading && roles.length === 0 && (
-          <p className="rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-zinc-300">
-            This account has no environment access yet. Ask an admin to grant you a role in an environment.
-          </p>
-        )}
+      <ConsoleCard prod={prod}>
+        <AccessGate me={me} meLoading={meLoading} meError={meError} reloadMe={reloadMe} roleCount={roles.length} />
 
         {env && roles.length > 0 && (
           <div className="space-y-4">
@@ -274,7 +196,7 @@ export default function ConsolePage() {
             )}
           </div>
         )}
-      </section>
+      </ConsoleCard>
 
       {creating && env && (
         <CreateFlagModal

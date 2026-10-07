@@ -38,3 +38,22 @@ export interface Flag {
   createdAt: string
   updatedAt: string
 }
+
+export interface AuditEntry {
+  id: number
+  createdAt: string
+  actorEmail: string
+  action: string
+  resourceType: string
+  resourceId: string
+  severity: 'info' | 'critical'
+  diffBefore: unknown
+  diffAfter: unknown
+  /** "global" = not tied to one environment (e.g. flag.create); shown in every environment's log. */
+  scope: 'environment' | 'global'
+}
+
+export interface AuditLogPage {
+  entries: AuditEntry[]
+  nextCursor: number | null
+}
