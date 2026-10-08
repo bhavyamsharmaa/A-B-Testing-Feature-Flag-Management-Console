@@ -165,6 +165,14 @@ func isUniqueViolation(err error, constraint string) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
 }
 
+// isFlagDeletedViolation reports whether err is the foreign-key violation on
+// experiments.flag_id: the flag was deleted between create's lookup and its
+// insert.
+func isFlagDeletedViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "experiments_flag_id_fkey"
+}
+
 // writeLifecycleError maps the errors shared by get, start and stop.
 func writeLifecycleError(w http.ResponseWriter, r *http.Request, key string, err error) {
 	var invalid errInvalidTransition
@@ -255,7 +263,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	})
 	var invalid validationError
 	switch {
-	case errors.As(err, new(errFlagNotFound)):
+	case errors.As(err, new(errFlagNotFound)), isFlagDeletedViolation(err):
 		httpx.WriteError(w, http.StatusNotFound, "FLAG_NOT_FOUND", "no flag with key "+req.FlagKey)
 	case errors.As(err, &invalid):
 		httpx.BadRequest(w, invalid.Error())

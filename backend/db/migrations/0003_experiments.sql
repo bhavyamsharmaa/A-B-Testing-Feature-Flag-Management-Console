@@ -9,6 +9,8 @@
 -- RLS is enabled with no policies, as in 0001/0002: the Go backend connects
 -- as the table owner; Supabase's REST roles get nothing.
 
+BEGIN;
+
 CREATE TYPE experiment_status AS ENUM ('draft', 'running', 'stopped');
 CREATE TYPE metric_type       AS ENUM ('conversion', 'value');
 
@@ -85,6 +87,8 @@ CREATE INDEX idx_events_time    ON events (experiment_id, created_at);
 ALTER TABLE experiments        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE experiment_metrics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events             ENABLE ROW LEVEL SECURITY;
+
+COMMIT;
 
 -- ============================================================
 -- ROLLBACK (not run automatically; execute by hand to undo 0003)

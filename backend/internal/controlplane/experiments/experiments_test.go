@@ -2,8 +2,11 @@ package experiments
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func validRequest() createRequest {
@@ -163,6 +166,25 @@ func TestCheckVariationCount(t *testing.T) {
 	for _, n := range []int{2, 20} {
 		if err := checkVariationCount("f", n); err != nil {
 			t.Errorf("n=%d rejected: %v", n, err)
+		}
+	}
+}
+
+func TestIsFlagDeletedViolation(t *testing.T) {
+	pgErr := func(code, constraint string) error {
+		return fmt.Errorf("insert: %w", &pgconn.PgError{Code: code, ConstraintName: constraint})
+	}
+	if !isFlagDeletedViolation(pgErr("23503", "experiments_flag_id_fkey")) {
+		t.Error("flag_id foreign-key violation not recognised")
+	}
+	for name, err := range map[string]error{
+		"other foreign key": pgErr("23503", "experiments_environment_id_fkey"),
+		"unique violation":  pgErr("23505", "experiments_flag_id_fkey"),
+		"plain error":       fmt.Errorf("boom"),
+		"nil":               nil,
+	} {
+		if isFlagDeletedViolation(err) {
+			t.Errorf("%s: wrongly recognised", name)
 		}
 	}
 }
