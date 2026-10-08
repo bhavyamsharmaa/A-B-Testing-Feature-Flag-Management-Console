@@ -9,7 +9,7 @@ info:
     /frontend are both expected to conform to it.
 
     Control-plane routes take a Supabase Auth access token and check the
-    caller's role in {env} (viewer < editor < approver < admin). Every non-2xx
+    caller's role in {envId} (viewer < editor < approver < admin). Every non-2xx
     JSON response has the Error shape.
 servers:
   - url: https://TODO-your-render-service.onrender.com
@@ -53,15 +53,19 @@ paths:
               schema: { $ref: "#/components/schemas/Me" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
-  /environments/{env}/members:
+  /environments/{envId}/members:
     parameters: [{ $ref: "#/components/parameters/EnvPath" }]
     post:
       tags: [control-plane]
       summary: Grant or change a user's role in this environment (admin)
       description: >-
         The user must already have signed up through Supabase Auth. Identify
-        them by exactly one of userId or email. Demoting the environment's
-        last admin is refused with 409 LAST_ADMIN.
+        them by exactly one of userId or email. A user belongs to exactly one
+        workspace: the target must already be in the caller's workspace or not
+        have one yet. A user in a different workspace gets the same 404
+        USER_NOT_FOUND as an unknown one, so tenants can't discover each
+        other. Demoting the environment's last admin is refused with 409
+        LAST_ADMIN.
       security: [{ supabaseJWT: [] }]
       requestBody:
         required: true
@@ -80,7 +84,7 @@ paths:
         "404": { description: "USER_NOT_FOUND or ENVIRONMENT_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "409": { description: LAST_ADMIN, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
-  /environments/{env}/members/{userId}:
+  /environments/{envId}/members/{userId}:
     parameters:
       - $ref: "#/components/parameters/EnvPath"
       - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -95,7 +99,7 @@ paths:
         "404": { description: MEMBER_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "409": { description: LAST_ADMIN, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
-  /environments/{env}/flags:
+  /environments/{envId}/flags:
     parameters: [{ $ref: "#/components/parameters/EnvPath" }]
     get:
       tags: [control-plane]
@@ -130,16 +134,16 @@ paths:
             schema: { $ref: "#/components/schemas/FlagCreateRequest" }
       responses:
         "201":
-          description: Created; returned with its config in {env}
+          description: Created; returned with its config in {envId}
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Flag" }
         "400": { description: "INVALID_REQUEST, or TYPE_MISMATCH when a variation value doesn't match variationType", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { description: FLAG_KEY_EXISTS, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: "FLAG_KEY_EXISTS (keys are unique per workspace), or QUOTA_EXCEEDED (at most 50 flags per workspace)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
-  /environments/{env}/flags/{key}:
+  /environments/{envId}/flags/{key}:
     parameters:
       - $ref: "#/components/parameters/EnvPath"
       - $ref: "#/components/parameters/FlagKeyPath"
@@ -186,7 +190,7 @@ paths:
       description: >-
         A flag's definition is shared across environments, so this removes it
         everywhere and therefore requires admin in every environment, not
-        just {env}. Refused with 409 IN_USE while the flag is enabled with
+        just {envId}. Refused with 409 IN_USE while the flag is enabled with
         targeting rules anywhere, unless force=true. Refused with 409
         HAS_RUNNING_EXPERIMENT while any environment has a running experiment
         on the flag, even with force=true; stop the experiment first.
@@ -200,7 +204,7 @@ paths:
         "404": { $ref: "#/components/responses/FlagNotFound" }
         "409": { description: "IN_USE, or HAS_RUNNING_EXPERIMENT (not bypassed by force)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
-  /environments/{env}/flags/{key}/kill:
+  /environments/{envId}/flags/{key}/kill:
     parameters:
       - $ref: "#/components/parameters/EnvPath"
       - $ref: "#/components/parameters/FlagKeyPath"
@@ -222,7 +226,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/FlagNotFound" }
 
-  /environments/{env}/audit-logs:
+  /environments/{envId}/audit-logs:
     parameters: [{ $ref: "#/components/parameters/EnvPath" }]
     get:
       tags: [control-plane]
@@ -231,7 +235,7 @@ paths:
         Newest first (id descending), keyset-paginated: pass the previous
         page's nextCursor as `before` to get the next page. Read-only.
 
-        Returns entries recorded against {env}, plus entries that belong to
+        Returns entries recorded against {envId}, plus entries that belong to
         no single environment, marked `scope: global`. Today that is
         flag.create, because a flag is created in every environment at once,
         so those entries appear in every environment's log.
@@ -279,9 +283,9 @@ paths:
   # --- Experiments -------------------------------------------------------
   # Planned, not yet paths: POST /track (SDK-key authenticated event
   # ingestion, including the reserved "$exposure" event) and
-  # GET /environments/{env}/experiments/{key}/results.
+  # GET /environments/{envId}/experiments/{key}/results.
 
-  /environments/{env}/experiments:
+  /environments/{envId}/experiments:
     parameters: [{ $ref: "#/components/parameters/EnvPath" }]
     get:
       tags: [control-plane]
@@ -311,7 +315,7 @@ paths:
       tags: [control-plane]
       summary: Create a draft experiment (editor+)
       description: >-
-        Creates a draft on one flag in {env}. It does not affect evaluation
+        Creates a draft on one flag in {envId}. It does not affect evaluation
         until started. The flag must have at least 2 variations. Metric
         eventName values starting with "$" are reserved and rejected.
       security: [{ supabaseJWT: [] }]
@@ -332,7 +336,7 @@ paths:
         "404": { $ref: "#/components/responses/FlagNotFound" }
         "409": { description: EXPERIMENT_KEY_EXISTS, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
-  /environments/{env}/experiments/{key}:
+  /environments/{envId}/experiments/{key}:
     parameters:
       - $ref: "#/components/parameters/EnvPath"
       - $ref: "#/components/parameters/ExperimentKeyPath"
@@ -350,7 +354,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/ExperimentNotFound" }
 
-  /environments/{env}/experiments/{key}/start:
+  /environments/{envId}/experiments/{key}/start:
     parameters:
       - $ref: "#/components/parameters/EnvPath"
       - $ref: "#/components/parameters/ExperimentKeyPath"
@@ -358,7 +362,7 @@ paths:
       tags: [control-plane]
       summary: Start a draft experiment (editor+)
       description: >-
-        Requires the flag to be enabled in {env}. Records the flag's current
+        Requires the flag to be enabled in {envId}. Records the flag's current
         targeting, rollout and fallthrough so later edits can be reported as
         configChangedSinceStart. Editing the flag while the experiment runs is
         not blocked.
@@ -372,9 +376,9 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/ExperimentNotFound" }
-        "409": { description: "INVALID_TRANSITION (not a draft), FLAG_DISABLED, or EXPERIMENT_ALREADY_RUNNING (another experiment is running on this flag in {env})", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: "INVALID_TRANSITION (not a draft), FLAG_DISABLED, or EXPERIMENT_ALREADY_RUNNING (another experiment is running on this flag in {envId})", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
-  /environments/{env}/experiments/{key}/stop:
+  /environments/{envId}/experiments/{key}/stop:
     parameters:
       - $ref: "#/components/parameters/EnvPath"
       - $ref: "#/components/parameters/ExperimentKeyPath"
@@ -475,10 +479,16 @@ components:
 
   parameters:
     EnvPath:
-      name: env
+      name: envId
       in: path
       required: true
-      schema: { type: string, example: production }
+      description: >-
+        The environment's UUID (from GET /me). For now an environment KEY
+        such as "dev" is also accepted and means "this key in the caller's own
+        workspace"; that shim is removed once the console uses UUIDs. An
+        environment the caller has no role in, or that belongs to another
+        workspace, answers 404 ENVIRONMENT_NOT_FOUND, never 403.
+      schema: { type: string, example: 3f2b6c1e-0000-4000-8000-000000000001 }
     FlagKeyPath:
       name: key
       in: path
@@ -501,7 +511,7 @@ components:
       description: UNAUTHORIZED — missing, invalid, or expired credentials
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Forbidden:
-      description: FORBIDDEN — the caller's role in {env} is too low
+      description: FORBIDDEN — the caller's role in {envId} is too low
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     FlagNotFound:
       description: FLAG_NOT_FOUND or ENVIRONMENT_NOT_FOUND
@@ -521,11 +531,34 @@ components:
 
     Me:
       type: object
-      required: [id, email, roles]
+      required: [id, email, workspace, environments, roles]
+      description: >-
+        The first authenticated call for a user creates their workspace with
+        dev, staging and production environments and an admin role in each.
+        A user belongs to exactly one workspace.
       properties:
         id: { type: string, format: uuid }
         email: { type: string }
+        workspace:
+          type: object
+          required: [id, name]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+        environments:
+          type: array
+          items:
+            type: object
+            required: [id, key, name, isProduction, role]
+            properties:
+              id: { type: string, format: uuid }
+              key: { type: string, pattern: '^[a-z][a-z0-9_-]{0,31}$', description: Never UUID-shaped. }
+              name: { type: string }
+              isProduction: { type: boolean }
+              role: { $ref: "#/components/schemas/Role" }
         roles:
+          deprecated: true
+          description: Same data as environments, keyed by environment key. Kept for the deployed console; removed in stage 2.
           type: array
           items:
             type: object

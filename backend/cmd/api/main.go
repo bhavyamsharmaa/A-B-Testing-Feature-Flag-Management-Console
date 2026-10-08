@@ -19,6 +19,7 @@ import (
 	"helios/backend/internal/controlplane/experiments"
 	"helios/backend/internal/controlplane/flags"
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/controlplane/workspaces"
 	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/dataplane/stream"
 	"helios/backend/internal/platform/apikey"
@@ -75,13 +76,15 @@ func main() {
 	authn := verifier.Middleware
 	guard := rbac.NewGuard(pool)
 	members := rbac.NewMemberHandlers(pool)
+	workspaceSvc := workspaces.NewService(pool)
 	fl := flags.NewHandlers(pool, publisher)
 	al := auditlog.NewHandlers(pool)
 	ex := experiments.NewHandlers(pool)
 	sdkKeys := apikey.NewVerifier(pool, sdkKeyCacheTTL)
 
-	// protected wraps an /environments/{env}/... handler: verify the JWT,
-	// then check the caller's role in {env} against req.
+	// protected wraps an /environments/{envId}/... handler: verify the JWT,
+	// resolve {envId} through the caller's own role rows (404 when it isn't
+	// theirs), then check the caller's role against req.
 	protected := func(req rbac.Requirement, h http.HandlerFunc) http.Handler {
 		return authn(guard.Require(req, h))
 	}
@@ -89,29 +92,30 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Handler(pool))
 
-	mux.Handle("GET /me", authn(http.HandlerFunc(members.Me)))
-	mux.Handle("POST /environments/{env}/members", protected(rbac.Min(rbac.Admin), members.AddMember))
-	mux.Handle("DELETE /environments/{env}/members/{userId}", protected(rbac.Min(rbac.Admin), members.RemoveMember))
+	// First call provisions the caller's workspace.
+	mux.Handle("GET /me", authn(http.HandlerFunc(workspaceSvc.Me)))
+	mux.Handle("POST /environments/{envId}/members", protected(rbac.Min(rbac.Admin), members.AddMember))
+	mux.Handle("DELETE /environments/{envId}/members/{userId}", protected(rbac.Min(rbac.Admin), members.RemoveMember))
 
-	mux.Handle("GET /environments/{env}/flags", protected(rbac.Min(rbac.Viewer), fl.List))
-	mux.Handle("GET /environments/{env}/flags/{key}", protected(rbac.Min(rbac.Viewer), fl.Get))
-	mux.Handle("POST /environments/{env}/flags", protected(rbac.Min(rbac.Editor), fl.Create))
-	mux.Handle("PATCH /environments/{env}/flags/{key}", protected(rbac.FlagWrite, fl.Update))
-	mux.Handle("DELETE /environments/{env}/flags/{key}", protected(rbac.Min(rbac.Admin), fl.Delete))
+	mux.Handle("GET /environments/{envId}/flags", protected(rbac.Min(rbac.Viewer), fl.List))
+	mux.Handle("GET /environments/{envId}/flags/{key}", protected(rbac.Min(rbac.Viewer), fl.Get))
+	mux.Handle("POST /environments/{envId}/flags", protected(rbac.Min(rbac.Editor), fl.Create))
+	mux.Handle("PATCH /environments/{envId}/flags/{key}", protected(rbac.FlagWrite, fl.Update))
+	mux.Handle("DELETE /environments/{envId}/flags/{key}", protected(rbac.Min(rbac.Admin), fl.Delete))
 	// Editor+ in every environment, production included: an unnecessary
 	// kill costs a disabled feature, a blocked one during an incident costs
 	// prolonged user harm (PRD US-06).
-	mux.Handle("POST /environments/{env}/flags/{key}/kill", protected(rbac.Min(rbac.Editor), fl.Kill))
+	mux.Handle("POST /environments/{envId}/flags/{key}/kill", protected(rbac.Min(rbac.Editor), fl.Kill))
 
-	// Same requirement as listing flags: any role in {env}.
-	mux.Handle("GET /environments/{env}/audit-logs", protected(rbac.Min(rbac.Viewer), al.List))
+	// Same requirement as listing flags: any role in {envId}.
+	mux.Handle("GET /environments/{envId}/audit-logs", protected(rbac.Min(rbac.Viewer), al.List))
 
 	// Editors create and start; stopping needs an approver; any role reads.
-	mux.Handle("GET /environments/{env}/experiments", protected(rbac.Min(rbac.Viewer), ex.List))
-	mux.Handle("GET /environments/{env}/experiments/{key}", protected(rbac.Min(rbac.Viewer), ex.Get))
-	mux.Handle("POST /environments/{env}/experiments", protected(rbac.Min(rbac.Editor), ex.Create))
-	mux.Handle("POST /environments/{env}/experiments/{key}/start", protected(rbac.Min(rbac.Editor), ex.Start))
-	mux.Handle("POST /environments/{env}/experiments/{key}/stop", protected(rbac.Min(rbac.Approver), ex.Stop))
+	mux.Handle("GET /environments/{envId}/experiments", protected(rbac.Min(rbac.Viewer), ex.List))
+	mux.Handle("GET /environments/{envId}/experiments/{key}", protected(rbac.Min(rbac.Viewer), ex.Get))
+	mux.Handle("POST /environments/{envId}/experiments", protected(rbac.Min(rbac.Editor), ex.Create))
+	mux.Handle("POST /environments/{envId}/experiments/{key}/start", protected(rbac.Min(rbac.Editor), ex.Start))
+	mux.Handle("POST /environments/{envId}/experiments/{key}/stop", protected(rbac.Min(rbac.Approver), ex.Stop))
 
 	mux.Handle("POST /evaluate", sdkKeys.Middleware(evaluation.Handler(pool)))
 	mux.Handle("GET /sdk/stream", sdkKeys.Middleware(stream.Handler(subscriber)))

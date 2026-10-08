@@ -53,6 +53,27 @@ cd frontend && npm run dev
 SQL files in `backend/db/migrations/` are applied automatically the first time the
 Postgres container initializes its volume (`docker compose down -v` to reset).
 
+## Workspaces (multi-tenancy)
+
+Every user gets a private workspace (environments, flags, experiments, audit log)
+the first time they call `GET /me`. No workspace can read or change another's data:
+control-plane routes take the environment **UUID** (`/environments/{envId}/...`,
+UUIDs come from `/me`) and answer 404 for any environment the caller holds no role
+in. For now a key such as `dev` is also accepted and resolves only inside the
+caller's own workspace; that shim goes away once the console uses UUIDs.
+
+- **One workspace per user, for now.** A user cannot belong to two workspaces, so
+  members can only be added if they are not in another workspace (otherwise
+  `404 USER_NOT_FOUND`, the same as an unknown user). Lifting this means changing
+  the primary key of `workspace_members`.
+- Limits per workspace: 3 environments, 50 flags, 10 active SDK keys
+  (`409 QUOTA_EXCEEDED`). SDK keys are minted with
+  `go run ./cmd/mkkey -workspace <id> -env <key>`.
+- **Deploying it:** apply `0004_workspaces.sql` → `db/verify_0004.sql` → deploy the
+  backend → apply `0005_drop_workspace_defaults.sql` **immediately** →
+  `db/verify_0005.sql`. Rehearse on a second project first (`backend/db/rehearsal.md`)
+  and take a backup (`backend/scripts/backup_db.sh`).
+
 ## Where the code lives
 
 - [`backend/`](backend/) — Go module. `cmd/api` entrypoint; `internal/controlplane` (flags, segments, experiments, RBAC, audit) and `internal/dataplane` (evaluation engine).

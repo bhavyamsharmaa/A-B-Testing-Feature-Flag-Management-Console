@@ -36,3 +36,7 @@ yarn-error.log*
 # ─── Go workspace (only if you add one locally) ──────────────
 go.work
 go.work.sum
+
+# ─── Database backups (backend/scripts/backup_db.sh) ─────────
+/backend/backups/
+*.dump

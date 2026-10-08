@@ -87,9 +87,9 @@ func TestFilters(t *testing.T) {
 func TestBuildListQuery(t *testing.T) {
 	hostile := "x' OR '1'='1"
 	p := listParams{Limit: 50, Before: 99, Action: "flag.kill", ResourceType: "flag", ResourceID: hostile, Severity: "critical"}
-	sql, args := buildListQuery("11111111-1111-1111-1111-111111111111", p)
+	sql, args := buildListQuery("22222222-2222-2222-2222-222222222222", "11111111-1111-1111-1111-111111111111", p)
 
-	wantArgs := []any{"11111111-1111-1111-1111-111111111111", int64(99), "flag.kill", "flag", hostile, "critical", 51}
+	wantArgs := []any{"22222222-2222-2222-2222-222222222222", "11111111-1111-1111-1111-111111111111", int64(99), "flag.kill", "flag", hostile, "critical", 51}
 	if len(args) != len(wantArgs) {
 		t.Fatalf("args = %v, want %v", args, wantArgs)
 	}
@@ -99,8 +99,8 @@ func TestBuildListQuery(t *testing.T) {
 		}
 	}
 	for _, frag := range []string{
-		"environment_id = $1::uuid", "environment_id IS NULL", "id < $2", "action = $3", "resource_type = $4",
-		"resource_id = $5", "severity = $6", "ORDER BY id DESC", "LIMIT $7",
+		"workspace_id = $1::uuid", "environment_id = $2::uuid", "environment_id IS NULL", "id < $3", "action = $4",
+		"resource_type = $5", "resource_id = $6", "severity = $7", "ORDER BY id DESC", "LIMIT $8",
 	} {
 		if !strings.Contains(sql, frag) {
 			t.Errorf("SQL is missing %q:\n%s", frag, sql)
@@ -118,9 +118,9 @@ func TestBuildListQuery(t *testing.T) {
 }
 
 func TestBuildListQueryMinimal(t *testing.T) {
-	sql, args := buildListQuery("env-id", listParams{Limit: 10})
-	if len(args) != 2 || args[1] != 11 {
-		t.Fatalf("args = %v, want [env-id 11]", args)
+	sql, args := buildListQuery("ws-id", "env-id", listParams{Limit: 10})
+	if len(args) != 3 || args[0] != "ws-id" || args[1] != "env-id" || args[2] != 11 {
+		t.Fatalf("args = %v, want [ws-id env-id 11]", args)
 	}
 	if strings.Contains(sql, "id <") || strings.Contains(sql, "action =") {
 		t.Errorf("unfiltered query should only scope by environment:\n%s", sql)
@@ -129,7 +129,18 @@ func TestBuildListQueryMinimal(t *testing.T) {
 	if !strings.Contains(sql, "OR environment_id IS NULL") || !strings.Contains(sql, "'global'") {
 		t.Errorf("query should include and mark environment-less entries:\n%s", sql)
 	}
-	if !strings.Contains(sql, "LIMIT $2") {
-		t.Errorf("limit placeholder should be $2:\n%s", sql)
+	if !strings.Contains(sql, "LIMIT $3") {
+		t.Errorf("limit placeholder should be $3:\n%s", sql)
+	}
+}
+
+// The environment-less rows are only visible inside the caller's workspace:
+// the workspace condition must be a top-level AND, never inside the OR with
+// "environment_id IS NULL", or one tenant would see every tenant's rows.
+func TestBuildListQueryScopesNullEnvironmentRowsToWorkspace(t *testing.T) {
+	sql, _ := buildListQuery("ws-id", "env-id", listParams{Limit: 10})
+	want := "workspace_id = $1::uuid AND (environment_id = $2::uuid OR environment_id IS NULL)"
+	if !strings.Contains(sql, want) {
+		t.Errorf("query must contain %q:\n%s", want, sql)
 	}
 }

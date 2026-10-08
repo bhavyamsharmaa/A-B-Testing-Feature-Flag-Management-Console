@@ -196,7 +196,7 @@ func writeLifecycleError(w http.ResponseWriter, r *http.Request, key string, err
 	}
 }
 
-// Create handles POST /environments/{env}/experiments. The experiment starts
+// Create handles POST /environments/{envId}/experiments. The experiment starts
 // as a draft and has no effect on evaluation.
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -216,7 +216,8 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		var flagID string
 		var variationCount int
 		if err := tx.QueryRow(ctx,
-			`SELECT id::text, jsonb_array_length(variations) FROM flags WHERE key = $1`, req.FlagKey,
+			`SELECT id::text, jsonb_array_length(variations) FROM flags WHERE key = $1 AND workspace_id = $2::uuid`,
+			req.FlagKey, access.Env.WorkspaceID,
 		).Scan(&flagID, &variationCount); errors.Is(err, pgx.ErrNoRows) {
 			return errFlagNotFound{}
 		} else if err != nil {
@@ -228,10 +229,10 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 
 		var id string
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO experiments (environment_id, flag_id, key, name, hypothesis, created_by)
-			VALUES ($1::uuid, $2::uuid, $3, $4, NULLIF($5, ''), $6::uuid)
+			INSERT INTO experiments (workspace_id, environment_id, flag_id, key, name, hypothesis, created_by)
+			VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, NULLIF($6, ''), $7::uuid)
 			RETURNING id::text`,
-			access.Env.ID, flagID, req.Key, req.Name, req.Hypothesis, access.User.ID,
+			access.Env.WorkspaceID, access.Env.ID, flagID, req.Key, req.Name, req.Hypothesis, access.User.ID,
 		).Scan(&id); err != nil {
 			return err
 		}
@@ -246,6 +247,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := audit.Write(ctx, tx, audit.Entry{
+			WorkspaceID:   access.Env.WorkspaceID,
 			ActorID:       access.User.ID,
 			ActorEmail:    access.User.Email,
 			EnvironmentID: access.Env.ID,
@@ -276,7 +278,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// List handles GET /environments/{env}/experiments, newest first, capped at
+// List handles GET /environments/{envId}/experiments, newest first, capped at
 // 200 rows (no pagination yet). Optional filters: status, flagKey.
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -326,7 +328,7 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"experiments": views})
 }
 
-// Get handles GET /environments/{env}/experiments/{key}.
+// Get handles GET /environments/{envId}/experiments/{key}.
 func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
 	access := rbac.AccessFrom(r.Context())
 	key := r.PathValue("key")
@@ -346,7 +348,7 @@ type statusChange struct {
 	Status Status `json:"status"`
 }
 
-// Start handles POST /environments/{env}/experiments/{key}/start.
+// Start handles POST /environments/{envId}/experiments/{key}/start.
 //
 // Lock order matters: the flag row is locked FOR SHARE first, which
 // conflicts with flags.Delete's FOR UPDATE, so a flag can't be deleted
@@ -409,6 +411,7 @@ func (h *Handlers) Start(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if err := audit.Write(ctx, tx, audit.Entry{
+			WorkspaceID:   access.Env.WorkspaceID,
 			ActorID:       access.User.ID,
 			ActorEmail:    access.User.Email,
 			EnvironmentID: access.Env.ID,
@@ -430,7 +433,7 @@ func (h *Handlers) Start(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, view)
 }
 
-// Stop handles POST /environments/{env}/experiments/{key}/stop. Stopped is
+// Stop handles POST /environments/{envId}/experiments/{key}/stop. Stopped is
 // terminal.
 func (h *Handlers) Stop(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -475,6 +478,7 @@ func (h *Handlers) Stop(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if err := audit.Write(ctx, tx, audit.Entry{
+			WorkspaceID:   access.Env.WorkspaceID,
 			ActorID:       access.User.ID,
 			ActorEmail:    access.User.Email,
 			EnvironmentID: access.Env.ID,

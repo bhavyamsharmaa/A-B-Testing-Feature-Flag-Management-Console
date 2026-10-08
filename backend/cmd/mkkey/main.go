@@ -1,7 +1,11 @@
 // Command mkkey mints an API key for an environment and prints it once.
 // Only its Argon2id hash is stored, so the printed key can't be recovered.
 //
-//	DATABASE_URL=... go run ./cmd/mkkey -env production
+//	DATABASE_URL=... go run ./cmd/mkkey -workspace <workspace-uuid> -env production
+//
+// Environment keys are only unique within a workspace, so -workspace is
+// required (GET /me shows it). An SDK key counts against the workspace's
+// limit of active SDK keys.
 package main
 
 import (
@@ -13,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"helios/backend/internal/controlplane/audit"
+	"helios/backend/internal/controlplane/quota"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/platform/apikey"
 	"helios/backend/internal/platform/config"
@@ -20,11 +25,12 @@ import (
 )
 
 func main() {
+	workspaceID := flag.String("workspace", "", "workspace UUID that owns the environment")
 	envKey := flag.String("env", "", "environment key, e.g. dev, staging, production")
 	kind := flag.String("kind", "sdk", "key kind: sdk or server")
 	flag.Parse()
-	if *envKey == "" {
-		log.Fatal("-env is required")
+	if *envKey == "" || !rbac.IsUUID(*workspaceID) {
+		log.Fatal("-env and -workspace (a UUID) are required")
 	}
 
 	ctx := context.Background()
@@ -34,7 +40,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	env, err := rbac.LoadEnvironment(ctx, pool, *envKey)
+	env, err := rbac.LoadEnvironmentInWorkspace(ctx, pool, *workspaceID, *envKey)
 	if err != nil {
 		log.Fatalf("environment %q: %v", *envKey, err)
 	}
@@ -44,6 +50,11 @@ func main() {
 	}
 
 	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if apikey.Kind(*kind) == apikey.KindSDK {
+			if err := quota.CheckSDKKey(ctx, tx, env.WorkspaceID); err != nil {
+				return err
+			}
+		}
 		var id string
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO api_keys (environment_id, kind, key_prefix, key_hash)
@@ -54,6 +65,7 @@ func main() {
 			return err
 		}
 		return audit.Write(ctx, tx, audit.Entry{
+			WorkspaceID:   env.WorkspaceID,
 			ActorEmail:    "cli:mkkey",
 			EnvironmentID: env.ID,
 			Action:        "api_key.create",

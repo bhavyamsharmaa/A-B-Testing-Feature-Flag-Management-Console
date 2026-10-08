@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"helios/backend/internal/controlplane/audit"
-	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/httpx"
 )
 
@@ -21,46 +20,6 @@ type MemberHandlers struct {
 
 func NewMemberHandlers(pool *pgxpool.Pool) *MemberHandlers {
 	return &MemberHandlers{pool: pool}
-}
-
-type environmentRole struct {
-	Environment string `json:"environment"`
-	Role        Role   `json:"role"`
-}
-
-type meResponse struct {
-	ID    string            `json:"id"`
-	Email string            `json:"email"`
-	Roles []environmentRole `json:"roles"`
-}
-
-// Me handles GET /me: the caller plus their role in each environment they
-// belong to. Environments they have no role in are omitted.
-func (h *MemberHandlers) Me(w http.ResponseWriter, r *http.Request) {
-	user, _ := auth.FromContext(r.Context())
-	rows, err := h.pool.Query(r.Context(), `
-		SELECT e.key, r.role::text
-		FROM user_environment_roles r
-		JOIN environments e ON e.id = r.environment_id
-		WHERE r.user_id = $1::uuid
-		ORDER BY e.key`, user.ID)
-	if err != nil {
-		httpx.WriteInternal(w, r, err)
-		return
-	}
-	roles, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (environmentRole, error) {
-		var er environmentRole
-		err := row.Scan(&er.Environment, &er.Role)
-		return er, err
-	})
-	if err != nil {
-		httpx.WriteInternal(w, r, err)
-		return
-	}
-	if roles == nil {
-		roles = []environmentRole{}
-	}
-	httpx.WriteJSON(w, http.StatusOK, meResponse{ID: user.ID, Email: user.Email, Roles: roles})
 }
 
 type addMemberRequest struct {
@@ -76,11 +35,15 @@ type memberResponse struct {
 	Role        Role   `json:"role"`
 }
 
-var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-
-// AddMember handles POST /environments/{env}/members. It grants a role, or
+// AddMember handles POST /environments/{envId}/members. It grants a role, or
 // changes an existing member's role. The user must already have signed up
 // through Supabase Auth; identify them by userId or email.
+//
+// A user belongs to exactly one workspace. The target may be added if they
+// are already in the caller's workspace or have no workspace yet (they have
+// never opened the console). A user in ANOTHER workspace gets the same
+// 404 USER_NOT_FOUND as an unknown one, so a tenant can't learn who else
+// uses Helios.
 func (h *MemberHandlers) AddMember(w http.ResponseWriter, r *http.Request) {
 	access := AccessFrom(r.Context())
 	var req addMemberRequest
@@ -109,8 +72,7 @@ func (h *MemberHandlers) AddMember(w http.ResponseWriter, r *http.Request) {
 		req.UserID, req.Email,
 	).Scan(&userID, &email)
 	if errors.Is(err, pgx.ErrNoRows) {
-		httpx.WriteError(w, http.StatusNotFound, "USER_NOT_FOUND",
-			"no Supabase user with that id or email; they must sign up first")
+		writeUserNotFound(w)
 		return
 	}
 	if err != nil {
@@ -122,6 +84,22 @@ func (h *MemberHandlers) AddMember(w http.ResponseWriter, r *http.Request) {
 		admins, err := lockAdmins(r.Context(), tx, access.Env.ID)
 		if err != nil {
 			return err
+		}
+		var memberOf *string
+		err = tx.QueryRow(r.Context(), `SELECT workspace_id::text FROM workspace_members WHERE user_id = $1::uuid`, userID).Scan(&memberOf)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		switch {
+		case memberOf != nil && *memberOf != access.Env.WorkspaceID:
+			return errUserElsewhere
+		case memberOf == nil:
+			if _, err := tx.Exec(r.Context(), `
+				INSERT INTO workspace_members (user_id, workspace_id) VALUES ($1::uuid, $2::uuid)`,
+				userID, access.Env.WorkspaceID,
+			); err != nil {
+				return err
+			}
 		}
 		var previous *Role
 		err = tx.QueryRow(r.Context(), `
@@ -137,11 +115,11 @@ func (h *MemberHandlers) AddMember(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if _, err := tx.Exec(r.Context(), `
-			INSERT INTO user_environment_roles (user_id, environment_id, role)
-			VALUES ($1::uuid, $2::uuid, $3::role_type)
+			INSERT INTO user_environment_roles (user_id, environment_id, workspace_id, role)
+			VALUES ($1::uuid, $2::uuid, $3::uuid, $4::role_type)
 			ON CONFLICT (user_id, environment_id)
 			DO UPDATE SET role = EXCLUDED.role, updated_at = now()`,
-			userID, access.Env.ID, string(role),
+			userID, access.Env.ID, access.Env.WorkspaceID, string(role),
 		); err != nil {
 			return err
 		}
@@ -151,6 +129,7 @@ func (h *MemberHandlers) AddMember(w http.ResponseWriter, r *http.Request) {
 			before = map[string]any{"role": *previous}
 		}
 		return audit.Write(r.Context(), tx, audit.Entry{
+			WorkspaceID:   access.Env.WorkspaceID,
 			ActorID:       access.User.ID,
 			ActorEmail:    access.User.Email,
 			EnvironmentID: access.Env.ID,
@@ -165,6 +144,12 @@ func (h *MemberHandlers) AddMember(w http.ResponseWriter, r *http.Request) {
 		writeLastAdmin(w, access.Env.Key)
 		return
 	}
+	// The user signed in and got their own workspace between the checks above
+	// and the insert: the primary key on workspace_members.user_id fired.
+	if errors.Is(err, errUserElsewhere) || isUniqueViolation(err, "workspace_members_pkey") {
+		writeUserNotFound(w)
+		return
+	}
 	if err != nil {
 		httpx.WriteInternal(w, r, err)
 		return
@@ -174,7 +159,9 @@ func (h *MemberHandlers) AddMember(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// RemoveMember handles DELETE /environments/{env}/members/{userId}.
+// RemoveMember handles DELETE /environments/{envId}/members/{userId}. When it
+// removes the user's last role in the workspace, their membership goes too,
+// so they are not stranded without a workspace of their own.
 func (h *MemberHandlers) RemoveMember(w http.ResponseWriter, r *http.Request) {
 	access := AccessFrom(r.Context())
 	userID := strings.ToLower(r.PathValue("userId"))
@@ -208,7 +195,18 @@ func (h *MemberHandlers) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(r.Context(), `
+			DELETE FROM workspace_members m
+			WHERE m.user_id = $1::uuid AND m.workspace_id = $2::uuid
+			  AND NOT EXISTS (
+			    SELECT 1 FROM user_environment_roles r
+			    WHERE r.user_id = m.user_id AND r.workspace_id = m.workspace_id)`,
+			userID, access.Env.WorkspaceID,
+		); err != nil {
+			return err
+		}
 		return audit.Write(r.Context(), tx, audit.Entry{
+			WorkspaceID:   access.Env.WorkspaceID,
 			ActorID:       access.User.ID,
 			ActorEmail:    access.User.Email,
 			EnvironmentID: access.Env.ID,
@@ -231,6 +229,19 @@ func (h *MemberHandlers) RemoveMember(w http.ResponseWriter, r *http.Request) {
 }
 
 var errLastAdmin = errors.New("last admin")
+
+// errUserElsewhere: the target already belongs to a different workspace.
+var errUserElsewhere = errors.New("user belongs to another workspace")
+
+func writeUserNotFound(w http.ResponseWriter) {
+	httpx.WriteError(w, http.StatusNotFound, "USER_NOT_FOUND",
+		"no user with that id or email is available to add; they must sign up first")
+}
+
+func isUniqueViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
+}
 
 func writeLastAdmin(w http.ResponseWriter, envKey string) {
 	httpx.WriteError(w, http.StatusConflict, "LAST_ADMIN",
