@@ -25,16 +25,26 @@ const (
 	MaxEnvironments  = 3
 	MaxFlags         = 50
 	MaxActiveSDKKeys = 10
+	// MaxMembers counts members plus open (unexpired, unrevoked) invites.
+	MaxMembers = 20
+	// MaxOwnedWorkspaces is per user, not per workspace.
+	MaxOwnedWorkspaces = 5
 )
 
-// Exceeded says which limit a request would have broken.
+// Exceeded says which limit a request would have broken. Per is what the
+// limit is counted against ("workspace" unless stated).
 type Exceeded struct {
 	Resource string
 	Limit    int
+	Per      string
 }
 
 func (e Exceeded) Error() string {
-	return fmt.Sprintf("workspace limit reached: at most %d %s per workspace", e.Limit, e.Resource)
+	per := e.Per
+	if per == "" {
+		per = "workspace"
+	}
+	return fmt.Sprintf("limit reached: at most %d %s per %s", e.Limit, e.Resource, per)
 }
 
 // check reports whether one more of something fits: have is the current count.
@@ -85,6 +95,38 @@ func CheckSDKKey(ctx context.Context, tx pgx.Tx, workspaceID string) error {
 		return err
 	}
 	return check("active SDK keys", have, MaxActiveSDKKeys)
+}
+
+// CheckMember returns Exceeded when members plus open invites already reach
+// MaxMembers. Call it first in the transaction that adds an invite.
+func CheckMember(ctx context.Context, tx pgx.Tx, workspaceID string) error {
+	if err := lockWorkspace(ctx, tx, workspaceID); err != nil {
+		return err
+	}
+	var have int
+	if err := tx.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM workspace_members WHERE workspace_id = $1::uuid)
+		     + (SELECT count(*) FROM workspace_invites
+		        WHERE workspace_id = $1::uuid AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now())`,
+		workspaceID).Scan(&have); err != nil {
+		return err
+	}
+	return check("members and open invites", have, MaxMembers)
+}
+
+// CheckOwnedWorkspaces returns Exceeded when the user already owns
+// MaxOwnedWorkspaces workspaces. The caller must serialise concurrent
+// creates for the same user (the workspaces package takes a per-user
+// advisory lock).
+func CheckOwnedWorkspaces(ctx context.Context, tx pgx.Tx, userID string) error {
+	var have int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM workspaces WHERE owner_id = $1::uuid`, userID).Scan(&have); err != nil {
+		return err
+	}
+	if have >= MaxOwnedWorkspaces {
+		return Exceeded{Resource: "workspaces", Limit: MaxOwnedWorkspaces, Per: "user"}
+	}
+	return nil
 }
 
 // WriteError answers 409 QUOTA_EXCEEDED when err is an Exceeded, and reports

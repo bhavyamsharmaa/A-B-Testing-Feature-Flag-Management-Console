@@ -57,10 +57,10 @@ func main() {
 		}
 		var id string
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO api_keys (environment_id, kind, key_prefix, key_hash)
-			VALUES ($1::uuid, $2::api_key_kind, $3, $4)
+			INSERT INTO api_keys (workspace_id, environment_id, kind, key_prefix, key_hash, name)
+			VALUES ($1::uuid, $2::uuid, $3::api_key_kind, $4, $5, 'cli:mkkey')
 			RETURNING id::text`,
-			env.ID, *kind, prefix, hash,
+			env.WorkspaceID, env.ID, *kind, prefix, hash,
 		).Scan(&id); err != nil {
 			return err
 		}

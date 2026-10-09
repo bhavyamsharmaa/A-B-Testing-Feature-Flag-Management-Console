@@ -41,12 +41,21 @@ func TestWriteError(t *testing.T) {
 	if !WriteError(rec, Exceeded{Resource: "flags", Limit: 50}) {
 		t.Fatal("Exceeded not handled")
 	}
-	if rec.Code != 409 || !strings.Contains(rec.Body.String(), `"code":"QUOTA_EXCEEDED"`) || !strings.Contains(rec.Body.String(), "at most 50 flags") {
+	if rec.Code != 409 || !strings.Contains(rec.Body.String(), `"code":"QUOTA_EXCEEDED"`) || !strings.Contains(rec.Body.String(), "at most 50 flags per workspace") {
 		t.Errorf("status %d body %s", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
 	if WriteError(rec, errors.New("boom")) || rec.Body.Len() != 0 {
 		t.Error("an unrelated error must not be handled")
+	}
+}
+
+func TestExceededMessageNamesWhatIsCounted(t *testing.T) {
+	if got := (Exceeded{Resource: "workspaces", Limit: 5, Per: "user"}).Error(); got != "limit reached: at most 5 workspaces per user" {
+		t.Errorf("got %q", got)
+	}
+	if got := (Exceeded{Resource: "flags", Limit: 50}).Error(); got != "limit reached: at most 50 flags per workspace" {
+		t.Errorf("got %q", got)
 	}
 }

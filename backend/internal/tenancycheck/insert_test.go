@@ -16,7 +16,8 @@ import (
 // transitional DEFAULT so the old backend keeps working while it is applied;
 // until 0005 drops it, an INSERT that forgets workspace_id would silently land
 // in the legacy workspace. This test fails the build if any INSERT in the Go
-// code omits it, so the code never relies on the default.
+// code omits it, so the code never relies on the default. (api_keys and
+// workspace_invites gained workspace_id in 0006.)
 var tenantTables = map[string]bool{
 	"environments":           true,
 	"flags":                  true,
@@ -25,6 +26,8 @@ var tenantTables = map[string]bool{
 	"user_environment_roles": true,
 	"audit_logs":             true,
 	"workspace_members":      true,
+	"workspace_invites":      true,
+	"api_keys":               true,
 }
 
 var insertRE = regexp.MustCompile(`(?is)INSERT\s+INTO\s+([a-z_][a-z0-9_]*)\s*(\(([^)]*)\))?`)
@@ -53,11 +56,12 @@ func insertsMissingWorkspace(sql string) []string {
 
 func TestCheckerFlagsMissingWorkspaceID(t *testing.T) {
 	for name, sql := range map[string]string{
-		"no workspace":     `INSERT INTO flags (key, name) VALUES ($1, $2)`,
-		"no column list":   `INSERT INTO flag_configs VALUES ($1)`,
-		"mixed case":       "insert into Audit_Logs (actor_id) values ($1)",
-		"newline":          "INSERT INTO\n  environments\n  (key, name) VALUES ($1, $2)",
-		"second statement": `INSERT INTO api_keys (kind) VALUES ($1); INSERT INTO experiments (key) VALUES ($1)`,
+		"no workspace":              `INSERT INTO flags (key, name) VALUES ($1, $2)`,
+		"no column list":            `INSERT INTO flag_configs VALUES ($1)`,
+		"mixed case":                "insert into Audit_Logs (actor_id) values ($1)",
+		"newline":                   "INSERT INTO\n  environments\n  (key, name) VALUES ($1, $2)",
+		"second statement":          `INSERT INTO experiment_metrics (name) VALUES ($1); INSERT INTO experiments (key) VALUES ($1)`,
+		"api key without workspace": `INSERT INTO api_keys (environment_id, kind) VALUES ($1, $2)`,
 	} {
 		if len(insertsMissingWorkspace(sql)) == 0 {
 			t.Errorf("%s: not detected", name)
@@ -66,7 +70,7 @@ func TestCheckerFlagsMissingWorkspaceID(t *testing.T) {
 	for name, sql := range map[string]string{
 		"has workspace":      `INSERT INTO flags (workspace_id, key) VALUES ($1, $2)`,
 		"workspace last":     `INSERT INTO flags (key, workspace_id) VALUES ($1, $2)`,
-		"not a tenant table": `INSERT INTO api_keys (environment_id, kind) VALUES ($1, $2)`,
+		"not a tenant table": `INSERT INTO experiment_metrics (experiment_id, name) VALUES ($1, $2)`,
 		"workspaces itself":  `INSERT INTO workspaces (name) VALUES ($1)`,
 		"not an insert":      `SELECT 1 FROM flags`,
 	} {

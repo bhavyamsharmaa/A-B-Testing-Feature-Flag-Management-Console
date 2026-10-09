@@ -65,11 +65,15 @@ func TestWorkspaceName(t *testing.T) {
 }
 
 func TestMeShape(t *testing.T) {
-	ws := Workspace{ID: "w1", Name: "alice's workspace", Environments: []Environment{
-		{ID: "e1", Key: "dev", Name: "Development", Role: rbac.Admin},
-		{ID: "e2", Key: "production", Name: "Production", IsProduction: true, Role: rbac.Viewer},
-	}}
-	b, err := json.Marshal(buildMe(auth.User{ID: "u1", Email: "alice@example.com"}, ws))
+	list := []Workspace{
+		{ID: "w1", Name: "alice's workspace", Slug: "alice-abc123", Role: rbac.WorkspaceOwner, Environments: []Environment{
+			{ID: "e1", Key: "dev", Name: "Development"},
+			{ID: "e2", Key: "production", Name: "Production", IsProduction: true},
+		}},
+		{ID: "w2", Name: "Acme", Slug: "acme-def456", Role: rbac.WorkspaceViewer, Environments: []Environment{}},
+	}
+	invites := []PendingInvite{{ID: "i1", WorkspaceID: "w3", WorkspaceName: "Globex", Role: rbac.WorkspaceEditor, InvitedByEmail: "bob@example.com"}}
+	b, err := json.Marshal(buildMe(auth.User{ID: "u1", Email: "alice@example.com"}, list, invites))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,29 +81,37 @@ func TestMeShape(t *testing.T) {
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["workspace"].(map[string]any)["id"] != "w1" {
-		t.Errorf("workspace missing: %s", b)
+	if got["activeWorkspaceId"] != "w1" {
+		t.Errorf("active workspace should be the first (most recent): %s", b)
 	}
-	envs := got["environments"].([]any)
-	if len(envs) != 2 {
-		t.Fatalf("environments: %s", b)
+	wss := got["workspaces"].([]any)
+	if len(wss) != 2 {
+		t.Fatalf("workspaces: %s", b)
 	}
-	e0 := envs[0].(map[string]any)
-	for _, k := range []string{"id", "key", "name", "isProduction", "role"} {
-		if _, ok := e0[k]; !ok {
-			t.Errorf("environment is missing %q: %s", k, b)
+	w0 := wss[0].(map[string]any)
+	for _, k := range []string{"id", "name", "slug", "role", "environments"} {
+		if _, ok := w0[k]; !ok {
+			t.Errorf("workspace is missing %q: %s", k, b)
 		}
 	}
-	// The deployed console still reads `roles`.
-	roles := got["roles"].([]any)
-	if len(roles) != 2 || roles[1].(map[string]any)["environment"] != "production" || roles[1].(map[string]any)["role"] != "viewer" {
-		t.Errorf("legacy roles shape changed: %s", b)
+	e1 := w0["environments"].([]any)[1].(map[string]any)
+	if e1["isProduction"] != true || e1["key"] != "production" {
+		t.Errorf("environment shape: %s", b)
+	}
+	inv := got["invites"].([]any)[0].(map[string]any)
+	if inv["workspaceName"] != "Globex" || inv["role"] != "editor" || inv["id"] != "i1" {
+		t.Errorf("invite shape: %s", b)
+	}
+	if _, leaked := inv["token"]; leaked {
+		t.Error("an invite listed in /me must never carry its token")
 	}
 }
 
 func TestMeShapeNeverNull(t *testing.T) {
-	b, _ := json.Marshal(buildMe(auth.User{ID: "u"}, Workspace{ID: "w"}))
-	if !strings.Contains(string(b), `"environments":[]`) || !strings.Contains(string(b), `"roles":[]`) {
-		t.Errorf("empty lists must be [], got %s", b)
+	b, _ := json.Marshal(buildMe(auth.User{ID: "u"}, nil, nil))
+	for _, want := range []string{`"workspaces":[]`, `"invites":[]`, `"activeWorkspaceId":""`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("want %s in %s", want, b)
+		}
 	}
 }

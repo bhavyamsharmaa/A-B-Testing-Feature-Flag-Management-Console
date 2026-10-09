@@ -390,10 +390,6 @@ type errInUse struct{ environments []string }
 
 func (e errInUse) Error() string { return "in use" }
 
-type errNotAdminEverywhere struct{ environments []string }
-
-func (e errNotAdminEverywhere) Error() string { return "not admin everywhere" }
-
 // errHasRunningExperiment lists "env/experiment-key" for each running
 // experiment on the flag.
 type errHasRunningExperiment struct{ experiments []string }
@@ -411,9 +407,8 @@ func writeHasRunningExperiment(w http.ResponseWriter, running []string) {
 //
 // A flag's definition is shared by every environment of its workspace, so
 // deleting it removes it from all of them. The route requires admin in
-// {envId}; this handler additionally requires admin in every other
-// environment OF THE WORKSPACE, so a dev-only admin can't delete a flag that
-// production depends on.
+// {envId}. Workspace roles apply to every environment of the workspace, so
+// an owner or admin there is an admin everywhere in it.
 //
 // Lock order: the flags row FOR UPDATE first (which conflicts with
 // experiment start's FOR SHARE on the same row), then plain reads (admin
@@ -449,24 +444,6 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 		snapshot.Variations = json.RawMessage(variations)
 
 		rows, err := tx.Query(ctx, `
-			SELECT e.key FROM environments e
-			WHERE e.workspace_id = $2::uuid AND NOT EXISTS (
-				SELECT 1 FROM user_environment_roles r
-				WHERE r.environment_id = e.id AND r.user_id = $1::uuid AND r.role = 'admin'
-			)
-			ORDER BY e.key`, access.User.ID, access.Env.WorkspaceID)
-		if err != nil {
-			return err
-		}
-		notAdmin, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return err
-		}
-		if len(notAdmin) > 0 {
-			return errNotAdminEverywhere{notAdmin}
-		}
-
-		rows, err = tx.Query(ctx, `
 			SELECT e.key || '/' || x.key FROM experiments x
 			JOIN environments e ON e.id = x.environment_id
 			WHERE x.flag_id = $1::uuid AND x.status = 'running'
@@ -522,14 +499,10 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 	})
 
 	var inUse errInUse
-	var notAdmin errNotAdminEverywhere
 	var hasRunning errHasRunningExperiment
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		writeFlagNotFound(w, key)
-	case errors.As(err, &notAdmin):
-		httpx.WriteError(w, http.StatusForbidden, "FORBIDDEN",
-			"deleting a flag removes it from every environment; you are not an admin in: "+strings.Join(notAdmin.environments, ", "))
 	case errors.As(err, &hasRunning):
 		writeHasRunningExperiment(w, hasRunning.experiments)
 	case errors.As(err, &inUse):
