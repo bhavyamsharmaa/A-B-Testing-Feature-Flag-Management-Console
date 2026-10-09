@@ -32,3 +32,8 @@ Stopped. Waiting for "go 1".
 
 ## G1 Backup - 2026-10-09T13:26:17Z
 "go 1" received. BLOCKED before any command touched the database: `test -n "$DATABASE_URL"` in the tool shell reports NOT set. No dump attempted, nothing run against production. Need the CLI launched from a shell where DATABASE_URL is exported (or a pgpass/PGSERVICE setup).
+
+## G1 Backup - second attempt - 2026-10-09T13:34:11Z
+Owner: connection is now PGSERVICE=helios_prod (~/.pg_service.conf + ~/.pgpass); DATABASE_URL no longer needed; Render auto-deploy off, Vercel previews skipped for non-main, nothing is pushed before G3.
+- backend/scripts/backup_db.sh now takes no URL at all: `pg_dump --dbname "service=$PGSERVICE"`; it unsets DATABASE_URL and PG* connection variables. No credential can appear in `ps`.
+- BLOCKED again before touching the database: from the tool shell neither ~/.pg_service.conf nor ~/.pgpass exists (HOME=/Users/bhavyamsharmaa), so the service cannot resolve. No sanity check, no dump, nothing run against production.
