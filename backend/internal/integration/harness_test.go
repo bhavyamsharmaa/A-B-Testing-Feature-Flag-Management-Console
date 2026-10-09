@@ -46,9 +46,16 @@ type harness struct {
 	deps   server.Deps
 }
 
-type user struct{ id, email string }
+type user struct {
+	id, email string
+	status    string // "" (confirmed), "unconfirmed" or "unknown": what the token says about the email
+}
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return newHarnessWith(t, nil) }
+
+// newHarnessWith lets a test adjust the server's dependencies (rate limits,
+// email policy, ...) before the router is built.
+func newHarnessWith(t *testing.T, adjust func(*server.Deps)) *harness {
 	t.Helper()
 	adminURL := os.Getenv("HELIOS_TEST_DATABASE_URL")
 	if adminURL == "" {
@@ -96,12 +103,17 @@ func newHarness(t *testing.T) *harness {
 	// roles and SQL under test are the real ones; only JWT checking is stubbed.
 	authn := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			id, email, ok := strings.Cut(r.Header.Get("X-Test-User"), "|")
+			id, rest, ok := strings.Cut(r.Header.Get("X-Test-User"), "|")
 			if !ok || id == "" {
 				http.Error(w, `{"code":"UNAUTHORIZED","message":"no test user"}`, http.StatusUnauthorized)
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), auth.User{ID: id, Email: email})))
+			// "id|email" or "id|email|confirmed|unconfirmed|unknown"; confirmed by default.
+			email, status, _ := strings.Cut(rest, "|")
+			if status == "" {
+				status = string(auth.EmailConfirmed)
+			}
+			next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), auth.User{ID: id, Email: email, EmailStatus: auth.EmailStatus(status)})))
 		})
 	}
 	bus := events.NewMemoryBus()
@@ -111,6 +123,10 @@ func newHarness(t *testing.T) *harness {
 		// A long cache TTL on purpose: revocation must not depend on the cache expiring.
 		SDKKeyCacheTTL: time.Hour,
 		StreamRecheck:  150 * time.Millisecond,
+		Email:          auth.NewEmailPolicy(auth.EmailEnforce, "", "", nil),
+	}
+	if adjust != nil {
+		adjust(&deps)
 	}
 	router := server.New(deps)
 	srv := httptest.NewServer(router.Mux)
@@ -149,7 +165,7 @@ func (h *harness) call(u user, method, path string, body any) (int, []byte) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if u.id != "" {
-		req.Header.Set("X-Test-User", u.id+"|"+u.email)
+		req.Header.Set("X-Test-User", u.header())
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -278,4 +294,13 @@ func captureLogs(t *testing.T) *syncBuffer {
 	log.SetOutput(buf)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	return buf
+}
+
+// header is the stub authenticator's view of the user.
+func (u user) header() string {
+	h := u.id + "|" + u.email
+	if u.status != "" {
+		h += "|" + u.status
+	}
+	return h
 }

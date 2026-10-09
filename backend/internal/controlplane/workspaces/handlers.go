@@ -16,6 +16,9 @@ type nameRequest struct {
 // List handles GET /workspaces: the caller's workspaces (same data as /me).
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	user, _ := auth.FromContext(r.Context())
+	if !h.requireConfirmedEmail(w, r, user) {
+		return
+	}
 	list, err := h.svc.Ensure(r.Context(), user)
 	if err != nil {
 		writeError(w, r, err)
@@ -28,6 +31,9 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 // which becomes their active one.
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	user, _ := auth.FromContext(r.Context())
+	if !h.requireConfirmedEmail(w, r, user) {
+		return
+	}
 	var req nameRequest
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		httpx.BadRequest(w, err.Error())
@@ -213,6 +219,9 @@ func (h *Handlers) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.FromContext(r.Context())
 	if !ok {
 		httpx.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+		return
+	}
+	if !h.requireConfirmedEmail(w, r, user) {
 		return
 	}
 	var req acceptRequest

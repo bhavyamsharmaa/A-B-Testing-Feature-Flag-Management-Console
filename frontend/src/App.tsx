@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom
 import { AuthProvider, useAuth } from './auth/AuthProvider'
 import { RequireAuth } from './auth/RequireAuth'
 import { Background } from './components/Background'
+import { ConfirmEmailScreen } from './components/ConfirmEmailScreen'
 import { Splash } from './components/Splash'
 import AuditPage from './pages/AuditPage'
 import ConsolePage from './pages/ConsolePage'
@@ -23,6 +24,8 @@ function RootRedirect() {
  */
 function WorkspaceScope() {
   const { active } = useWorkspace()
+  const { emailUnconfirmed } = useAuth()
+  if (emailUnconfirmed) return <ConfirmEmailScreen />
   return <Outlet key={active?.id ?? 'none'} />
 }
 

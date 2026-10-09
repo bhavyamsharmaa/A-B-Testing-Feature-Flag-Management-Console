@@ -8,6 +8,14 @@
 //	DATABASE_URL=postgres://helios@127.0.0.1:55432/helios go run ./cmd/devauth
 //	SUPABASE_URL=http://127.0.0.1:54321 go run ./cmd/api
 //
+// Accounts are confirmed immediately, except an address containing
+// "+unconfirmed" (alice+unconfirmed@test.dev): it signs up unconfirmed but gets
+// a session anyway, like a Supabase project that allows unverified sign-ins.
+// Its tokens say user_metadata.email_verified=false until
+// GET /dev/confirm?email=... is called and the session is refreshed. This lets
+// tests cover both kinds of user. -require-confirmation instead withholds the
+// session until confirmed, like Supabase with "Confirm email" on.
+//
 // It refuses to start unless DATABASE_URL points at this machine, signs with
 // a throwaway key generated at startup, and keeps passwords in memory only.
 // It is not an authentication system: never deploy it.
@@ -46,7 +54,9 @@ type account struct {
 	Email     string
 	Hash      []byte
 	Confirmed bool
-	Created   time.Time
+	// SessionBeforeConfirm: the account may sign in while unconfirmed.
+	SessionBeforeConfirm bool
+	Created              time.Time
 }
 
 type server struct {
@@ -91,6 +101,7 @@ func main() {
 	mux.HandleFunc("GET /auth/v1/.well-known/jwks.json", s.jwks)
 	mux.HandleFunc("POST /auth/v1/signup", s.signup)
 	mux.HandleFunc("POST /auth/v1/token", s.token)
+	mux.HandleFunc("POST /auth/v1/resend", s.resend)
 	mux.HandleFunc("POST /auth/v1/logout", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /auth/v1/user", s.user)
 	mux.HandleFunc("GET /dev/confirm", s.confirm)
@@ -180,7 +191,7 @@ func (s *server) userJSON(a *account) map[string]any {
 		"email_confirmed_at": confirmed, "phone": "", "confirmed_at": confirmed,
 		"last_sign_in_at": time.Now().Format(time.RFC3339),
 		"app_metadata":    map[string]any{"provider": "email", "providers": []string{"email"}},
-		"user_metadata":   map[string]any{}, "identities": []any{},
+		"user_metadata":   map[string]any{"email": a.Email, "email_verified": a.Confirmed, "sub": a.ID}, "identities": []any{},
 		"created_at": a.Created.Format(time.RFC3339), "updated_at": a.Created.Format(time.RFC3339),
 		"is_anonymous": false,
 	}
@@ -192,7 +203,10 @@ func (s *server) session(a *account) (map[string]any, error) {
 	claims := jwt.MapClaims{
 		"iss": s.publicURL + "/auth/v1", "aud": "authenticated", "sub": a.ID, "email": a.Email,
 		"role": "authenticated", "iat": now.Unix(), "exp": exp.Unix(), "session_id": newID(),
-		"app_metadata": map[string]any{"provider": "email"}, "user_metadata": map[string]any{}, "is_anonymous": false,
+		"app_metadata": map[string]any{"provider": "email"},
+		// GoTrue puts the confirmation state in user_metadata; the backend reads it from here.
+		"user_metadata": map[string]any{"email": a.Email, "email_verified": a.Confirmed, "sub": a.ID},
+		"is_anonymous":  false,
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
 	tok.Header["kid"] = kid
@@ -254,11 +268,14 @@ func (s *server) signup(w http.ResponseWriter, r *http.Request) {
 		authError(w, 500, "unexpected_failure", "could not create user")
 		return
 	}
-	a := &account{ID: id, Email: email, Hash: hash, Confirmed: !s.needConfirm, Created: time.Now()}
+	local, _, _ := strings.Cut(email, "@")
+	unverifiedSignIn := strings.Contains(local, "+unconfirmed")
+	a := &account{ID: id, Email: email, Hash: hash, Confirmed: !s.needConfirm && !unverifiedSignIn,
+		SessionBeforeConfirm: unverifiedSignIn, Created: time.Now()}
 	s.mu.Lock()
 	s.byEmail[email], s.byID[id] = a, a
 	s.mu.Unlock()
-	if s.needConfirm {
+	if s.needConfirm && !unverifiedSignIn {
 		// Like Supabase with confirmation on: a user, no session.
 		u := s.userJSON(a)
 		u["confirmation_sent_at"] = time.Now().Format(time.RFC3339)
@@ -288,7 +305,7 @@ func (s *server) token(w http.ResponseWriter, r *http.Request) {
 			authError(w, 400, "invalid_credentials", "Invalid login credentials")
 			return
 		}
-		if !a.Confirmed {
+		if !a.Confirmed && !a.SessionBeforeConfirm {
 			authError(w, 400, "email_not_confirmed", "Email not confirmed")
 			return
 		}
@@ -355,4 +372,18 @@ func (s *server) confirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = fmt.Fprintf(w, "confirmed %s\n", email)
+}
+
+// resend is the stand-in for "send the confirmation email again".
+func (s *server) resend(w http.ResponseWriter, r *http.Request) {
+	var c struct {
+		Type  string `json:"type"`
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.Type == "" || c.Email == "" {
+		authError(w, 400, "validation_failed", "type and email are required")
+		return
+	}
+	log.Printf("devauth: confirmation email requested (no mail is sent); confirm with GET /dev/confirm?email=<address>")
+	writeJSON(w, http.StatusOK, map[string]any{})
 }

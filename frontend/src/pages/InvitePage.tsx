@@ -28,6 +28,12 @@ export default function InvitePage() {
         await activate(workspaceId)
         navigate('/console', { replace: true })
       } catch (err) {
+        if (err instanceof ApiError && err.code === 'EMAIL_NOT_CONFIRMED') {
+          // Keep the token: after confirming, the console brings the person back here.
+          savePendingInvite(token)
+          navigate('/console', { replace: true })
+          return
+        }
         clearPendingInvite()
         setError(err instanceof ApiError ? err.message : 'Could not accept the invite. Try again.')
       }

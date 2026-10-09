@@ -68,7 +68,27 @@ func main() {
 		defer redisClient.Close()
 	}
 
+	mode, ok := auth.ParseEmailMode(cfg.EmailConfirmation)
+	if !ok {
+		log.Fatalf("EMAIL_CONFIRMATION must be off, enforce or strict, got %q", cfg.EmailConfirmation)
+	}
+	// With the public anon key the backend can ask Supabase itself whether an
+	// address is confirmed, so it can insist on a positive answer.
+	if mode == auth.EmailEnforce && cfg.SupabaseAnonKey != "" && cfg.EmailConfirmation == "" {
+		mode = auth.EmailStrict
+	}
+	emailPolicy := auth.NewEmailPolicy(mode, cfg.SupabaseURL, cfg.SupabaseAnonKey, nil)
+	switch {
+	case mode == auth.EmailOff:
+		log.Printf("WARNING: EMAIL_CONFIRMATION=off: users with unconfirmed emails can create workspaces and accept invites")
+	case !emailPolicy.HasLookup():
+		log.Printf("email confirmation: %s, reading only the token's own claims (set SUPABASE_ANON_KEY, which is public, to also ask Supabase)", mode)
+	default:
+		log.Printf("email confirmation: %s, asking Supabase's user endpoint", mode)
+	}
+
 	router := server.New(server.Deps{
+		Email:          emailPolicy,
 		Pool:           pool,
 		Authn:          verifier.Middleware,
 		Publisher:      publisher,

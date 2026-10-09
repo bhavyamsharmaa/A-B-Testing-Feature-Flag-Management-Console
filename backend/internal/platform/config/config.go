@@ -13,6 +13,8 @@ type Config struct {
 	DatabaseURL        string   // PostgreSQL connection string
 	RedisURL           string   // redis:// or rediss:// connection string; empty disables propagation (falls back to Postgres-only, never blocks startup)
 	SupabaseURL        string   // https://<project-ref>.supabase.co; its JWKS verifies access tokens
+	SupabaseAnonKey    string   // the project's PUBLIC anon/publishable key (not a secret); lets the backend ask Supabase whether an email is confirmed
+	EmailConfirmation  string   // off | enforce (default) | strict; see auth.EmailPolicy
 	CORSAllowedOrigins []string // browser origins allowed to call the API, e.g. the Vercel URL
 }
 
@@ -24,6 +26,8 @@ func Load() Config {
 		DatabaseURL:        getenv("DATABASE_URL", "postgres://helios:helios@localhost:5432/helios?sslmode=disable"),
 		RedisURL:           os.Getenv("REDIS_URL"),
 		SupabaseURL:        os.Getenv("SUPABASE_URL"),
+		SupabaseAnonKey:    os.Getenv("SUPABASE_ANON_KEY"),
+		EmailConfirmation:  os.Getenv("EMAIL_CONFIRMATION"),
 		CORSAllowedOrigins: splitList(os.Getenv("CORS_ALLOWED_ORIGINS")),
 	}
 }

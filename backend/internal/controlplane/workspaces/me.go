@@ -1,6 +1,7 @@
 package workspaces
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -11,11 +12,30 @@ import (
 )
 
 type Handlers struct {
-	svc *Service
+	svc   *Service
+	email *auth.EmailPolicy
 }
 
-func NewHandlers(svc *Service) *Handlers {
-	return &Handlers{svc: svc}
+// NewHandlers wires the workspace routes. email decides whether a user whose
+// address is not confirmed may bootstrap a workspace, create one, or accept an
+// invite (nil means no check).
+func NewHandlers(svc *Service, email *auth.EmailPolicy) *Handlers {
+	return &Handlers{svc: svc, email: email}
+}
+
+// requireConfirmedEmail answers 403 EMAIL_NOT_CONFIRMED (the console shows a
+// "please confirm your email" screen for it) or 503 when the status can't be
+// established, and reports whether the request may go on.
+func (h *Handlers) requireConfirmedEmail(w http.ResponseWriter, r *http.Request, user auth.User) bool {
+	switch err := h.email.Require(r.Context(), user); {
+	case err == nil:
+		return true
+	case errors.Is(err, auth.ErrEmailStatusUnavailable):
+		httpx.WriteError(w, http.StatusServiceUnavailable, "EMAIL_STATUS_UNAVAILABLE", "could not check your email confirmation right now; try again in a moment")
+	default:
+		httpx.WriteError(w, http.StatusForbidden, "EMAIL_NOT_CONFIRMED", "Please confirm your email first: open the link we sent you, then continue.")
+	}
+	return false
 }
 
 type environmentView struct {
@@ -87,6 +107,9 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.FromContext(r.Context())
 	if !ok {
 		httpx.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+		return
+	}
+	if !h.requireConfirmedEmail(w, r, user) { // before anything is created
 		return
 	}
 	list, err := h.svc.Ensure(r.Context(), user)

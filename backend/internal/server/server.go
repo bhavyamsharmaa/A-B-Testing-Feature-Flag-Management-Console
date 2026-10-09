@@ -25,6 +25,7 @@ import (
 	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/dataplane/stream"
 	"helios/backend/internal/platform/apikey"
+	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/health"
 )
@@ -37,6 +38,9 @@ type Deps struct {
 	Publisher      events.Publisher
 	Subscriber     events.Subscriber
 	SDKKeyCacheTTL time.Duration
+	// Email decides whether users with an unconfirmed email may bootstrap a
+	// workspace or accept an invite. Nil means no check.
+	Email *auth.EmailPolicy
 	// StreamRecheck is how often an open /sdk/stream asks whether its key was
 	// revoked. Zero means 10 seconds.
 	StreamRecheck time.Duration
@@ -113,7 +117,7 @@ func rank(r rbac.Role) int {
 // New returns the router with every route mounted.
 func New(d Deps) *Router {
 	guard := rbac.NewGuard(d.Pool)
-	ws := workspaces.NewHandlers(workspaces.NewService(d.Pool))
+	ws := workspaces.NewHandlers(workspaces.NewService(d.Pool), d.Email)
 	fl := flags.NewHandlers(d.Pool, d.Publisher)
 	al := auditlog.NewHandlers(d.Pool)
 	ex := experiments.NewHandlers(d.Pool)
