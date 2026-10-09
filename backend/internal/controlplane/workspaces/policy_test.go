@@ -128,7 +128,7 @@ func TestNormalizeEmail(t *testing.T) {
 func TestSlugify(t *testing.T) {
 	for in, want := range map[string]string{
 		"Acme Inc":              "acme-inc",
-		"alice's workspace":     "alice-s-workspace",
+		"alice's workspace":     "alices-workspace",
 		"  --Hello__World!! ":   "hello-world",
 		"":                      "workspace",
 		"日本語":                   "workspace",

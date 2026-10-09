@@ -104,6 +104,8 @@ func slugify(name string) string {
 	dash := false
 	for _, r := range strings.ToLower(name) {
 		switch {
+		case r == '\'' || r == '\u2019':
+			// apostrophes vanish ("alice's" -> "alices"), they don't split words
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 			b.WriteRune(r)
 			dash = false
