@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"helios/backend/internal/controlplane/sdkkeys"
 	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/platform/apikey"
 )
@@ -264,5 +265,35 @@ func TestMalformedAndMixedUpKeysNeverResolve(t *testing.T) {
 	}
 	if st := h.evaluateStatus(keyB, secretFlag); st != 200 { // B's key may ask for the name; it just finds nothing
 		t.Errorf("B's own key: status %d", st)
+	}
+}
+
+// Two keys drawing the same 32-bit display prefix is a matter of volume, not
+// if: creating a key must retry with a fresh one instead of failing.
+func TestKeyPrefixCollisionIsRetried(t *testing.T) {
+	x := newTenants(t)
+	h := x.h
+	var existing string
+	if err := h.pool.QueryRow(context.Background(), `SELECT key_prefix FROM api_keys WHERE workspace_id = $1::uuid`, x.wsA.ID).Scan(&existing); err != nil {
+		t.Fatal(err)
+	}
+	real := sdkkeys.GenerateKey
+	calls := 0
+	sdkkeys.GenerateKey = func(kind apikey.Kind) (string, string, string, error) {
+		calls++
+		if calls <= 2 { // the first two draws collide with A's existing key
+			plain, _, hash, err := real(kind)
+			return existing + "_" + strings.Repeat("x", 43), existing, hash + plain[:0], err
+		}
+		return real(kind)
+	}
+	defer func() { sdkkeys.GenerateKey = real }()
+
+	key := decode[struct{ Plaintext string }](t, h.expect(201, x.a, "POST", "/environments/"+x.devA+"/sdk-keys", map[string]any{"name": "after collision"}))
+	if calls != 3 || strings.HasPrefix(key.Plaintext, existing) {
+		t.Fatalf("calls = %d, key %q", calls, key.Plaintext)
+	}
+	if st := h.evaluateStatus(key.Plaintext, secretFlag); st != 200 {
+		t.Errorf("the new key does not work: %d", st)
 	}
 }

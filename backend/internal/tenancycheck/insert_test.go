@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -241,5 +242,63 @@ func TestLogCallsAreNotGivenCredentials(t *testing.T) {
 	}
 	if checked < 8 {
 		t.Errorf("only %d log calls found; the check is not looking at the code", checked)
+	}
+}
+
+// Tables nothing uses any more (user_environment_roles: roles moved to the
+// workspace; events: ingestion was never built) and the empty segments package
+// have no tenant checks of their own. They must stay unreachable: any new use
+// is a change that needs a tenancy review, so it must fail here first.
+var deadTableRE = regexp.MustCompile(`(?is)\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+(user_environment_roles|events)\b`)
+
+func TestDeadTablesAndSegmentsAreUnreachable(t *testing.T) {
+	root := filepath.Join("..", "..")
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, imp := range file.Imports {
+			if strings.Contains(imp.Path.Value, "controlplane/segments") && !strings.Contains(filepath.ToSlash(path), "controlplane/segments/") {
+				t.Errorf("%s imports the empty segments package", path)
+			}
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			if sql, err := strconv.Unquote(lit.Value); err == nil {
+				if m := deadTableRE.FindStringSubmatch(sql); m != nil {
+					t.Errorf("%s: SQL uses the dead table %q", fset.Position(lit.Pos()), m[1])
+				}
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Transitively, from every binary: nothing links the segments package in.
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go tool not available")
+	}
+	cmd := exec.Command("go", "list", "-deps", "./cmd/api", "./cmd/mkkey", "./cmd/devauth")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	if strings.Contains(string(out), "controlplane/segments") {
+		t.Error("a binary links in the segments package, which has no routes or tenant checks")
 	}
 }

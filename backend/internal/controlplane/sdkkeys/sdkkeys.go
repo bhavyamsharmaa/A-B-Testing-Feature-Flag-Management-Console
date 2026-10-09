@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"helios/backend/internal/controlplane/audit"
@@ -24,6 +25,10 @@ import (
 type Invalidator interface {
 	Invalidate(prefix string)
 }
+
+// GenerateKey mints a key (plaintext, display prefix, hash). A variable only so
+// a test can force a prefix collision.
+var GenerateKey = apikey.Generate
 
 type Handlers struct {
 	pool *pgxpool.Pool
@@ -76,6 +81,11 @@ type createRequest struct {
 	Name string `json:"name"`
 }
 
+func isUniqueViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
+}
+
 func cleanName(s string) (string, error) {
 	name := strings.TrimSpace(s)
 	if len([]rune(name)) > 60 {
@@ -105,35 +115,45 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, err.Error())
 		return
 	}
-	plaintext, prefix, hash, err := apikey.Generate(apikey.KindSDK)
-	if err != nil {
-		httpx.WriteInternal(w, r, err)
-		return
-	}
+	// The display prefix is 8 hex characters (32 bits) and globally unique, so
+	// with enough keys two will eventually collide: draw a fresh key instead of
+	// failing the request. Each attempt is its own transaction.
 	var view keyView
-	err = pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
-		if err := quota.CheckSDKKey(ctx, tx, access.Env.WorkspaceID); err != nil {
-			return err
+	var plaintext, prefix string
+	for attempt := 0; attempt < 5; attempt++ {
+		var hash string
+		plaintext, prefix, hash, err = GenerateKey(apikey.KindSDK)
+		if err != nil {
+			httpx.WriteInternal(w, r, err)
+			return
 		}
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO api_keys (workspace_id, environment_id, kind, key_prefix, key_hash, name, created_by)
-			VALUES ($1::uuid, $2::uuid, 'sdk', $3, $4, $5, $6::uuid)
-			RETURNING id::text, name, kind::text, key_prefix, created_at, revoked_at`,
-			access.Env.WorkspaceID, access.Env.ID, prefix, hash, name, access.User.ID,
-		).Scan(&view.ID, &view.Name, &view.Kind, &view.Prefix, &view.CreatedAt, &view.RevokedAt); err != nil {
-			return err
-		}
-		return audit.Write(ctx, tx, audit.Entry{
-			WorkspaceID:   access.Env.WorkspaceID,
-			ActorID:       access.User.ID,
-			ActorEmail:    access.User.Email,
-			EnvironmentID: access.Env.ID,
-			Action:        "api_key.create",
-			ResourceType:  "api_key",
-			ResourceID:    view.ID,
-			After:         map[string]string{"kind": "sdk", "prefix": prefix, "name": name, "key": "[REDACTED]"},
+		err = pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+			if err := quota.CheckSDKKey(ctx, tx, access.Env.WorkspaceID); err != nil {
+				return err
+			}
+			if err := tx.QueryRow(ctx, `
+				INSERT INTO api_keys (workspace_id, environment_id, kind, key_prefix, key_hash, name, created_by)
+				VALUES ($1::uuid, $2::uuid, 'sdk', $3, $4, $5, $6::uuid)
+				RETURNING id::text, name, kind::text, key_prefix, created_at, revoked_at`,
+				access.Env.WorkspaceID, access.Env.ID, prefix, hash, name, access.User.ID,
+			).Scan(&view.ID, &view.Name, &view.Kind, &view.Prefix, &view.CreatedAt, &view.RevokedAt); err != nil {
+				return err
+			}
+			return audit.Write(ctx, tx, audit.Entry{
+				WorkspaceID:   access.Env.WorkspaceID,
+				ActorID:       access.User.ID,
+				ActorEmail:    access.User.Email,
+				EnvironmentID: access.Env.ID,
+				Action:        "api_key.create",
+				ResourceType:  "api_key",
+				ResourceID:    view.ID,
+				After:         map[string]string{"kind": "sdk", "prefix": prefix, "name": name, "key": "[REDACTED]"},
+			})
 		})
-	})
+		if !isUniqueViolation(err, "api_keys_key_prefix_key") {
+			break
+		}
+	}
 	if quota.WriteError(w, err) {
 		return
 	}
