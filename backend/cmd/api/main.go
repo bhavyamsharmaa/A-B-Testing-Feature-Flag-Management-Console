@@ -20,6 +20,7 @@ import (
 	"helios/backend/internal/platform/cors"
 	"helios/backend/internal/platform/db"
 	"helios/backend/internal/platform/events"
+	"helios/backend/internal/platform/ratelimit"
 	"helios/backend/internal/platform/redisx"
 	"helios/backend/internal/server"
 )
@@ -87,7 +88,21 @@ func main() {
 		log.Printf("email confirmation: %s, asking Supabase's user endpoint", mode)
 	}
 
+	limits, err := ratelimit.ParseConfig(cfg.RateLimitDisabled, cfg.RateLimits, cfg.TrustedProxyHops, cfg.StreamsPerKey)
+	if err != nil {
+		log.Fatalf("rate limit settings: %v", err)
+	}
+	switch {
+	case limits.Disabled:
+		log.Printf("WARNING: RATE_LIMIT_DISABLED=true: no rate limits")
+	case limits.TrustedProxyHops == 0:
+		log.Printf("rate limits on, keyed by the socket address (set TRUSTED_PROXY_HOPS=1 behind one reverse proxy such as Render, or every client shares one IP bucket)")
+	default:
+		log.Printf("rate limits on, client IP from X-Forwarded-For (%d trusted proxy hop(s))", limits.TrustedProxyHops)
+	}
+
 	router := server.New(server.Deps{
+		Limiter:        ratelimit.New(limits),
 		Email:          emailPolicy,
 		Pool:           pool,
 		Authn:          verifier.Middleware,

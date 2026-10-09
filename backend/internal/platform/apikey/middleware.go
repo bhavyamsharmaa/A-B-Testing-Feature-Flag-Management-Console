@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"helios/backend/internal/platform/httpx"
+	"helios/backend/internal/platform/ratelimit"
 )
 
 // HeaderSDKKey is the header SDKs send their key in.
@@ -56,10 +57,36 @@ type cacheEntry struct {
 // instance that handles the revocation drops the entry at once (Invalidate),
 // so with a single instance the delay is zero; with several, it is at most ttl.
 type Verifier struct {
-	pool  *pgxpool.Pool
-	ttl   time.Duration
-	mu    sync.RWMutex
-	cache map[[sha256.Size]byte]cacheEntry
+	pool     *pgxpool.Pool
+	ttl      time.Duration
+	mu       sync.RWMutex
+	cache    map[[sha256.Size]byte]cacheEntry
+	throttle Throttle
+}
+
+// Throttle bounds how fast one client can make the verifier do expensive work
+// (a database read and an Argon2id hash). It only gates cache MISSES: a valid
+// key that is already cached is never delayed by it. A client that has used up
+// its allowance for failed attempts is refused before any hashing happens.
+type Throttle interface {
+	// Allowed reports whether this client may try another uncached key.
+	Allowed(r *http.Request) (ok bool, retryAfter time.Duration)
+	// Failed records a failed verification by this client.
+	Failed(r *http.Request)
+}
+
+// SetThrottle installs the throttle (nil removes it).
+func (v *Verifier) SetThrottle(t Throttle) { v.throttle = t }
+
+func (v *Verifier) cached(plaintext string) (Scope, bool) {
+	digest := sha256.Sum256([]byte(plaintext))
+	v.mu.RLock()
+	entry, hit := v.cache[digest]
+	v.mu.RUnlock()
+	if hit && time.Now().Before(entry.expires) {
+		return entry.scope, true
+	}
+	return Scope{}, false
 }
 
 func NewVerifier(pool *pgxpool.Pool, ttl time.Duration) *Verifier {
@@ -72,11 +99,8 @@ func (v *Verifier) scopeFor(ctx context.Context, plaintext string) (Scope, error
 	digest := sha256.Sum256([]byte(plaintext))
 	now := time.Now()
 
-	v.mu.RLock()
-	entry, hit := v.cache[digest]
-	v.mu.RUnlock()
-	if hit && now.Before(entry.expires) {
-		return entry.scope, nil
+	if sc, ok := v.cached(plaintext); ok {
+		return sc, nil
 	}
 
 	prefix, ok := Prefix(plaintext)
@@ -144,8 +168,21 @@ func (v *Verifier) Middleware(next http.Handler) http.Handler {
 			httpx.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing "+HeaderSDKKey+" header")
 			return
 		}
-		sc, err := v.scopeFor(r.Context(), key)
+		sc, hit := v.cached(key)
+		var err error
+		if !hit {
+			if v.throttle != nil {
+				if ok, wait := v.throttle.Allowed(r); !ok {
+					ratelimit.Reject(w, wait)
+					return
+				}
+			}
+			sc, err = v.scopeFor(r.Context(), key)
+		}
 		if errors.Is(err, errInvalidKey) {
+			if v.throttle != nil {
+				v.throttle.Failed(r)
+			}
 			httpx.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid or revoked SDK key")
 			return
 		}
