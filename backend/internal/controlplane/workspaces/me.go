@@ -14,13 +14,18 @@ import (
 type Handlers struct {
 	svc   *Service
 	email *auth.EmailPolicy
+	// invitesByID: whether an invite can be accepted by its id (and open
+	// invites are listed in /me). Off, only the one-time link works, which
+	// proves the person was handed the invite and does not rely on the identity
+	// provider having verified their email address.
+	invitesByID bool
 }
 
 // NewHandlers wires the workspace routes. email decides whether a user whose
 // address is not confirmed may bootstrap a workspace, create one, or accept an
 // invite (nil means no check).
-func NewHandlers(svc *Service, email *auth.EmailPolicy) *Handlers {
-	return &Handlers{svc: svc, email: email}
+func NewHandlers(svc *Service, email *auth.EmailPolicy, invitesByID bool) *Handlers {
+	return &Handlers{svc: svc, email: email, invitesByID: invitesByID}
 }
 
 // requireConfirmedEmail answers 403 EMAIL_NOT_CONFIRMED (the console shows a
@@ -117,10 +122,13 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternal(w, r, err)
 		return
 	}
-	invites, err := pendingInvites(r.Context(), h.svc.pool, user.Email)
-	if err != nil {
-		httpx.WriteInternal(w, r, err)
-		return
+	invites := []PendingInvite{}
+	if h.invitesByID {
+		var err error
+		if invites, err = pendingInvites(r.Context(), h.svc.pool, user.Email); err != nil {
+			httpx.WriteInternal(w, r, err)
+			return
+		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	httpx.WriteJSON(w, http.StatusOK, buildMe(user, list, invites))

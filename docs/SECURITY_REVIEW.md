@@ -35,16 +35,43 @@ previous user.
 empty `segments` package is imported by nothing and linked into no binary (checked
 with `go list -deps`). A test fails if that changes.
 
-## Not fixed / remaining
+## Round 2: closing what remained
 
-- **Invites trust the email in the token.** If Supabase "Confirm email" is off, someone
-  could sign up with an address they don't own and accept an invite sent to it. Keep
-  confirmation on (the brief says it stays required); the backend does not check it.
-- **Other instances honour a revoked key for up to 15s**, and open streams close within
-  10s of the next re-check. No cross-instance push (a Redis broadcast would remove it).
-- **No rate limiting** on any endpoint (Supabase limits sign-in; SDK keys and invite
-  tokens carry 256 bits, so guessing is not feasible, but the API can still be hammered).
-- **Last-owner protection relies on row locks**, not a database constraint.
-- **A removed member's already-issued JWT** stops working for workspace data at once
-  (membership is checked per request), but their Supabase session itself lives on.
-- The migrations 0004-0006 have run only on local throwaway databases.
+| Item | Status | What changed | How it was proven |
+| --- | --- | --- | --- |
+| Email confirmation enforced by the backend | Fixed where it can be; one limit that cannot be (see below) | `GET /me` (the bootstrap), `GET`/`POST /workspaces` and invite acceptance answer `403 EMAIL_NOT_CONFIRMED` and create nothing when the email is not confirmed. Read only from Supabase: the verified token's claims, and (with the public `SUPABASE_ANON_KEY`) Supabase's own `/auth/v1/user`. Console shows "Please confirm your email first" with resend and "I've confirmed" | An unconfirmed user gets no workspace, membership or audit row (20 requests at once), cannot accept an invite by token or id; after confirming the same user works. Each check was removed in turn |
+| Rate limiting | Fixed | In-memory token buckets per IP, per user, per SDK key and for failed SDK-key attempts per IP; stream concurrency cap; 429 with `Retry-After`; health never limited; `RATE_LIMITS`, `RATE_LIMIT_DISABLED`, `TRUSTED_PROXY_HOPS` (defaults to 1 on Render), `STREAMS_PER_KEY` | Every limit fires in a test; the default limits never trip in normal traffic; eight limiters were removed in turn |
+| Last owner at the database level | Fixed | Migration `0007`: a deferred constraint trigger refuses a transaction that leaves a workspace with members and no owner (the app reports it as 409 LAST_OWNER) | Raw SQL that removes or demotes the last owner fails; hand-over in one transaction works; with the app's row locks removed the database still stops two owners leaving at once; with the trigger removed too the workspace ends with zero owners |
+| Revocation without the wait | Fixed | Revoking publishes the key prefix on `helios:apikey-revoked`; every instance drops it from its cache and closes streams on it at once. The 15s TTL and 10s re-check remain as the fallback | Two instances sharing a bus, and a real Redis: the other instance rejects the key in about 1-2 ms with its fallbacks set to an hour; with the broadcast lost it falls back within the TTL (about 390 ms at 400/200 ms). Publish, watch, invalidate and the stream wake-up were removed in turn |
+| Removed members | Confirmed and pinned | Membership is checked on every request, so a removed member's unexpired JWT gets 404 on every workspace route (the every-route test runs one). Streams authenticate with SDK keys, not people, so there is no per-member stream; keys belong to the workspace and keep working until an admin revokes them. The remove dialog says so | Tests, and a regression where the guard caches membership is caught by three of them |
+| Invites without the dashboard toggle | New switch, default unchanged | `INVITES_BY_ID=false` disables accepting by id and hides open invites in `/me`, leaving only the one-time link | Test, and mutation |
+
+### What email confirmation can and cannot do
+
+Documented Supabase access tokens carry **no** email-confirmation claim. In practice GoTrue puts `email_verified` in `user_metadata`, and a custom access-token hook can add more; the backend reads `user_metadata.email_verified`, a top-level `email_verified`, or a confirmation timestamp, and treats a contradictory token as unconfirmed. Supabase's own `GET /auth/v1/user` (called with the user's token and the public anon key) returns `email_confirmed_at` and overrides the claims.
+
+**It cannot detect that "Confirm email" has been switched off.** Supabase's documentation says disabling it "implicitly confirms the user's email in the database", so with the toggle off every new address looks confirmed to the token, to `/auth/v1/user` and to this backend. Nothing in Supabase's data distinguishes that from a real confirmation, so a backend that only trusts Supabase cannot make open signup independent of that toggle. What protects you if it is switched off:
+
+- Creating a workspace is harmless to other tenants (it only creates the caller's own).
+- Accepting an invite **by link** still needs the secret token, which the inviter sent to the real mailbox.
+- Accepting an invite **by id** (the banner in the console) needs only the account's email, so with the toggle off someone could register an invitee's address and accept. Set `INVITES_BY_ID=false` if you cannot guarantee the toggle stays on.
+
+What it does stop: projects that let people sign in before confirming ("allow unverified sign-ins"), tokens that say unconfirmed, and anything that leaves Supabase's own user record unconfirmed.
+
+Set `SUPABASE_ANON_KEY` (a public value) in production: the default mode then becomes `strict` (refuse unless Supabase says confirmed). Without it the backend only reads token claims, and with none present it lets the user through (`enforce`); check a real token to see whether `user_metadata.email_verified` is there.
+
+## Known limitations
+
+These are open on purpose, or cannot be closed from here.
+
+- **Supabase sessions outlive removal (by design).** Removing someone from a workspace deletes their membership; their Supabase session and account are untouched. They lose workspace data at once (membership is checked on every request) and get a fresh personal workspace on their next `/me`. Ending the account is a Supabase action.
+- **SDK keys outlive their creator.** Keys belong to the workspace. Revoke the ones you no longer trust after removing someone; the console says so.
+- **The limiter is in memory, per process.** Right for one instance (Render today). With N instances each allows its own share, so the effective limits are N times the configured ones, and a restart resets all buckets. Moving to a shared store (Redis) is only worth it with several instances. Behind a proxy the client address comes from `X-Forwarded-For` only with `TRUSTED_PROXY_HOPS` (defaulted to 1 when `RENDER=true`); set it correctly elsewhere or all clients share one bucket.
+- **Shared-address collateral.** Failed SDK-key attempts are counted per IP. A client behind the same NAT as an attacker can have an *uncached* key refused (429) once the attacker spends that IP's allowance; keys already cached are never delayed.
+- **The database last-owner rule does not cover an empty workspace.** If every member leaves, the workspace is abandoned, not "members without an owner". The application's row locks stop owners leaving at once. A superuser session with `session_replication_role = replica` bypasses all triggers and foreign keys.
+- **Account deletion** of the last owner of a workspace with other members is refused by the database until ownership is transferred.
+- **Email confirmation cannot detect the "Confirm email" toggle being off** (above).
+- **Open streams close within about 10 s of a revocation made on an instance that could not broadcast it.** A Redis outage during the revocation is the only way to hit that.
+- **No email is sent by Helios.** Invite links are shared by the inviter; the token is in the link's path (the console sends no Referer, and removes it from the URL when used).
+- **Migrations 0004-0007 have only run on local throwaway databases.** Rehearse on a copy, and apply them in order, before production.
+- **Tests use a stub authenticator** for most database-backed tests; real JWT verification is covered by its own tests and by the Playwright flows against `devauth`, which is not Supabase.

@@ -16,10 +16,13 @@ type Config struct {
 	SupabaseAnonKey   string // the project's PUBLIC anon/publishable key (not a secret); lets the backend ask Supabase whether an email is confirmed
 	EmailConfirmation string // off | enforce (default) | strict; see auth.EmailPolicy
 	// Rate limiting (all optional; see internal/platform/ratelimit).
-	RateLimitDisabled  string   // "true" switches every limit off
-	RateLimits         string   // overrides, e.g. "me=5/60,accept=2/50" (per second / burst)
-	TrustedProxyHops   string   // reverse proxies in front of the API (Render: 1)
-	StreamsPerKey      string   // max concurrent /sdk/stream connections per SDK key
+	RateLimitDisabled string // "true" switches every limit off
+	RateLimits        string // overrides, e.g. "me=5/60,accept=2/50" (per second / burst)
+	TrustedProxyHops  string // reverse proxies in front of the API (Render: 1)
+	StreamsPerKey     string // max concurrent /sdk/stream connections per SDK key
+	// InvitesByID: "false" disables accepting an invite by its id (and hides
+	// open invites in /me), leaving only the one-time link. See docs/SECURITY_REVIEW.md.
+	InvitesByID        string
 	CORSAllowedOrigins []string // browser origins allowed to call the API, e.g. the Vercel URL
 }
 
@@ -35,7 +38,8 @@ func Load() Config {
 		EmailConfirmation:  os.Getenv("EMAIL_CONFIRMATION"),
 		RateLimitDisabled:  os.Getenv("RATE_LIMIT_DISABLED"),
 		RateLimits:         os.Getenv("RATE_LIMITS"),
-		TrustedProxyHops:   os.Getenv("TRUSTED_PROXY_HOPS"),
+		TrustedProxyHops:   trustedProxyHops(),
+		InvitesByID:        os.Getenv("INVITES_BY_ID"),
 		StreamsPerKey:      os.Getenv("STREAMS_PER_KEY"),
 		CORSAllowedOrigins: splitList(os.Getenv("CORS_ALLOWED_ORIGINS")),
 	}
@@ -56,4 +60,18 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// trustedProxyHops is TRUSTED_PROXY_HOPS, or 1 on Render when unset: Render
+// puts one reverse proxy in front of every service and sets RENDER=true. Left at
+// 0 there, every client would share the proxy's address and therefore one
+// rate-limit bucket.
+func trustedProxyHops() string {
+	if v := os.Getenv("TRUSTED_PROXY_HOPS"); v != "" {
+		return v
+	}
+	if os.Getenv("RENDER") == "true" {
+		return "1"
+	}
+	return ""
 }

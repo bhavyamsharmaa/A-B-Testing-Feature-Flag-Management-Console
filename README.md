@@ -71,11 +71,11 @@ which also shows how to run the whole stack locally without Supabase
 (`backend/cmd/devauth`) and how to run the end-to-end test that produced
 [docs/screenshots/](docs/screenshots/).
 
-**Database:** migrations `0004`, `0005` and `0006` add workspaces and are **not applied
+**Database:** migrations `0004`-`0007` add workspaces (roles, invites, the last-owner guarantee) and are **not applied
 to any shared database yet**. Apply them in order, after a backup and a rehearsal on a
 copy (`backend/db/rehearsal.md`, `backend/scripts/backup_db.sh`), with the matching
 `db/verify_000N.sql` after each. `0005` must follow the backend deploy of the 0004
-version immediately; if you go straight to this version, apply 0004-0006 together and
+version immediately; if you go straight to this version, apply 0004-0007 together and
 then deploy. The console and backend in this branch must be deployed together: the old
 console calls routes that no longer exist.
 

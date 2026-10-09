@@ -98,3 +98,28 @@ func TestUnknownEmailStatusDependsOnTheMode(t *testing.T) {
 	o.status = "unconfirmed"
 	off.expect(200, o, "GET", "/me", nil)
 }
+
+// Where "Confirm email" can't be guaranteed, acceptance by the one-time link is
+// the only way in that does not lean on the email being verified: INVITES_BY_ID=false
+// turns the id path (and the open-invites list in /me) off.
+func TestInvitesByIDCanBeSwitchedOff(t *testing.T) {
+	h := newHarnessWith(t, func(d *server.Deps) { d.InvitesByID = false })
+	owner, invitee := h.newUser("owner"), h.newUser("invitee")
+	ws := h.me(owner).Workspaces[0]
+	inv := decode[struct {
+		Invite struct{ ID string }
+		Token  string
+	}](t, h.expect(201, owner, "POST", "/workspaces/"+ws.ID+"/invites", map[string]any{"email": invitee.email, "role": "viewer"}))
+
+	if me := h.me(invitee); len(me.Invites) != 0 {
+		t.Errorf("/me lists open invites although acceptance by id is off: %+v", me.Invites)
+	}
+	b := h.expect(403, invitee, "POST", "/invites/accept", map[string]any{"inviteId": inv.Invite.ID})
+	if !bytes.Contains(b, []byte("INVITE_LINK_REQUIRED")) {
+		t.Errorf("body %s", b)
+	}
+	if n := h.count(`SELECT count(*) FROM workspace_members WHERE user_id = $1::uuid AND workspace_id = $2::uuid`, invitee.id, ws.ID); n != 0 {
+		t.Error("the invite was accepted by id")
+	}
+	h.expect(200, invitee, "POST", "/invites/accept", map[string]any{"token": inv.Token}) // the link still works
+}

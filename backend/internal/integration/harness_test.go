@@ -126,6 +126,7 @@ func newHarnessWith(t *testing.T, adjust func(*server.Deps)) *harness {
 		StreamRecheck:  150 * time.Millisecond,
 		Email:          auth.NewEmailPolicy(auth.EmailEnforce, "", "", nil),
 		Context:        t.Context(),
+		InvitesByID:    true,
 	}
 	if adjust != nil {
 		adjust(&deps)

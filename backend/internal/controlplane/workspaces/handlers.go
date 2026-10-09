@@ -233,6 +233,10 @@ func (h *Handlers) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, "provide exactly one of token or inviteId")
 		return
 	}
+	if req.InviteID != "" && !h.invitesByID {
+		httpx.WriteError(w, http.StatusForbidden, "INVITE_LINK_REQUIRED", "open the invite link you were sent to join this workspace")
+		return
+	}
 	wsID, err := h.svc.AcceptInvite(r.Context(), user, req.Token, req.InviteID)
 	if err != nil {
 		writeError(w, r, err)

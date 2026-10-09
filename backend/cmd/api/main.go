@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -103,6 +104,7 @@ func main() {
 
 	router := server.New(server.Deps{
 		Context:        appCtx,
+		InvitesByID:    !strings.EqualFold(strings.TrimSpace(cfg.InvitesByID), "false"),
 		Limiter:        ratelimit.New(limits),
 		Email:          emailPolicy,
 		Pool:           pool,

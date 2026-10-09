@@ -40,6 +40,9 @@ type Deps struct {
 	Publisher      events.Publisher
 	Subscriber     events.Subscriber
 	SDKKeyCacheTTL time.Duration
+	// InvitesByID allows accepting an invite by id and lists open invites in
+	// /me. false leaves only the one-time link.
+	InvitesByID bool
 	// Email decides whether users with an unconfirmed email may bootstrap a
 	// workspace or accept an invite. Nil means no check.
 	Email *auth.EmailPolicy
@@ -161,7 +164,7 @@ func rank(r rbac.Role) int {
 // New returns the router with every route mounted.
 func New(d Deps) *Router {
 	guard := rbac.NewGuard(d.Pool)
-	ws := workspaces.NewHandlers(workspaces.NewService(d.Pool), d.Email)
+	ws := workspaces.NewHandlers(workspaces.NewService(d.Pool), d.Email, d.InvitesByID)
 	fl := flags.NewHandlers(d.Pool, d.Publisher)
 	al := auditlog.NewHandlers(d.Pool)
 	ex := experiments.NewHandlers(d.Pool)
