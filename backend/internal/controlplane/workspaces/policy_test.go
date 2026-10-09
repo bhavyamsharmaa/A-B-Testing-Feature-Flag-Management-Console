@@ -1,8 +1,11 @@
 package workspaces
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"helios/backend/internal/controlplane/rbac"
 )
@@ -159,5 +162,21 @@ func TestInviteToken(t *testing.T) {
 	tok2, hash2, _ := newInviteToken()
 	if tok == tok2 || hash == hash2 {
 		t.Error("tokens repeat")
+	}
+}
+
+// The database's own last-owner guarantee (migration 0007) is reported as the
+// same 409 LAST_OWNER the application gives when it notices first.
+func TestLastOwnerViolationFromTheDatabaseIsMapped(t *testing.T) {
+	violation := &pgconn.PgError{Code: "23514", ConstraintName: "workspace_keeps_an_owner", Message: "workspace x must keep at least one owner"}
+	if got := lastOwnerViolation(fmt.Errorf("commit: %w", violation)); got != errLastOwner {
+		t.Errorf("got %v", got)
+	}
+	other := &pgconn.PgError{Code: "23514", ConstraintName: "some_other_check"}
+	if got := lastOwnerViolation(other); got == errLastOwner {
+		t.Error("an unrelated check violation was reported as LAST_OWNER")
+	}
+	if got := lastOwnerViolation(nil); got != nil {
+		t.Errorf("nil became %v", got)
 	}
 }

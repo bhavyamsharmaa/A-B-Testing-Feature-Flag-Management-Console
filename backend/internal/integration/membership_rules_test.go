@@ -173,33 +173,45 @@ func TestTheLastOwnerCannotBeRemovedDemotedOrLeave(t *testing.T) {
 	}
 }
 
-// Concurrent removals/demotions can't leave a workspace without an owner.
+// Two owners leaving at the same moment (with another member still in the
+// workspace) never leave it without an owner: the application's row locks make
+// the second one fail, and the database would refuse it even without them.
 func TestConcurrentOwnerRemovalsLeaveAnOwner(t *testing.T) {
 	x := newTenants(t)
 	h := x.h
 	h.slowDown("workspace_members", "DELETE", 300*time.Millisecond) // both leavers are inside their transactions at once
 	ws := "/workspaces/" + x.wsA.ID
-	co := h.newUser("coowner2")
-	h.me(co)
-	tok := decode[struct{ Token string }](t, h.expect(201, x.a, "POST", ws+"/invites", map[string]any{"email": co.email, "role": "admin"})).Token
-	h.expect(200, co, "POST", "/invites/accept", map[string]any{"token": tok})
+	join := func(name, role string) user {
+		u := h.newUser(name)
+		h.me(u)
+		tok := decode[struct{ Token string }](t, h.expect(201, x.a, "POST", ws+"/invites", map[string]any{"email": u.email, "role": role})).Token
+		h.expect(200, u, "POST", "/invites/accept", map[string]any{"token": tok})
+		return u
+	}
+	co := join("coowner2", "admin")
+	join("bystander", "viewer")
 	h.expect(200, x.a, "PATCH", ws+"/members/"+co.id, map[string]any{"role": "owner"})
 
+	statuses := make([]int, 2)
 	var wg sync.WaitGroup
-	for _, u := range []user{x.a, co} {
+	for i, u := range []user{x.a, co} {
 		wg.Add(1)
 		go func() { // both owners leave at the same moment
 			defer wg.Done()
 			req, _ := http.NewRequest("DELETE", h.srv.URL+ws+"/members/"+u.id, nil)
 			req.Header.Set("X-Test-User", u.id+"|"+u.email)
 			if res, err := http.DefaultClient.Do(req); err == nil {
+				statuses[i] = res.StatusCode
 				res.Body.Close()
 			}
 		}()
 	}
 	wg.Wait()
 	if n := h.count(`SELECT count(*) FROM workspace_members WHERE workspace_id = $1::uuid AND role = 'owner'`, x.wsA.ID); n != 1 {
-		t.Errorf("after two owners left at once, owners = %d, want exactly 1", n)
+		t.Errorf("after two owners left at once, owners = %d, want exactly 1 (statuses %v)", n, statuses)
+	}
+	if !(statuses[0] == 204 && statuses[1] == 409) && !(statuses[0] == 409 && statuses[1] == 204) {
+		t.Errorf("statuses %v, want one 204 and one 409", statuses)
 	}
 }
 

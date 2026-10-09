@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"helios/backend/internal/controlplane/audit"
 	"helios/backend/internal/controlplane/quota"
@@ -147,9 +148,20 @@ var (
 	errLastOwner      = apiError{409, "LAST_OWNER", "a workspace needs at least one owner; make someone else an owner first"}
 )
 
+// lastOwnerViolation turns the database's own guarantee (migration 0007: a
+// workspace with members keeps an owner) into the same answer the application
+// gives when it spots the problem first.
+func lastOwnerViolation(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "workspace_keeps_an_owner" {
+		return errLastOwner
+	}
+	return err
+}
+
 // ChangeRole moves a member to a new role.
 func (s *Service) ChangeRole(ctx context.Context, access rbac.WorkspaceAccess, targetID string, next rbac.WorkspaceRole) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return lastOwnerViolation(pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		roles, owners, err := lockMembers(ctx, tx, access.WorkspaceID)
 		if err != nil {
 			return err
@@ -186,13 +198,13 @@ func (s *Service) ChangeRole(ctx context.Context, access rbac.WorkspaceAccess, t
 			Before:       map[string]any{"role": current},
 			After:        map[string]any{"role": next},
 		})
-	})
+	}))
 }
 
 // RemoveMember removes a member, or lets the caller leave (targetID is their
 // own id).
 func (s *Service) RemoveMember(ctx context.Context, access rbac.WorkspaceAccess, targetID string) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return lastOwnerViolation(pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		roles, owners, err := lockMembers(ctx, tx, access.WorkspaceID)
 		if err != nil {
 			return err
@@ -225,7 +237,7 @@ func (s *Service) RemoveMember(ctx context.Context, access rbac.WorkspaceAccess,
 			ResourceID:   targetID,
 			Before:       map[string]any{"role": target},
 		})
-	})
+	}))
 }
 
 type Invite struct {
