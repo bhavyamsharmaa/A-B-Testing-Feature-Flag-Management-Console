@@ -126,3 +126,50 @@ func TestEveryTenantInsertNamesWorkspaceID(t *testing.T) {
 		t.Errorf("only %d tenant-table INSERTs found; the check is not looking at the code", checked)
 	}
 }
+
+// Routes must be mounted through internal/server's registry (its Router.add),
+// which is what internal/integration's every-route test iterates over. A
+// handler mounted directly on a mux anywhere else would escape that test.
+func TestRoutesAreOnlyMountedThroughTheRegistry(t *testing.T) {
+	root := filepath.Join("..", "..")
+	fset := token.NewFileSet()
+	allowed := map[string]int{
+		filepath.Join(root, "internal", "server", "server.go"): 1,  // Router.add: the one place
+		filepath.Join(root, "cmd", "devauth", "main.go"):       -1, // local-only dev tool, its own mux
+	}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		calls := 0
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Handle" || sel.Sel.Name == "HandleFunc") {
+				calls++
+			}
+			return true
+		})
+		want, isAllowed := allowed[path]
+		switch {
+		case calls == 0:
+		case !isAllowed:
+			t.Errorf("%s registers %d route(s) directly; mount them through internal/server so they are tenant-checked", path, calls)
+		case want >= 0 && calls != want:
+			t.Errorf("%s has %d Handle calls, want %d", path, calls, want)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
