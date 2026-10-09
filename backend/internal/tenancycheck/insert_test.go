@@ -173,3 +173,73 @@ func TestRoutesAreOnlyMountedThroughTheRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// No log or print call may be handed a value that looks like a credential. A
+// name-based check cannot prove absence, but it stops the easy mistake: adding
+// log.Printf("... %v", token) or printing the Authorization header.
+// (cmd/mkkey prints the key it just minted on purpose: that is its output.)
+func TestLogCallsAreNotGivenCredentials(t *testing.T) {
+	root := filepath.Join("..", "..")
+	fset := token.NewFileSet()
+	suspicious := []string{"token", "plaintext", "secret", "password", "passwd", "authorization", "bearer", "apikey", "sdkkey", "jwt", "cookie", "keyhash", "databaseurl"}
+	logFuncs := map[string]bool{"Printf": true, "Print": true, "Println": true, "Fatal": true, "Fatalf": true, "Fatalln": true, "Panic": true, "Panicf": true}
+	checked := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		if strings.HasSuffix(path, filepath.Join("cmd", "mkkey", "main.go")) {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			pkg, _ := sel.X.(*ast.Ident)
+			if pkg == nil || (pkg.Name != "log" && pkg.Name != "fmt") || !(logFuncs[sel.Sel.Name] || strings.HasPrefix(sel.Sel.Name, "Fprint")) {
+				return true
+			}
+			checked++
+			for _, arg := range call.Args {
+				ast.Inspect(arg, func(m ast.Node) bool {
+					var name string
+					switch v := m.(type) {
+					case *ast.Ident:
+						name = v.Name
+					case *ast.SelectorExpr:
+						name = v.Sel.Name
+					default:
+						return true
+					}
+					low := strings.ToLower(name)
+					for _, bad := range suspicious {
+						if strings.Contains(low, bad) {
+							t.Errorf("%s: %s.%s is given %q, which looks like a credential", fset.Position(call.Pos()), pkg.Name, sel.Sel.Name, name)
+						}
+					}
+					return true
+				})
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked < 8 {
+		t.Errorf("only %d log calls found; the check is not looking at the code", checked)
+	}
+}

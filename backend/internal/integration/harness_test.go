@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +36,8 @@ import (
 )
 
 type harness struct {
+	mu     sync.Mutex
+	bodies [][]byte // every response body h.call has seen
 	t      *testing.T
 	srv    *httptest.Server
 	pool   *pgxpool.Pool
@@ -153,6 +157,9 @@ func (h *harness) call(u user, method, path string, body any) (int, []byte) {
 	}
 	defer res.Body.Close()
 	b, _ := io.ReadAll(res.Body)
+	h.mu.Lock()
+	h.bodies = append(h.bodies, b)
+	h.mu.Unlock()
 	return res.StatusCode, b
 }
 
@@ -243,4 +250,32 @@ func (h *harness) slowDown(table, event string, d time.Duration) {
 	if err != nil {
 		h.t.Fatalf("slowDown: %v", err)
 	}
+}
+
+// syncBuffer is a bytes.Buffer safe for the server goroutines to log into.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// captureLogs redirects the standard logger (what the handlers use) into a
+// buffer for the rest of the test.
+func captureLogs(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	log.SetOutput(buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return buf
 }

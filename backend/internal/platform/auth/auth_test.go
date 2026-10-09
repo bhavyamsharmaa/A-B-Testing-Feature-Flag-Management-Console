@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,9 +9,12 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -215,5 +219,55 @@ func TestMiddleware(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || seen.ID != userID {
 		t.Fatalf("valid token: status %d, user %+v", rec.Code, seen)
+	}
+}
+
+// A rejected token must not be echoed in the response, and nothing may be
+// logged about it.
+func TestRejectedTokensAreNeverEchoedOrLogged(t *testing.T) {
+	f := newFakeSupabase(t)
+	v := f.verifier(t)
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+
+	expired := f.claims()
+	expired["exp"] = time.Now().Add(-time.Hour).Unix()
+	wrongAud := f.claims()
+	wrongAud["aud"] = "someone-else"
+	anon := f.claims()
+	anon["role"] = "anon"
+	for name, token := range map[string]string{
+		"expired":           sign(t, jwt.SigningMethodES256, "ec-1", f.ec, expired),
+		"wrong audience":    sign(t, jwt.SigningMethodES256, "ec-1", f.ec, wrongAud),
+		"anon role":         sign(t, jwt.SigningMethodES256, "ec-1", f.ec, anon),
+		"unknown key id":    sign(t, jwt.SigningMethodES256, "nope", f.ec, f.claims()),
+		"truncated":         sign(t, jwt.SigningMethodES256, "ec-1", f.ec, f.claims())[:80],
+		"garbage with dots": "aaaa.bbbb.cccc",
+	} {
+		h := v.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Errorf("%s: reached the handler", name) }))
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/me", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s: status %d", name, rec.Code)
+		}
+		// Both the whole token and its signature part must be absent.
+		parts := strings.Split(token, ".")
+		for _, leak := range []string{token, parts[len(parts)-1]} {
+			if len(leak) > 3 && strings.Contains(rec.Body.String(), leak) {
+				t.Errorf("%s: the response echoes the token: %s", name, rec.Body.String())
+			}
+		}
+		_, err := v.Verify(token)
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+		} else if strings.Contains(err.Error(), token) {
+			t.Errorf("%s: the verification error contains the token", name)
+		}
+	}
+	if logs.Len() != 0 {
+		t.Errorf("rejecting tokens wrote to the log: %s", logs.String())
 	}
 }
