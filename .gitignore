@@ -44,3 +44,6 @@ go.work.sum
 # ─── Playwright output (frontend/) ───────────────────────────
 /frontend/test-results/
 /frontend/playwright-report/
+
+# Production database dumps (rollout G1); never commit
+backend/backups/
