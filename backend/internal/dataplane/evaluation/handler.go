@@ -38,7 +38,7 @@ type evaluationResult struct {
 // replaces this load in M2; Evaluate itself doesn't change.
 func Handler(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		envID, ok := apikey.EnvironmentID(r.Context())
+		scope, ok := apikey.ScopeFrom(r.Context())
 		if !ok {
 			httpx.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "SDK key required")
 			return
@@ -57,7 +57,7 @@ func Handler(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		configs, err := loadConfigs(r, pool, envID, req.FlagKeys)
+		configs, err := loadConfigs(r, pool, scope, req.FlagKeys)
 		if err != nil {
 			// SDKs treat any non-200 as "serve fallback", so a DB outage
 			// degrades to fallbacks rather than breaking the caller.
@@ -81,14 +81,19 @@ func Handler(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-func loadConfigs(r *http.Request, pool *pgxpool.Pool, envID string, keys []string) (map[string]*FlagConfig, error) {
+// loadConfigs reads the flags of the key's own environment. The workspace
+// filter is redundant with the composite foreign keys (a flag_config can only
+// join a flag and an environment of one workspace), kept as defence in depth:
+// were the data ever inconsistent, a key still could not read another
+// workspace's flag.
+func loadConfigs(r *http.Request, pool *pgxpool.Pool, scope apikey.Scope, keys []string) (map[string]*FlagConfig, error) {
 	rows, err := pool.Query(r.Context(), `
 		SELECT f.key, f.variations, fc.enabled, fc.targeting_rules,
 		       COALESCE(fc.rollout, '{}'::jsonb), fc.salt, fc.fallthrough_variation_id
 		FROM flags f
 		JOIN flag_configs fc ON fc.flag_id = f.id
-		WHERE fc.environment_id = $1::uuid AND f.key = ANY($2::text[])`,
-		envID, keys)
+		WHERE fc.environment_id = $1::uuid AND f.workspace_id = $3::uuid AND f.key = ANY($2::text[])`,
+		scope.EnvironmentID, keys, scope.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
