@@ -14,6 +14,7 @@ import (
 	"helios/backend/internal/controlplane/sdkkeys"
 	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/platform/apikey"
+	"helios/backend/internal/platform/events"
 )
 
 // sseStream is an open /sdk/stream connection.
@@ -92,7 +93,9 @@ func TestFlagChangesOnlyReachTheOwnWorkspacesStream(t *testing.T) {
 	chanB := "flags:" + x.wsB.ID + ":" + x.devB
 	subs := map[string]bool{}
 	for _, name := range h.bus.Subscribers() {
-		subs[name] = true
+		if name != events.RevocationChannel { // the instance's own control channel
+			subs[name] = true
+		}
 	}
 	if len(subs) != 2 || !subs[chanA] || !subs[chanB] {
 		t.Fatalf("subscriptions = %v, want exactly %s and %s", subs, chanA, chanB)

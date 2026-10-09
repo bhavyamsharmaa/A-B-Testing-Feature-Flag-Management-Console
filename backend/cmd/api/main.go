@@ -102,6 +102,7 @@ func main() {
 	}
 
 	router := server.New(server.Deps{
+		Context:        appCtx,
 		Limiter:        ratelimit.New(limits),
 		Email:          emailPolicy,
 		Pool:           pool,

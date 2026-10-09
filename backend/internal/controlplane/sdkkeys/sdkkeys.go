@@ -4,7 +4,9 @@
 package sdkkeys
 
 import (
+	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"helios/backend/internal/controlplane/quota"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/platform/apikey"
+	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/httpx"
 )
 
@@ -33,10 +36,15 @@ var GenerateKey = apikey.Generate
 type Handlers struct {
 	pool *pgxpool.Pool
 	keys Invalidator
+	pub  events.Publisher
 }
 
-func NewHandlers(pool *pgxpool.Pool, keys Invalidator) *Handlers {
-	return &Handlers{pool: pool, keys: keys}
+// NewHandlers wires the SDK key routes. pub announces revocations to the other
+// API instances (events.RevocationChannel); a failed announcement is logged and
+// does not fail the request, since the cache TTL and the streams' re-check still
+// bound the delay.
+func NewHandlers(pool *pgxpool.Pool, keys Invalidator, pub events.Publisher) *Handlers {
+	return &Handlers{pool: pool, keys: keys, pub: pub}
 }
 
 type keyView struct {
@@ -214,6 +222,12 @@ func (h *Handlers) Revoke(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternal(w, r, err)
 		return
 	}
-	h.keys.Invalidate(prefix)
+	h.keys.Invalidate(prefix) // this instance, at once
+	if h.pub != nil {         // every other instance
+		payload, _ := json.Marshal(map[string]string{"prefix": prefix})
+		if err := h.pub.Publish(ctx, events.RevocationChannel, payload); err != nil {
+			log.Printf("sdkkeys: could not announce a revocation (other instances honour it within their cache TTL): %v", err)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }

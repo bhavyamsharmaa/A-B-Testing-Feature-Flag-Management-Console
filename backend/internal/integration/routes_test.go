@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/platform/events"
 	"helios/backend/internal/server"
 )
 
@@ -169,6 +170,9 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 			case "GET /sdk/stream":
 				s := h.openStream(keyB)
 				for _, name := range h.bus.Subscribers() {
+					if name == events.RevocationChannel {
+						continue // the instance's own control channel, not a stream
+					}
 					if !strings.Contains(name, x.wsB.ID) || strings.Contains(name, x.wsA.ID) {
 						t.Errorf("%s with B's key subscribed to %q", label, name)
 					}

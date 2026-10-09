@@ -10,6 +10,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -42,6 +43,9 @@ type Deps struct {
 	// Email decides whether users with an unconfirmed email may bootstrap a
 	// workspace or accept an invite. Nil means no check.
 	Email *auth.EmailPolicy
+	// Context bounds background work (the revocation watcher); nil means
+	// context.Background().
+	Context context.Context
 	// Limiter holds the rate limits; nil means the defaults.
 	Limiter *ratelimit.Limiter
 	// StreamRecheck is how often an open /sdk/stream asks whether its key was
@@ -162,7 +166,13 @@ func New(d Deps) *Router {
 	al := auditlog.NewHandlers(d.Pool)
 	ex := experiments.NewHandlers(d.Pool)
 	sdkKeys := apikey.NewVerifier(d.Pool, d.SDKKeyCacheTTL)
-	keys := sdkkeys.NewHandlers(d.Pool, sdkKeys)
+	keys := sdkkeys.NewHandlers(d.Pool, sdkKeys, d.Publisher)
+	ctx := d.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Hear about revocations made on other instances (no-op without a broker).
+	go sdkKeys.Watch(ctx, d.Subscriber)
 	recheck := d.StreamRecheck
 	if recheck == 0 {
 		recheck = 10 * time.Second

@@ -3,6 +3,7 @@ package apikey
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/httpx"
 	"helios/backend/internal/platform/ratelimit"
 )
@@ -62,6 +64,9 @@ type Verifier struct {
 	mu       sync.RWMutex
 	cache    map[[sha256.Size]byte]cacheEntry
 	throttle Throttle
+
+	watchMu  sync.Mutex
+	watchers map[string]map[chan struct{}]struct{} // key prefix -> open streams to wake
 }
 
 // Throttle bounds how fast one client can make the verifier do expensive work
@@ -90,7 +95,7 @@ func (v *Verifier) cached(plaintext string) (Scope, bool) {
 }
 
 func NewVerifier(pool *pgxpool.Pool, ttl time.Duration) *Verifier {
-	return &Verifier{pool: pool, ttl: ttl, cache: map[[sha256.Size]byte]cacheEntry{}}
+	return &Verifier{pool: pool, ttl: ttl, cache: map[[sha256.Size]byte]cacheEntry{}, watchers: map[string]map[chan struct{}]struct{}{}}
 }
 
 var errInvalidKey = errors.New("invalid key")
@@ -135,15 +140,93 @@ func (v *Verifier) scopeFor(ctx context.Context, plaintext string) (Scope, error
 	return sc, nil
 }
 
-// Invalidate forgets every cached verification of the key with this prefix.
-// Call it right after revoking the key.
+// Invalidate forgets every cached verification of the key with this prefix and
+// wakes the open streams using it (they close). Call it right after revoking
+// the key, and when another instance announces a revocation.
 func (v *Verifier) Invalidate(prefix string) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
 	for digest, e := range v.cache {
 		if e.scope.Prefix == prefix {
 			delete(v.cache, digest)
 		}
+	}
+	v.mu.Unlock()
+
+	v.watchMu.Lock()
+	for ch := range v.watchers[prefix] {
+		select {
+		case ch <- struct{}{}:
+		default: // already notified
+		}
+	}
+	v.watchMu.Unlock()
+}
+
+// InvalidateAll forgets every cached verification. Used after the revocation
+// subscription was down: announcements may have been missed.
+func (v *Verifier) InvalidateAll() {
+	v.mu.Lock()
+	v.cache = map[[sha256.Size]byte]cacheEntry{}
+	v.mu.Unlock()
+}
+
+// Revoked returns a channel that receives when the key with this prefix is
+// revoked (announced to this instance), and a function that stops listening.
+// /sdk/stream selects on it so a revoked key's streams close at once instead
+// of at the next database re-check.
+func (v *Verifier) Revoked(prefix string) (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	v.watchMu.Lock()
+	if v.watchers[prefix] == nil {
+		v.watchers[prefix] = map[chan struct{}]struct{}{}
+	}
+	v.watchers[prefix][ch] = struct{}{}
+	v.watchMu.Unlock()
+	return ch, func() {
+		v.watchMu.Lock()
+		delete(v.watchers[prefix], ch)
+		if len(v.watchers[prefix]) == 0 {
+			delete(v.watchers, prefix)
+		}
+		v.watchMu.Unlock()
+	}
+}
+
+// Watch applies revocations announced by other instances until ctx ends:
+// each message names a key prefix, which is dropped from the cache and wakes
+// its streams. It resubscribes after a failure (with backoff) and clears the
+// cache whenever a subscription (re)starts, since announcements may have been
+// missed in between. With no broker configured it returns at once; the cache
+// TTL and the streams' periodic re-check are then the only bound.
+func (v *Verifier) Watch(ctx context.Context, sub events.Subscriber) {
+	backoff := time.Second
+	for ctx.Err() == nil {
+		msgs, closeFn, err := sub.Subscribe(ctx, events.RevocationChannel)
+		if errors.Is(err, events.ErrUnavailable) {
+			return
+		}
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+			continue
+		}
+		backoff = time.Second
+		v.InvalidateAll()
+		for payload := range msgs {
+			var m struct {
+				Prefix string `json:"prefix"`
+			}
+			if json.Unmarshal([]byte(payload), &m) == nil && m.Prefix != "" {
+				v.Invalidate(m.Prefix)
+			}
+		}
+		_ = closeFn()
 	}
 }
 

@@ -35,6 +35,14 @@ func FlagsChannel(workspaceID, environmentID string) string {
 	return "flags:" + workspaceID + ":" + environmentID
 }
 
+// RevocationChannel carries "this SDK key was revoked" to every API instance,
+// so each drops it from its cache and closes the streams that use it at once.
+// The payload is {"prefix":"hsdk_xxxxxxxx"}: the key's DISPLAY prefix, which is
+// not a secret (the console shows it) and says nothing about any tenant's data.
+// It is a deliberate exception to the per-workspace channel names: instances
+// must hear about every workspace's revocations.
+const RevocationChannel = "helios:apikey-revoked"
+
 type NoopPublisher struct{}
 
 func (NoopPublisher) Publish(context.Context, string, []byte) error { return nil }

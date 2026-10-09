@@ -44,6 +44,7 @@ type harness struct {
 	bus    *events.MemoryBus
 	routes []server.Route
 	deps   server.Deps
+	authn  func(http.Handler) http.Handler
 }
 
 type user struct {
@@ -124,6 +125,7 @@ func newHarnessWith(t *testing.T, adjust func(*server.Deps)) *harness {
 		SDKKeyCacheTTL: time.Hour,
 		StreamRecheck:  150 * time.Millisecond,
 		Email:          auth.NewEmailPolicy(auth.EmailEnforce, "", "", nil),
+		Context:        t.Context(),
 	}
 	if adjust != nil {
 		adjust(&deps)
@@ -131,7 +133,7 @@ func newHarnessWith(t *testing.T, adjust func(*server.Deps)) *harness {
 	router := server.New(deps)
 	srv := httptest.NewServer(router.Mux)
 	t.Cleanup(srv.Close)
-	return &harness{t: t, srv: srv, pool: pool, bus: bus, routes: router.Routes, deps: deps}
+	return &harness{t: t, srv: srv, pool: pool, bus: bus, routes: router.Routes, deps: deps, authn: authn}
 }
 
 // newUser inserts a user into the (stand-in) auth.users table.
@@ -303,4 +305,19 @@ func (u user) header() string {
 		h += "|" + u.status
 	}
 	return h
+}
+
+// newInstance starts a second API process over the same database: its own
+// router, SDK-key cache, limiter and revocation watcher. mod adjusts its
+// dependencies (typically the event bus it shares with the first instance).
+func (h *harness) newInstance(mod func(*server.Deps)) *httptest.Server {
+	h.t.Helper()
+	d := h.deps
+	d.Limiter = nil
+	if mod != nil {
+		mod(&d)
+	}
+	srv := httptest.NewServer(server.New(d).Mux)
+	h.t.Cleanup(srv.Close)
+	return srv
 }
