@@ -61,11 +61,13 @@ paths:
       description: >-
         The user must already have signed up through Supabase Auth. Identify
         them by exactly one of userId or email. A user belongs to exactly one
-        workspace: the target must already be in the caller's workspace or not
-        have one yet. A user in a different workspace gets the same 404
-        USER_NOT_FOUND as an unknown one, so tenants can't discover each
-        other. Demoting the environment's last admin is refused with 409
-        LAST_ADMIN.
+        workspace. A user already in the caller's workspace can be named by
+        either (role changes). A user with no workspace yet (they have never
+        opened the console) can be added ONLY by userId; by email alone they
+        get the same 404 USER_NOT_FOUND as an unknown user, so admins can't
+        probe which addresses have signed up. A user in a different workspace
+        also gets that 404, so tenants can't discover each other. Demoting the
+        environment's last admin is refused with 409 LAST_ADMIN.
       security: [{ supabaseJWT: [] }]
       requestBody:
         required: true

@@ -39,11 +39,15 @@ type memberResponse struct {
 // changes an existing member's role. The user must already have signed up
 // through Supabase Auth; identify them by userId or email.
 //
-// A user belongs to exactly one workspace. The target may be added if they
-// are already in the caller's workspace or have no workspace yet (they have
-// never opened the console). A user in ANOTHER workspace gets the same
-// 404 USER_NOT_FOUND as an unknown one, so a tenant can't learn who else
-// uses Helios.
+// A user belongs to exactly one workspace (see decideMembership):
+//   - already in the caller's workspace: their role can be changed, naming
+//     them by userId or email;
+//   - no workspace yet (they have never opened the console): they can be
+//     added, but ONLY by userId. An email alone would let an admin probe
+//     which addresses have signed up, so that case answers like an unknown
+//     user;
+//   - in ANOTHER workspace: the same 404 USER_NOT_FOUND as an unknown user,
+//     so a tenant can't learn who else uses Helios.
 func (h *MemberHandlers) AddMember(w http.ResponseWriter, r *http.Request) {
 	access := AccessFrom(r.Context())
 	var req addMemberRequest
@@ -90,10 +94,10 @@ func (h *MemberHandlers) AddMember(w http.ResponseWriter, r *http.Request) {
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		switch {
-		case memberOf != nil && *memberOf != access.Env.WorkspaceID:
-			return errUserElsewhere
-		case memberOf == nil:
+		switch decideMembership(memberOf, access.Env.WorkspaceID, req.UserID != "") {
+		case membershipDeny:
+			return errUserUnavailable
+		case membershipAdopt:
 			if _, err := tx.Exec(r.Context(), `
 				INSERT INTO workspace_members (user_id, workspace_id) VALUES ($1::uuid, $2::uuid)`,
 				userID, access.Env.WorkspaceID,
@@ -146,7 +150,7 @@ func (h *MemberHandlers) AddMember(w http.ResponseWriter, r *http.Request) {
 	}
 	// The user signed in and got their own workspace between the checks above
 	// and the insert: the primary key on workspace_members.user_id fired.
-	if errors.Is(err, errUserElsewhere) || isUniqueViolation(err, "workspace_members_pkey") {
+	if errors.Is(err, errUserUnavailable) || isUniqueViolation(err, "workspace_members_pkey") {
 		writeUserNotFound(w)
 		return
 	}
@@ -230,8 +234,35 @@ func (h *MemberHandlers) RemoveMember(w http.ResponseWriter, r *http.Request) {
 
 var errLastAdmin = errors.New("last admin")
 
-// errUserElsewhere: the target already belongs to a different workspace.
-var errUserElsewhere = errors.New("user belongs to another workspace")
+// errUserUnavailable: the target can't be added by this caller (another
+// workspace, or no workspace and identified by email only). Reported exactly
+// like an unknown user.
+var errUserUnavailable = errors.New("user not available to add")
+
+type membershipDecision int
+
+const (
+	membershipAllow membershipDecision = iota // already in the caller's workspace
+	membershipAdopt                           // no workspace: add them to the caller's
+	membershipDeny                            // not addable by this caller
+)
+
+// decideMembership is the whole policy for whether AddMember may proceed.
+// memberOf is the target's current workspace id (nil when they have none);
+// byUserID is whether the request named them by userId rather than email.
+func decideMembership(memberOf *string, callerWorkspaceID string, byUserID bool) membershipDecision {
+	switch {
+	case memberOf == nil:
+		if byUserID {
+			return membershipAdopt
+		}
+		return membershipDeny
+	case *memberOf == callerWorkspaceID:
+		return membershipAllow
+	default:
+		return membershipDeny
+	}
+}
 
 func writeUserNotFound(w http.ResponseWriter) {
 	httpx.WriteError(w, http.StatusNotFound, "USER_NOT_FOUND",
