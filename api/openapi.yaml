@@ -1,16 +1,19 @@
 openapi: 3.1.0
 info:
   title: Helios API
-  version: 0.2.0
+  version: 0.3.0
   description: >-
     Shared contract for the Helios control plane (flag CRUD, RBAC, audit) and
     data plane (flag evaluation). This file is the source of truth for the API
     shape: backend handlers under /backend and the frontend API client under
     /frontend are both expected to conform to it.
 
-    Control-plane routes take a Supabase Auth access token and check the
-    caller's role in {envId} (viewer < editor < approver < admin). Every non-2xx
-    JSON response has the Error shape.
+    Control-plane routes take a Supabase Auth access token. Data belongs to a
+    workspace; a user can belong to several, with a role in each (owner > admin
+    > editor > viewer). Routes with {envId} or {wsId} resolve it through the
+    caller's own membership: anything the caller is not a member of answers 404,
+    never 403, so ids can't be probed. Every non-2xx JSON response has the
+    Error shape.
 servers:
   - url: https://TODO-your-render-service.onrender.com
     description: Production (Render)
@@ -43,7 +46,11 @@ paths:
   /me:
     get:
       tags: [control-plane]
-      summary: The current user and their role in each environment
+      summary: The current user, their workspaces and open invites
+      description: >-
+        The first call for a user creates their personal workspace (dev,
+        staging and production environments, the user as owner). The first
+        workspace listed is the active one (most recently used).
       security: [{ supabaseJWT: [] }]
       responses:
         "200":
@@ -53,53 +60,331 @@ paths:
               schema: { $ref: "#/components/schemas/Me" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
-  /environments/{envId}/members:
-    parameters: [{ $ref: "#/components/parameters/EnvPath" }]
+  /workspaces:
+    get:
+      tags: [control-plane]
+      summary: The caller's workspaces (same data as in /me)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Workspaces, most recently used first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspaces]
+                properties:
+                  workspaces:
+                    type: array
+                    items: { $ref: "#/components/schemas/Workspace" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [control-plane]
-      summary: Grant or change a user's role in this environment (admin)
+      summary: Create a workspace owned by the caller, and switch to it
       description: >-
-        The user must already have signed up through Supabase Auth. Identify
-        them by exactly one of userId or email. A user belongs to exactly one
-        workspace. A user already in the caller's workspace can be named by
-        either (role changes). A user with no workspace yet (they have never
-        opened the console) can be added ONLY by userId; by email alone they
-        get the same 404 USER_NOT_FOUND as an unknown user, so admins can't
-        probe which addresses have signed up. A user in a different workspace
-        also gets that 404, so tenants can't discover each other. Demoting the
-        environment's last admin is refused with 409 LAST_ADMIN.
+        Created with dev, staging and production environments. A user owns at
+        most 5 workspaces (409 QUOTA_EXCEEDED beyond that).
       security: [{ supabaseJWT: [] }]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/MemberUpsertRequest" }
+            schema: { $ref: "#/components/schemas/NameRequest" }
       responses:
         "201":
-          description: Role granted or changed
+          description: Created
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Member" }
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { description: QUOTA_EXCEEDED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}:
+    parameters: [{ $ref: "#/components/parameters/WsPath" }]
+    patch:
+      tags: [control-plane]
+      summary: Rename the workspace (admin+)
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NameRequest" }
+      responses:
+        "200":
+          description: Renamed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name]
+                properties:
+                  id: { type: string, format: uuid }
+                  name: { type: string }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { description: "USER_NOT_FOUND or ENVIRONMENT_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-        "409": { description: LAST_ADMIN, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
 
-  /environments/{envId}/members/{userId}:
+  /workspaces/{wsId}/switch:
+    parameters: [{ $ref: "#/components/parameters/WsPath" }]
+    post:
+      tags: [control-plane]
+      summary: Make this the caller's active workspace (any member)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Active workspace updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [activeWorkspaceId]
+                properties:
+                  activeWorkspaceId: { type: string, format: uuid }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /workspaces/{wsId}/members:
+    parameters: [{ $ref: "#/components/parameters/WsPath" }]
+    get:
+      tags: [control-plane]
+      summary: List the workspace's members (any member)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Members, owners first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [members]
+                properties:
+                  members:
+                    type: array
+                    items: { $ref: "#/components/schemas/Member" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /workspaces/{wsId}/members/{userId}:
     parameters:
-      - $ref: "#/components/parameters/EnvPath"
+      - $ref: "#/components/parameters/WsPath"
       - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [control-plane]
+      summary: Change a member's role (admin+)
+      description: >-
+        Owners can set any role, including owner (hand-over). Admins manage
+        everyone except owners and can't create owners. The last owner can't
+        be demoted (409 LAST_OWNER).
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { $ref: "#/components/schemas/WorkspaceRole" }
+      responses:
+        "200": { description: Role changed }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND or MEMBER_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: LAST_OWNER, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
     delete:
       tags: [control-plane]
-      summary: Remove a user's role in this environment (admin)
+      summary: Remove a member, or leave the workspace (own id)
+      description: >-
+        Any member may remove themselves. Removing someone else needs admin,
+        and an owner can only be removed by an owner. The last owner can't
+        leave or be removed (409 LAST_OWNER).
       security: [{ supabaseJWT: [] }]
       responses:
         "204": { description: Removed }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { description: MEMBER_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-        "409": { description: LAST_ADMIN, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: "WORKSPACE_NOT_FOUND or MEMBER_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: LAST_OWNER, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/invites:
+    parameters: [{ $ref: "#/components/parameters/WsPath" }]
+    get:
+      tags: [control-plane]
+      summary: Open invites of the workspace (admin+)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Unexpired, unrevoked, unaccepted invites
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invites]
+                properties:
+                  invites:
+                    type: array
+                    items: { $ref: "#/components/schemas/Invite" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+    post:
+      tags: [control-plane]
+      summary: Invite someone by email (admin+)
+      description: >-
+        Helios does not send email: the response carries a one-time token (only
+        its hash is stored; it can't be shown again) for the inviter to turn
+        into a link. It is valid for 7 days and only for that address. Members
+        plus open invites are capped at 20 (409 QUOTA_EXCEEDED). Invites are
+        never for the owner role.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email: { type: string }
+                role: { type: string, enum: [admin, editor, viewer] }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invite, token]
+                properties:
+                  invite: { $ref: "#/components/schemas/Invite" }
+                  token: { type: string, description: "hinv_… shown once" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+        "409": { description: "ALREADY_MEMBER, INVITE_EXISTS or QUOTA_EXCEEDED", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/invites/{inviteId}:
+    parameters:
+      - $ref: "#/components/parameters/WsPath"
+      - { name: inviteId, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      tags: [control-plane]
+      summary: Revoke an open invite (admin+)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "204": { description: Revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND or INVITE_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /invites/accept:
+    post:
+      tags: [control-plane]
+      summary: Accept an invite and join its workspace
+      description: >-
+        Name the invite by its one-time token, or by the id listed in GET /me
+        (invites addressed to the caller's email). The caller's email must be
+        the invited address (403 otherwise). The token works once.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Exactly one of token or inviteId.
+              properties:
+                token: { type: string }
+                inviteId: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Joined; the workspace becomes the active one
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspaceId]
+                properties:
+                  workspaceId: { type: string, format: uuid }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: INVITE_NOT_FOUND (invalid, used or revoked), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "410": { description: INVITE_EXPIRED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{envId}/sdk-keys:
+    parameters: [{ $ref: "#/components/parameters/EnvPath" }]
+    get:
+      tags: [control-plane]
+      summary: SDK keys of this environment (admin+)
+      description: Only display prefixes are returned.
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Keys, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items: { $ref: "#/components/schemas/SdkKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/FlagNotFound" }
+    post:
+      tags: [control-plane]
+      summary: Create an SDK key (admin+)
+      description: >-
+        The plaintext key is returned once; only its Argon2id hash is stored. A
+        workspace may have at most 10 active SDK keys (409 QUOTA_EXCEEDED).
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 60 }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key, plaintext]
+                properties:
+                  key: { $ref: "#/components/schemas/SdkKey" }
+                  plaintext: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/FlagNotFound" }
+        "409": { description: QUOTA_EXCEEDED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{envId}/sdk-keys/{keyId}:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - { name: keyId, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      tags: [control-plane]
+      summary: Revoke an SDK key (admin+)
+      description: Idempotent. The key stops working within a minute (verification cache).
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "204": { description: Revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "ENVIRONMENT_NOT_FOUND or KEY_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /environments/{envId}/flags:
     parameters: [{ $ref: "#/components/parameters/EnvPath" }]
@@ -485,12 +770,19 @@ components:
       in: path
       required: true
       description: >-
-        The environment's UUID (from GET /me). For now an environment KEY
-        such as "dev" is also accepted and means "this key in the caller's own
-        workspace"; that shim is removed once the console uses UUIDs. An
-        environment the caller has no role in, or that belongs to another
-        workspace, answers 404 ENVIRONMENT_NOT_FOUND, never 403.
-      schema: { type: string, example: 3f2b6c1e-0000-4000-8000-000000000001 }
+        The environment's UUID (from GET /me). Access follows the caller's
+        role in the environment's workspace. An environment of a workspace the
+        caller doesn't belong to, an unknown one, or anything that isn't a UUID
+        answers 404 ENVIRONMENT_NOT_FOUND, never 403.
+      schema: { type: string, format: uuid, example: 3f2b6c1e-0000-4000-8000-000000000001 }
+    WsPath:
+      name: wsId
+      in: path
+      required: true
+      description: >-
+        The workspace's UUID. Only honoured for members: anyone else gets 404
+        WORKSPACE_NOT_FOUND.
+      schema: { type: string, format: uuid }
     FlagKeyPath:
       name: key
       in: path
@@ -515,6 +807,9 @@ components:
     Forbidden:
       description: FORBIDDEN — the caller's role in {envId} is too low
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    WorkspaceNotFound:
+      description: WORKSPACE_NOT_FOUND (unknown, or the caller isn't a member)
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     FlagNotFound:
       description: FLAG_NOT_FOUND or ENVIRONMENT_NOT_FOUND
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -531,60 +826,97 @@ components:
       type: string
       enum: [viewer, editor, approver, admin]
 
+    WorkspaceRole:
+      type: string
+      enum: [owner, admin, editor, viewer]
+      description: >-
+        Applies to every environment of the workspace. Owners and admins can do
+        everything flags allow (including production); editors edit outside
+        production and can kill anywhere; viewers read. Only owners and admins
+        manage members, invites, SDK keys and the workspace name.
+
+    Environment:
+      type: object
+      required: [id, key, name, isProduction]
+      properties:
+        id: { type: string, format: uuid }
+        key: { type: string, pattern: '^[a-z][a-z0-9_-]{0,31}$', description: Never UUID-shaped. }
+        name: { type: string }
+        isProduction: { type: boolean }
+
+    Workspace:
+      type: object
+      required: [id, name, slug, role, environments]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        role: { $ref: "#/components/schemas/WorkspaceRole" }
+        environments:
+          type: array
+          items: { $ref: "#/components/schemas/Environment" }
+
+    NameRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 60 }
+
     Me:
       type: object
-      required: [id, email, workspace, environments, roles]
-      description: >-
-        The first authenticated call for a user creates their workspace with
-        dev, staging and production environments and an admin role in each.
-        A user belongs to exactly one workspace.
+      required: [id, email, activeWorkspaceId, workspaces, invites]
       properties:
         id: { type: string, format: uuid }
         email: { type: string }
-        workspace:
-          type: object
-          required: [id, name]
-          properties:
-            id: { type: string, format: uuid }
-            name: { type: string }
-        environments:
+        activeWorkspaceId: { type: string, format: uuid }
+        workspaces:
           type: array
+          items: { $ref: "#/components/schemas/Workspace" }
+        invites:
+          type: array
+          description: Open invites addressed to the caller's email. They never carry a token.
           items:
             type: object
-            required: [id, key, name, isProduction, role]
+            required: [id, workspaceId, workspaceName, role, invitedByEmail, expiresAt]
             properties:
               id: { type: string, format: uuid }
-              key: { type: string, pattern: '^[a-z][a-z0-9_-]{0,31}$', description: Never UUID-shaped. }
-              name: { type: string }
-              isProduction: { type: boolean }
-              role: { $ref: "#/components/schemas/Role" }
-        roles:
-          deprecated: true
-          description: Same data as environments, keyed by environment key. Kept for the deployed console; removed in stage 2.
-          type: array
-          items:
-            type: object
-            required: [environment, role]
-            properties:
-              environment: { type: string }
-              role: { $ref: "#/components/schemas/Role" }
-
-    MemberUpsertRequest:
-      type: object
-      required: [role]
-      properties:
-        userId: { type: string, format: uuid }
-        email: { type: string }
-        role: { $ref: "#/components/schemas/Role" }
+              workspaceId: { type: string, format: uuid }
+              workspaceName: { type: string }
+              role: { $ref: "#/components/schemas/WorkspaceRole" }
+              invitedByEmail: { type: string }
+              expiresAt: { type: string, format: date-time }
 
     Member:
       type: object
-      required: [userId, email, environment, role]
+      required: [userId, email, role, joinedAt, isYou]
       properties:
         userId: { type: string, format: uuid }
         email: { type: string }
-        environment: { type: string }
-        role: { $ref: "#/components/schemas/Role" }
+        role: { $ref: "#/components/schemas/WorkspaceRole" }
+        joinedAt: { type: string, format: date-time }
+        isYou: { type: boolean }
+
+    Invite:
+      type: object
+      required: [id, email, role, invitedByEmail, createdAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        role: { $ref: "#/components/schemas/WorkspaceRole" }
+        invitedByEmail: { type: string }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+
+    SdkKey:
+      type: object
+      required: [id, name, kind, prefix, createdAt, revokedAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string, enum: [sdk] }
+        prefix: { type: string, example: hsdk_1a2b3c4d }
+        createdAt: { type: string, format: date-time }
+        revokedAt: { type: [string, "null"], format: date-time }
 
     Variation:
       type: object

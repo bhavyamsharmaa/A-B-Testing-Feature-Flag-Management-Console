@@ -55,24 +55,29 @@ Postgres container initializes its volume (`docker compose down -v` to reset).
 
 ## Workspaces (multi-tenancy)
 
-Every user gets a private workspace (environments, flags, experiments, audit log)
-the first time they call `GET /me`. No workspace can read or change another's data:
-control-plane routes take the environment **UUID** (`/environments/{envId}/...`,
-UUIDs come from `/me`) and answer 404 for any environment the caller holds no role
-in. For now a key such as `dev` is also accepted and resolves only inside the
-caller's own workspace; that shim goes away once the console uses UUIDs.
+Every user gets a private workspace the first time they sign in (the first
+`GET /me` creates it). A workspace owns its environments, flags, experiments, SDK
+keys and audit log; **no workspace can read or change another's data**. A user can
+belong to several workspaces with a role in each (owner, admin, editor, viewer),
+create more (up to 5 owned), switch between them in the console, and invite people
+by email (a one-time link: Helios does not send email).
 
-- **One workspace per user, for now.** A user cannot belong to two workspaces, so
-  members can only be added if they are not in another workspace (otherwise
-  `404 USER_NOT_FOUND`, the same as an unknown user). Lifting this means changing
-  the primary key of `workspace_members`.
-- Limits per workspace: 3 environments, 50 flags, 10 active SDK keys
-  (`409 QUOTA_EXCEEDED`). SDK keys are minted with
-  `go run ./cmd/mkkey -workspace <id> -env <key>`.
-- **Deploying it:** apply `0004_workspaces.sql` → `db/verify_0004.sql` → deploy the
-  backend → apply `0005_drop_workspace_defaults.sql` **immediately** →
-  `db/verify_0005.sql`. Rehearse on a second project first (`backend/db/rehearsal.md`)
-  and take a backup (`backend/scripts/backup_db.sh`).
+Control-plane routes take ids (`/environments/{envId}/...`, `/workspaces/{wsId}/...`)
+that are only honoured for members; anything else is a 404, never a 403. SDK keys
+(`/environments/{envId}/sdk-keys`) only ever see their own workspace's flags.
+Per workspace: 3 environments, 50 flags, 10 active SDK keys, 20 members plus open
+invites. Roles and limits are in [docs/LOCAL_MULTITENANCY.md](docs/LOCAL_MULTITENANCY.md),
+which also shows how to run the whole stack locally without Supabase
+(`backend/cmd/devauth`) and how to run the end-to-end test that produced
+[docs/screenshots/](docs/screenshots/).
+
+**Database:** migrations `0004`, `0005` and `0006` add workspaces and are **not applied
+to any shared database yet**. Apply them in order, after a backup and a rehearsal on a
+copy (`backend/db/rehearsal.md`, `backend/scripts/backup_db.sh`), with the matching
+`db/verify_000N.sql` after each. `0005` must follow the backend deploy of the 0004
+version immediately; if you go straight to this version, apply 0004-0006 together and
+then deploy. The console and backend in this branch must be deployed together: the old
+console calls routes that no longer exist.
 
 ## Where the code lives
 
