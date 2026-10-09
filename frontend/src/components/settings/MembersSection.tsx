@@ -162,6 +162,12 @@ export function MembersSection({ workspace, reloadKey }: { workspace: Workspace;
               ? 'You will lose access to this workspace and everything in it right away. You can only rejoin with a new invite.'
               : `${removing.email} loses access to this workspace right away.`}
           </p>
+          {!removing.isYou && (
+            <p className="text-amber-300">
+              SDK keys belong to the workspace, not to the person who created them, so any they made keep working. Revoke the
+              ones you no longer trust under SDK keys below.
+            </p>
+          )}
         </ConfirmDialog>
       )}
     </section>

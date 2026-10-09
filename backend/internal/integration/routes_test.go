@@ -44,6 +44,16 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 		map[string]any{"email": viewer.email, "role": "viewer"})).Token
 	h.expect(200, viewer, "POST", "/invites/accept", map[string]any{"token": tok})
 
+	// A former member: invited as an admin, then removed. Their credentials
+	// (the JWT, here the stub identity) are exactly as valid as before.
+	ghost := h.newUser("ghost")
+	h.me(ghost)
+	gt := decode[struct{ Token string }](t, h.expect(201, x.a, "POST", "/workspaces/"+x.wsA.ID+"/invites",
+		map[string]any{"email": ghost.email, "role": "admin"})).Token
+	h.expect(200, ghost, "POST", "/invites/accept", map[string]any{"token": gt})
+	h.expect(200, ghost, "GET", "/environments/"+x.devA+"/flags", nil) // a member, for now
+	h.expect(204, x.a, "DELETE", "/workspaces/"+x.wsA.ID+"/members/"+ghost.id, nil)
+
 	forbidden := []string{secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, x.devA, x.wsA.Name, "alice key", keyID, inviteID, "someone@example.com", x.sdkKeyA[:12]}
 	fill := func(path string) string {
 		key := secretFlag
@@ -110,6 +120,12 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 				t.Errorf("%s as B: status %d, want 404 %s; body %s", label, st, wantCode, body)
 			}
 			assertNoLeak(label+" as B", body)
+			// 3b. A REMOVED member is a stranger again, at once: 404, not 403.
+			gst, gbody := h.call(ghost, rt.Method, path, map[string]any{})
+			if gst != 404 || !bytes.Contains(gbody, []byte(wantCode)) {
+				t.Errorf("%s as a removed member: status %d, want 404 %s; body %s", label, gst, wantCode, gbody)
+			}
+			assertNoLeak(label+" as a removed member", gbody)
 			// 4. A member below the route's role: 403, not 404 (they can see it exists).
 			vst, vbody := h.call(viewer, rt.Method, path, map[string]any{})
 			switch {
