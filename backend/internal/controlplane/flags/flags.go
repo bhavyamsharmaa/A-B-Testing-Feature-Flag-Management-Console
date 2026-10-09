@@ -50,13 +50,13 @@ type flagEvent struct {
 // committed: a Redis hiccup here must never look like the mutation itself
 // failed, so errors are logged, not returned to the caller (PRD: Redis down
 // degrades propagation, never correctness).
-func (h *Handlers) publish(ctx context.Context, environmentID, action, flagKey string, enabled bool, version int64) {
+func (h *Handlers) publish(ctx context.Context, workspaceID, environmentID, action, flagKey string, enabled bool, version int64) {
 	payload, err := json.Marshal(flagEvent{Action: action, FlagKey: flagKey, Enabled: enabled, Version: version})
 	if err != nil {
 		log.Printf("flags: marshal event for %s: %v", flagKey, err)
 		return
 	}
-	if err := h.events.Publish(ctx, events.FlagsChannel(environmentID), payload); err != nil {
+	if err := h.events.Publish(ctx, events.FlagsChannel(workspaceID, environmentID), payload); err != nil {
 		log.Printf("flags: publish event for %s: %v", flagKey, err)
 	}
 }
@@ -210,7 +210,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternal(w, r, err)
 		return
 	}
-	h.publish(ctx, access.Env.ID, "created", view.Key, view.Config.Enabled, view.Config.Version)
+	h.publish(ctx, access.Env.WorkspaceID, access.Env.ID, "created", view.Key, view.Config.Enabled, view.Config.Version)
 	httpx.WriteJSON(w, http.StatusCreated, view)
 }
 
@@ -381,7 +381,7 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		httpx.WriteInternal(w, r, err)
 	default:
-		h.publish(ctx, access.Env.ID, "updated", view.Key, view.Config.Enabled, view.Config.Version)
+		h.publish(ctx, access.Env.WorkspaceID, access.Env.ID, "updated", view.Key, view.Config.Enabled, view.Config.Version)
 		httpx.WriteJSON(w, http.StatusOK, view)
 	}
 }
@@ -511,7 +511,7 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		httpx.WriteInternal(w, r, err)
 	default:
-		h.publish(ctx, access.Env.ID, "deleted", key, false, 0)
+		h.publish(ctx, access.Env.WorkspaceID, access.Env.ID, "deleted", key, false, 0)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -574,7 +574,7 @@ func (h *Handlers) Kill(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternal(w, r, err)
 		return
 	}
-	h.publish(ctx, access.Env.ID, "killed", view.Key, view.Config.Enabled, view.Config.Version)
+	h.publish(ctx, access.Env.WorkspaceID, access.Env.ID, "killed", view.Key, view.Config.Enabled, view.Config.Version)
 	httpx.WriteJSON(w, http.StatusOK, view)
 }
 

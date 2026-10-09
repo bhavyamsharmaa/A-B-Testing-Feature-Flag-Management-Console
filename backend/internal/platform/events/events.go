@@ -25,13 +25,14 @@ type Subscriber interface {
 }
 
 // FlagsChannel is the single source of truth for how a flag-change channel
-// name is derived from an environment, so the publish side (flags package)
-// and the subscribe side (stream package) can't drift out of sync. Keyed by
-// environment UUID, not its string key — both sides already have the UUID
-// on hand (from rbac.Environment.ID and apikey's SDK-key lookup
-// respectively) without an extra join.
-func FlagsChannel(environmentID string) string {
-	return "flags:" + environmentID
+// name is derived, so the publish side (flags package) and the subscribe side
+// (stream package) can't drift out of sync. The channel carries BOTH the
+// workspace id and the environment id: an environment id is already unique to
+// one workspace, but a name that contains only it would let a bug (or a shared
+// Redis) put two tenants on one channel. Subscriptions are always to this exact
+// name, never a pattern.
+func FlagsChannel(workspaceID, environmentID string) string {
+	return "flags:" + workspaceID + ":" + environmentID
 }
 
 type NoopPublisher struct{}

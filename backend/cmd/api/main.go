@@ -24,8 +24,11 @@ import (
 	"helios/backend/internal/server"
 )
 
-// sdkKeyCacheTTL bounds how long a revoked SDK key keeps working.
-const sdkKeyCacheTTL = time.Minute
+// sdkKeyCacheTTL bounds how long a revoked SDK key keeps working on an
+// instance that did not process the revocation itself (the one that did drops
+// its cache entry at once). Argon2id costs tens of milliseconds, so a short TTL
+// is cheap: one verification per key per instance every 15 seconds.
+const sdkKeyCacheTTL = 15 * time.Second
 
 func main() {
 	cfg := config.Load()
@@ -65,7 +68,7 @@ func main() {
 		defer redisClient.Close()
 	}
 
-	mux := server.New(server.Deps{
+	router := server.New(server.Deps{
 		Pool:           pool,
 		Authn:          verifier.Middleware,
 		Publisher:      publisher,
@@ -75,7 +78,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           cors.Middleware(cfg.CORSAllowedOrigins, mux),
+		Handler:           cors.Middleware(cfg.CORSAllowedOrigins, router.Mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

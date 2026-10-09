@@ -34,9 +34,12 @@ import (
 )
 
 type harness struct {
-	t    *testing.T
-	srv  *httptest.Server
-	pool *pgxpool.Pool
+	t      *testing.T
+	srv    *httptest.Server
+	pool   *pgxpool.Pool
+	bus    *events.MemoryBus
+	routes []server.Route
+	deps   server.Deps
 }
 
 type user struct{ id, email string }
@@ -97,14 +100,18 @@ func newHarness(t *testing.T) *harness {
 			next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), auth.User{ID: id, Email: email})))
 		})
 	}
-	mux := server.New(server.Deps{
+	bus := events.NewMemoryBus()
+	deps := server.Deps{
 		Pool: pool, Authn: authn,
-		Publisher: events.NoopPublisher{}, Subscriber: events.NoopSubscriber{},
-		SDKKeyCacheTTL: time.Nanosecond, // revocation takes effect immediately in tests
-	})
-	srv := httptest.NewServer(mux)
+		Publisher: bus, Subscriber: bus,
+		// A long cache TTL on purpose: revocation must not depend on the cache expiring.
+		SDKKeyCacheTTL: time.Hour,
+		StreamRecheck:  150 * time.Millisecond,
+	}
+	router := server.New(deps)
+	srv := httptest.NewServer(router.Mux)
 	t.Cleanup(srv.Close)
-	return &harness{t: t, srv: srv, pool: pool}
+	return &harness{t: t, srv: srv, pool: pool, bus: bus, routes: router.Routes, deps: deps}
 }
 
 // newUser inserts a user into the (stand-in) auth.users table.

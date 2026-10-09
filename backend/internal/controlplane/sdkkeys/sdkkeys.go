@@ -20,12 +20,18 @@ import (
 	"helios/backend/internal/platform/httpx"
 )
 
-type Handlers struct {
-	pool *pgxpool.Pool
+// Invalidator drops cached verifications of a key (apikey.Verifier does).
+type Invalidator interface {
+	Invalidate(prefix string)
 }
 
-func NewHandlers(pool *pgxpool.Pool) *Handlers {
-	return &Handlers{pool: pool}
+type Handlers struct {
+	pool *pgxpool.Pool
+	keys Invalidator
+}
+
+func NewHandlers(pool *pgxpool.Pool, keys Invalidator) *Handlers {
+	return &Handlers{pool: pool, keys: keys}
 }
 
 type keyView struct {
@@ -139,8 +145,10 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"key": view, "plaintext": plaintext})
 }
 
-// Revoke handles DELETE /environments/{envId}/sdk-keys/{keyId} (admin+). A
-// revoked key stops working within the verifier's cache TTL (one minute).
+// Revoke handles DELETE /environments/{envId}/sdk-keys/{keyId} (admin+). The
+// verification cache of this instance is cleared right after the commit, so
+// the key fails immediately here; other instances honour it within their
+// cache TTL, and open /sdk/stream connections within their re-check interval.
 // Revoking an already revoked key is a no-op.
 func (h *Handlers) Revoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -150,8 +158,8 @@ func (h *Handlers) Revoke(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusNotFound, "KEY_NOT_FOUND", "no such key in this environment")
 		return
 	}
+	var prefix string
 	err := pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
-		var prefix string
 		var wasRevoked bool
 		err := tx.QueryRow(ctx, `
 			SELECT key_prefix, revoked_at IS NOT NULL FROM api_keys
@@ -186,5 +194,6 @@ func (h *Handlers) Revoke(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternal(w, r, err)
 		return
 	}
+	h.keys.Invalidate(prefix)
 	w.WriteHeader(http.StatusNoContent)
 }
