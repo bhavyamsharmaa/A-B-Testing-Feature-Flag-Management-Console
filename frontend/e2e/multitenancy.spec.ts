@@ -187,6 +187,18 @@ test('two tenants: isolation, switching, invites, roles, SDK keys', async ({ bro
   await expect(workspaceName(b.page)).toHaveText(`bob-${stamp}'s workspace`)
   await expect(b.page.getByText(ALICE_FLAG)).toHaveCount(0)
 
+  // ---- Same tab, different person: nothing of the previous user survives ------
+  await a.page.getByRole('button', { name: 'Sign out' }).click()
+  await expect(a.page).toHaveURL(/\/login$/)
+  await a.page.getByLabel('Email').fill(bob.email)
+  await a.page.getByLabel('Password').fill(bob.password)
+  await a.page.getByRole('button', { name: 'Sign in' }).click()
+  await expect(a.page).toHaveURL(/\/console/) // sign-in returns to the page the person was on
+  await expect(workspaceName(a.page)).toHaveText(`bob-${stamp}'s workspace`)
+  await expect(a.page.getByText(new RegExp(`alice-${stamp}`))).toHaveCount(0)
+  await expect(a.page.getByText(ALICE_FLAG)).toHaveCount(0)
+  expect(await a.page.evaluate(() => JSON.stringify({ ...localStorage }))).not.toContain(alice.email.split('@')[0] + "'s")
+
   await api.dispose()
   await a.context.close()
   await b.context.close()
