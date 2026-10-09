@@ -40,3 +40,7 @@ go.work.sum
 # ─── Database backups (backend/scripts/backup_db.sh) ─────────
 /backend/backups/
 *.dump
+
+# ─── Playwright output (frontend/) ───────────────────────────
+/frontend/test-results/
+/frontend/playwright-report/

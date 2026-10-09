@@ -10,7 +10,8 @@ const tab = ({ isActive }: { isActive: boolean }) =>
 export function ConsoleHeader({ email, onSignOut }: { email: string; onSignOut: () => void }) {
   return (
     <>
-      <header className="flex animate-fade-up flex-wrap items-center justify-between gap-3">
+      {/* relative z-30: the header and the card below each form a stacking context (fade-up animation); without this the workspace menu would open underneath the card. */}
+      <header className="relative z-30 flex animate-fade-up flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-4">
           <h1>
             <Logo className="text-xl" />

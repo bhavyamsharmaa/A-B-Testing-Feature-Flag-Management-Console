@@ -120,7 +120,7 @@ export function CreateFlagModal({ env, onClose, onCreated }: Props) {
           Create flag
         </h2>
         <p className="mt-1 text-sm text-zinc-400">
-          Creates a {type} flag in <span className="font-medium text-zinc-200">every</span> environment, disabled
+          Creates a {type} flag in <span className="font-medium text-zinc-200">every environment of this workspace</span>, disabled
           everywhere. Turning it on is a separate step.
         </p>
 
