@@ -38,6 +38,16 @@ SET slug = COALESCE(NULLIF(trim(both '-' from lower(regexp_replace(name, '[^a-zA
 ALTER TABLE workspaces ALTER COLUMN slug SET NOT NULL;
 ALTER TABLE workspaces ADD CONSTRAINT workspaces_slug_key UNIQUE (slug);
 
+-- A user's personal workspace (the one created on their first sign-in) is
+-- unique: with the (user_id, workspace_id) key below nothing else stops two
+-- concurrent first requests from each creating one. The backend also takes a
+-- per-user lock, but this makes the duplicate structurally impossible.
+ALTER TABLE workspaces ADD COLUMN is_personal BOOLEAN NOT NULL DEFAULT false;
+UPDATE workspaces w SET is_personal = true
+WHERE w.owner_id IS NOT NULL
+  AND w.id = (SELECT w2.id FROM workspaces w2 WHERE w2.owner_id = w.owner_id ORDER BY w2.created_at, w2.id LIMIT 1);
+CREATE UNIQUE INDEX one_personal_workspace_per_user ON workspaces (owner_id) WHERE is_personal;
+
 -- ============================================================
 -- Membership roles; several workspaces per user
 -- ============================================================
@@ -126,6 +136,8 @@ COMMIT;
 -- ALTER TABLE workspace_members ADD CONSTRAINT workspace_members_pkey PRIMARY KEY (user_id);  -- fails if a user is in 2+ workspaces
 -- ALTER TABLE workspace_members DROP COLUMN last_active_at;
 -- ALTER TABLE workspace_members DROP COLUMN role;
+-- DROP INDEX one_personal_workspace_per_user;
+-- ALTER TABLE workspaces DROP COLUMN is_personal;
 -- ALTER TABLE workspaces DROP CONSTRAINT workspaces_slug_key;
 -- ALTER TABLE workspaces DROP COLUMN slug;
 -- DROP TYPE workspace_role;

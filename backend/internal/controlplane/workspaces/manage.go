@@ -32,7 +32,7 @@ func (s *Service) Create(ctx context.Context, user auth.User, rawName string) (W
 			if err := quota.CheckOwnedWorkspaces(ctx, tx, user.ID); err != nil {
 				return err
 			}
-			id, err = createWorkspaceTx(ctx, tx, user, name)
+			id, err = createWorkspaceTx(ctx, tx, user, name, false)
 			return err
 		})
 	})

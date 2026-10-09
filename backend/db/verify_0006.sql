@@ -45,6 +45,9 @@ WITH checks (ord, name, ok) AS (
            NOT EXISTS (SELECT 1 FROM workspaces w
                        WHERE w.owner_id IS NOT NULL
                          AND NOT EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.role IN ('owner','admin'))) UNION ALL
+    SELECT 16, 'one_personal_workspace_per_user is partial unique',
+           COALESCE((SELECT i.indisunique AND i.indpred IS NOT NULL FROM pg_index i
+                     WHERE i.indexrelid = to_regclass('public.one_personal_workspace_per_user')), false) UNION ALL
     SELECT 15, 'every workspace owner_id is a member with role owner',
            NOT EXISTS (SELECT 1 FROM workspaces w
                        WHERE w.owner_id IS NOT NULL

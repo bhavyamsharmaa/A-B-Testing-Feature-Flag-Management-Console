@@ -228,3 +228,19 @@ func (h *harness) count(query string, args ...any) int {
 	}
 	return n
 }
+
+// slowDown makes every INSERT/DELETE/UPDATE (event) on table pause for d inside
+// its transaction, in THIS test's database only. It widens the window between
+// "read" and "commit" so that missing locks and constraints show up reliably
+// instead of once in a thousand runs.
+func (h *harness) slowDown(table, event string, d time.Duration) {
+	h.t.Helper()
+	fn := "slow_" + table + "_" + strings.ToLower(event)
+	_, err := h.pool.Exec(context.Background(), fmt.Sprintf(`
+		CREATE FUNCTION %[1]s() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(%[4]f); RETURN COALESCE(NEW, OLD); END $$;
+		CREATE TRIGGER %[1]s BEFORE %[3]s ON %[2]s FOR EACH ROW EXECUTE FUNCTION %[1]s();`,
+		fn, table, event, d.Seconds()))
+	if err != nil {
+		h.t.Fatalf("slowDown: %v", err)
+	}
+}

@@ -240,7 +240,7 @@ func lockUser(ctx context.Context, tx pgx.Tx, userID string) error {
 // createWorkspaceTx inserts a workspace owned by user, with the default
 // environments, the owner membership (marked as the active workspace) and an
 // audit row, in the caller's transaction.
-func createWorkspaceTx(ctx context.Context, tx pgx.Tx, user auth.User, name string) (string, error) {
+func createWorkspaceTx(ctx context.Context, tx pgx.Tx, user auth.User, name string, personal bool) (string, error) {
 	plan, err := provisionPlan(defaultEnvironments)
 	if err != nil {
 		return "", err
@@ -251,8 +251,8 @@ func createWorkspaceTx(ctx context.Context, tx pgx.Tx, user auth.User, name stri
 	}
 	var workspaceID string
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO workspaces (name, slug, owner_id) VALUES ($1, $2, $3::uuid) RETURNING id::text`,
-		name, slug, user.ID,
+		INSERT INTO workspaces (name, slug, owner_id, is_personal) VALUES ($1, $2, $3::uuid, $4) RETURNING id::text`,
+		name, slug, user.ID, personal,
 	).Scan(&workspaceID); err != nil {
 		return "", err
 	}
@@ -309,11 +309,13 @@ func (s *Service) Ensure(ctx context.Context, user auth.User) ([]Workspace, erro
 			if err != nil || len(existing) > 0 {
 				return err
 			}
-			_, err = createWorkspaceTx(ctx, tx, user, workspaceName(user.Email))
+			_, err = createWorkspaceTx(ctx, tx, user, workspaceName(user.Email), true)
 			return err
 		})
 	})
-	if err != nil {
+	// Lost a race the lock did not cover: the unique index on personal
+	// workspaces refused the second one, so the winner's workspace is the answer.
+	if err != nil && !isUniqueViolation(err, "one_personal_workspace_per_user") {
 		return nil, err
 	}
 	return load(ctx, s.pool, user.ID)
