@@ -25,3 +25,10 @@ SDK-key continuity (keys minted by the OLD code, one revoked, 20 subjects x 5 fl
 Findings: ROLLOUT.md did not exist (draft written); 0005 breaks old-backend writes; `backend/backups/` was not git-ignored (now is); `DATABASE_URL` is not visible to the tool shell.
 
 Stopped. Waiting for "go 1".
+
+## Decisions - 2026-10-09T13:26:17Z
+- Approved by the owner: split order. Window applies 0004, 0006, 0007 only; 0005 is a separate later gate (G6b) on an explicit "go". ROLLOUT.md updated (gates, rollback, smoke list). DRAFT label stays until the owner has reviewed it.
+- Three extra G2 rehearsal checks added to ROLLOUT.md (old backend full console flows on 0004+0006+0007; new backend without 0005 incl. write-path list; /sdk/stream on real Redis with overlapping old and new instances).
+
+## G1 Backup - 2026-10-09T13:26:17Z
+"go 1" received. BLOCKED before any command touched the database: `test -n "$DATABASE_URL"` in the tool shell reports NOT set. No dump attempted, nothing run against production. Need the CLI launched from a shell where DATABASE_URL is exported (or a pgpass/PGSERVICE setup).
