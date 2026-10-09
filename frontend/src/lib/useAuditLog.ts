@@ -4,7 +4,7 @@ import type { AuditEntry } from '../types'
 import { describeError } from './errors'
 
 /** Newest-first audit entries for one environment, filtered server-side and paged by cursor. */
-export function useAuditLog(env: string | null, filters: AuditFilters) {
+export function useAuditLog(env: string | null, workspaceId: string | null, filters: AuditFilters) {
   const { action, resourceId, severity } = filters
   const [entries, setEntries] = useState<AuditEntry[] | null>(null)
   const [nextCursor, setNextCursor] = useState<number | null>(null)
@@ -32,7 +32,7 @@ export function useAuditLog(env: string | null, filters: AuditFilters) {
     } finally {
       if (id === seq.current) setLoading(false)
     }
-  }, [env, action, resourceId, severity])
+  }, [env, workspaceId, action, resourceId, severity])
 
   useEffect(() => {
     setEntries(null) // never show another environment's or filter's rows while loading
@@ -58,7 +58,7 @@ export function useAuditLog(env: string | null, filters: AuditFilters) {
     } finally {
       if (id === seq.current) setLoadingMore(false)
     }
-  }, [env, action, resourceId, severity, nextCursor, loadingMore])
+  }, [env, workspaceId, action, resourceId, severity, nextCursor, loadingMore])
 
   return { entries, nextCursor, loading, loadingMore, error, moreError, reload: load, loadMore }
 }

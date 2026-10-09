@@ -1,5 +1,6 @@
 import type { AuditLogPage } from '../types'
 import { apiClient } from './client'
+import { envPath } from './envPath'
 
 export const PAGE_SIZE = 50
 
@@ -18,5 +19,5 @@ export function listAuditLogs(env: string, filters: AuditFilters, before?: numbe
   if (filters.action) query.set('action', filters.action)
   if (filters.resourceId) query.set('resourceId', filters.resourceId)
   if (filters.severity) query.set('severity', filters.severity)
-  return apiClient.get<AuditLogPage>(`/environments/${encodeURIComponent(env)}/audit-logs?${query}`)
+  return apiClient.get<AuditLogPage>(`${envPath(env)}/audit-logs?${query}`)
 }

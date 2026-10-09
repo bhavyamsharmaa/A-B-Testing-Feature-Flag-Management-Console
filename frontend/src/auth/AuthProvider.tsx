@@ -13,6 +13,8 @@ interface AuthState {
   meLoading: boolean
   meError: string | null
   reloadMe: () => void
+  /** Re-fetches /me in place (no loading state), e.g. after creating a workspace or accepting an invite. */
+  refreshMe: () => Promise<Me>
 }
 
 const AuthContext = createContext<AuthState | null>(null)
@@ -69,9 +71,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const reloadMe = useCallback(() => setMeNonce((n) => n + 1), [])
 
+  const refreshMe = useCallback(async () => {
+    const result = await apiClient.get<Me>('/me')
+    setMe(result)
+    return result
+  }, [])
+
   const value = useMemo<AuthState>(
-    () => ({ session, loading, signOut, me, meLoading, meError, reloadMe }),
-    [session, loading, signOut, me, meLoading, meError, reloadMe],
+    () => ({ session, loading, signOut, me, meLoading, meError, reloadMe, refreshMe }),
+    [session, loading, signOut, me, meLoading, meError, reloadMe, refreshMe],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
