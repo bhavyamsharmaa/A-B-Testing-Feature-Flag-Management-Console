@@ -8,6 +8,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/redis/go-redis/v9 v9.22.0
 	golang.org/x/crypto v0.43.0
+	gonum.org/v1/gonum v0.17.0
 )
 
 require (
@@ -21,5 +22,4 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	gonum.org/v1/gonum v0.17.0 // indirect
 )
