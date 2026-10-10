@@ -36,6 +36,54 @@ func (c *Client) Close(ctx context.Context) error
 `Evaluation`. `Track` with an experiment id attributes the event to that
 experiment; without one it is stored but belongs to none.
 
+## The exposure token (signed exposures)
+
+`/evaluate` returns `exposureToken` next to `experimentId` whenever the flag is in a
+running experiment (and only then: other evaluations are unchanged). It proves the
+server served this variation of this experiment to this subject.
+
+* The SDK **must keep the token with the `Evaluation`** and put it on the `$exposure`
+  event it queues for that evaluation: `"exposureToken": "<token>"`. `Expose(subject, ev)`
+  does this from `ev.ExposureToken`. Do not parse, log or alter it.
+* The token is bound to the exact subject, variation, experiment, environment and
+  workspace, and expires after about 24 hours (server setting). It is **not** a secret
+  about the subject (it contains only a hash-based signature) but it is a proof, so do
+  not share it between subjects.
+* If the SDK reports an exposure long after the evaluation (queued, offline), the
+  token may have expired: keep the original evaluation time and expect an
+  `EXPOSURE_TOKEN_EXPIRED` rejection for exposures older than the window; evaluating
+  again and reporting then is the fix. Tokens are not refreshed by `/track`.
+* Rejections (only when the server runs `EXPOSURE_VERIFICATION=required`):
+  `EXPOSURE_TOKEN_MISSING`, `EXPOSURE_TOKEN_INVALID` (also used for a wrong subject,
+  variation, experiment, or an unknown key), `EXPOSURE_TOKEN_EXPIRED`. They are
+  permanent for that event: drop it and count it, do not retry the same event.
+  Never send `exposureToken` on an event whose name is not `$exposure`.
+
+### Server settings and key rotation
+
+| Variable | Meaning |
+|---|---|
+| `EXPOSURE_VERIFICATION` | `off` (default: tokens are issued but ignored, old SDKs keep working), `report` (accept all, store whether each verified, results warn), `required` (reject exposures that do not verify) |
+| `EXPOSURE_TOKEN_KEY` | **Secret.** `<id>:<secret>`: an id of 1-16 letters or digits and a secret of at least 32 bytes, e.g. `k1:` followed by `openssl rand -base64 48`. The same value on every instance |
+| `EXPOSURE_TOKEN_KEY_PREVIOUS` | Optional, same format, a different id: only for rotation |
+| `EXPOSURE_TOKEN_MAX_AGE` | How long a token is valid, default `24h` |
+
+Without `EXPOSURE_TOKEN_KEY` a random development key is generated at startup (a log
+line says so, without the value); its tokens do not survive a restart or work across
+instances, so `required` refuses to start without a configured key.
+
+Roll-out: `off` -> update SDKs to pass the token -> `report` (watch the
+"unverified exposures" warning in the results fall to zero) -> `required`.
+
+Rotation: (1) generate a new key with a new id; (2) set `EXPOSURE_TOKEN_KEY_PREVIOUS`
+to the old `id:secret` and `EXPOSURE_TOKEN_KEY` to the new one on every instance and
+deploy: new tokens are signed with the new key and tokens signed with the old key
+still verify; (3) after `EXPOSURE_TOKEN_MAX_AGE` (24 h) remove
+`EXPOSURE_TOKEN_KEY_PREVIOUS`. If a key leaks, set the new key and **no** previous
+key at once: every outstanding token stops verifying and clients simply evaluate
+again. The secret is never logged, returned or stored; keep it in the platform's
+secret store, never in a file in the repository.
+
 ## Event ids and retries (the important part)
 
 * The **SDK generates the event id** (a UUIDv4 or `<random>-<counter>`; 1-128

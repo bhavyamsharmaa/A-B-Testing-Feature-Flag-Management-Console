@@ -20,6 +20,11 @@ The experiment **results API** (`feature/experiments-results`) needs no further
 migration: there is no 0009. It reads only what 0008 created, so it has the same
 placement as 0008: after the multi-tenancy release, not part of it.
 
+`0009_exposure_verification.sql` (signed exposure tokens, `report` mode) is likewise
+**not part of the multi-tenancy release**: it adds one nullable column,
+`events.exposure_verified`, after 0008. Apply it with `backend/db/verify_0009.sql`
+afterwards; it is metadata-only (no rewrite). The multi-tenancy backend never touches it.
+
 ## What ships
 
 | Piece | Production today | After |

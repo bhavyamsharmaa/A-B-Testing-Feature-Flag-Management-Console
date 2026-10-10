@@ -86,6 +86,8 @@ HELIOS_TEST_REDIS_URL='redis://127.0.0.1:56379/0' go test ./internal/integration
 | `RATE_LIMIT_DISABLED` | `false` | `true` switches every limit off |
 | `RATE_LIMITS` | built-in | Overrides, `class=perSecond/burst,...`; classes: `ip user me workspace invite accept sdk_key_create sdk_key sdk_invalid stream_open sdk_track sdk_track_events results` |
 | `TRUSTED_PROXY_HOPS` | `0` (`1` when `RENDER=true`) | Reverse proxies in front of the API appending to `X-Forwarded-For` |
+| `EXPOSURE_VERIFICATION` | `off` | `off`, `report` or `required`: what `/track` does with an `$exposure`'s token (see `docs/SDK_TRACKING.md`) |
+| `EXPOSURE_TOKEN_KEY` | dev key generated at startup | **Secret** `<id>:<secret>`; `EXPOSURE_TOKEN_KEY_PREVIOUS` for rotation; `EXPOSURE_TOKEN_MAX_AGE` (`24h`) |
 | `STREAMS_PER_KEY` | `100` | Concurrent `/sdk/stream` connections per SDK key |
 
 ## 5. What the roles can do
