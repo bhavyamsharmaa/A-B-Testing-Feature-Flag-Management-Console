@@ -27,12 +27,16 @@ fetched to produce this table.
 
 | Branch | Head | Pushed? | Based on |
 |---|---|---|---|
-| `main` (local) | `7381cc6` | no: 2 commits ahead of `origin/main` (`6c90844`) - but both are already on origin inside `feature/workspaces-ui` | `origin/main` |
+| `main` (local) | `6c90844` | equals `origin/main` (`6c90844`). Until 2026-10-11 local `main` had been 2 commits ahead (`f134373`, `7381cc6`, both already on origin inside `feature/workspaces-ui`); it was moved back locally, and a local pre-push hook refuses pushes to `main` | `origin/main` |
 | `feature/workspaces-ui` (release 1) | `1e2f5e6` | yes, equals `origin/feature/workspaces-ui` | `main` |
 | `feature/experiments-tracking` | `865eb82` | no | `feature/workspaces-ui` |
 | `feature/experiments-results` | `b5aea5c` | no | `feature/experiments-tracking` |
 | `feature/experiments-results-ui` | `96438f5` | no | `feature/experiments-results` |
 | `feature/experiments-hardening` | `36c4620` (plus the commit adding this section) | no | `feature/experiments-results-ui` |
+
+**This table is a snapshot and goes stale.** Before each release gate, recheck every row from
+local refs: `git rev-parse --short main origin/main feature/workspaces-ui ...` and
+`git branch -vv`; fetch first only when you intend to look at the remote.
 
 The history is strictly linear (each branch contains the one before it; checked with
 `git merge-base --is-ancestor`). A bundle of all local branches is kept in
