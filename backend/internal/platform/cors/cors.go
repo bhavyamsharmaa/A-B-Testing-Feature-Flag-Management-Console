@@ -22,6 +22,8 @@ func Middleware(allowedOrigins []string, next http.Handler) http.Handler {
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Helios-SDK-Key")
 			h.Set("Access-Control-Max-Age", "600")
+			// Without this a browser hides Retry-After from the console, which could then not honour a 429.
+			h.Set("Access-Control-Expose-Headers", "Retry-After")
 		}
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			if allowed {
