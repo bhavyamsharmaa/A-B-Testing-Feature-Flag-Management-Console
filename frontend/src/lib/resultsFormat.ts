@@ -107,7 +107,11 @@ export function reasonText(code: string | null | undefined): string {
 
 /** Why a field of a comparison is missing, in words (or null when it is not missing). */
 export function missingReason(c: ResultsComparison, field: string): string | null {
-  const code = c.reasons?.[field] ?? (c.status === 'insufficient_data' ? c.reasons?.inference ?? 'INSUFFICIENT_DATA' : undefined)
+  // Below the data minimum every inferential field is empty for the same reason: say which minimum is missed.
+  if (c.status === 'insufficient_data') {
+    return c.statusReasons?.length ? c.statusReasons.map(reasonText).join('; and ') : reasonText('INSUFFICIENT_DATA')
+  }
+  const code = c.reasons?.[field]
   if (code) return reasonText(code)
   if (c.status === 'invalid' && c.statusReasons?.length) return reasonText(c.statusReasons[0])
   return null

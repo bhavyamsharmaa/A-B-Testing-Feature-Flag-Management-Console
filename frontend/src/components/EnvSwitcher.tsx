@@ -12,7 +12,7 @@ interface Props {
 export function EnvSwitcher({ roles, selected, onSelect, onRefresh, refreshing }: Props) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <div role="tablist" aria-label="Environment" className="flex gap-1 rounded-xl border border-white/10 bg-black/30 p-1">
+      <div role="tablist" aria-label="Environment" className="flex max-w-full gap-1 overflow-x-auto rounded-xl border border-white/10 bg-black/30 p-1">
         {roles.map(({ environment, role }) => {
           const active = environment === selected
           const prod = isProduction(environment)

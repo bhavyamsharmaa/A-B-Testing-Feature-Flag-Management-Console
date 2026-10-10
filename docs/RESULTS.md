@@ -174,3 +174,34 @@ and environment; stopping is terminal, so a "restart" is a new experiment),
   per exposed subject, not per buyer.
 * Intervals use the Bonferroni-adjusted confidence level, so with three or more
   variations they are wider than a plain 95% interval.
+
+## The console's Results tab
+
+`/console/experiments/{key}/results` (a Data and a Results tab per experiment; the
+list at `/console/experiments` links to both). Read-only for every role.
+
+* **Honest wording.** Statuses are "Significant at this sample size", "Not
+  significant", "Insufficient data", "Not available" and "Not reliable (sample
+  ratio mismatch)"; never "winner", and no success colour. While an experiment runs,
+  "significant" carries "Not a verdict". Each status has its own shape (diamond,
+  circle, dashed circle, triangle, dotted square) as well as text.
+* **Warnings first**, most serious first (sample ratio mismatch, flag change with
+  its date and what changed, insufficient data, dropped events, another experiment on
+  the flag, short run, single variation), each with what it is and what to do. A
+  sample ratio mismatch is a blocking banner and the numbers below are dimmed with
+  an explanation.
+* **The fixed-sample-size note and the sample size** sit directly above the first
+  metric.
+* **Missing values** are an em dash with the reason in words (tooltip, screen-reader
+  text, and a visible line under the block). Nothing can render NaN, Infinity, null
+  or undefined: `src/lib/resultsFormat.ts` formats everything, and
+  `e2e/unit/results.spec.tsx` renders the view with every nullable field null and
+  non-finite numbers injected and fails if such text appears.
+* **Metrics:** up to three, chosen from the event names `event-counts` lists plus
+  the experiment's defined metrics; the selection lives in the address
+  (`?metrics=purchase:count`).
+* **Polling:** every 7 s while the experiment runs and the tab is visible; paused when
+  hidden and read again at once on return; a stopped experiment is read once; a 429
+  slows it down (Retry-After, which the API now exposes to the browser through CORS)
+  and keeps the last numbers on screen; any change of workspace, environment,
+  experiment or metrics aborts the request and clears what was shown.

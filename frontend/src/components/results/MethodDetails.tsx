@@ -4,6 +4,8 @@ import type { ExperimentResults } from '../../types'
 /** The plain-language account of how the numbers were computed (collapsed by default). */
 export function MethodDetails({ data }: { data: ExperimentResults }) {
   const t = data.thresholds
+  // API notes that contain a non-value word are left out rather than shown as a dash
+  const technical = data.method.filter((m) => safeText(m) === m)
   return (
     <details className="rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-zinc-200" data-testid="method">
       <summary className="cursor-pointer select-none font-medium text-zinc-100">How these numbers are computed</summary>
@@ -52,12 +54,12 @@ export function MethodDetails({ data }: { data: ExperimentResults }) {
             (sample ratio mismatch, p &lt; {t.srmPValue}), every number is marked not reliable.
           </p>
         </div>
-        {data.method.length > 0 && (
+        {technical.length > 0 && (
           <div>
             <h4 className="font-medium text-zinc-100">Technical notes (from the API)</h4>
             <ul className="list-disc space-y-1 pl-5 text-zinc-300">
-              {data.method.map((m, i) => (
-                <li key={i}>{safeText(m)}</li>
+              {technical.map((m, i) => (
+                <li key={i}>{m}</li>
               ))}
             </ul>
           </div>
