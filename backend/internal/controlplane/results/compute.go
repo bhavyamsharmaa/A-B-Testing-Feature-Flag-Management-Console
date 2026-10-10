@@ -254,6 +254,11 @@ func warnings(in Inputs, r Response, variations []string) []Warning {
 				"%d %q event(s) happened before the subject's exposure and were excluded.", d.BeforeExposure, mi.Spec.EventName),
 				map[string]any{"eventName": mi.Spec.EventName, "events": d.BeforeExposure})
 		}
+		if d.ClockAdjusted > 0 {
+			add("CLIENT_CLOCK_ADJUSTED", "info", fmt.Sprintf(
+				"%d %q event(s) carried a client timestamp far outside the run, so the server's receipt time was used to bound them.", d.ClockAdjusted, mi.Spec.EventName),
+				map[string]any{"eventName": mi.Spec.EventName, "events": d.ClockAdjusted})
+		}
 		if d.OutsideWindow > 0 {
 			add("EVENTS_OUTSIDE_WINDOW", "info", fmt.Sprintf(
 				"%d %q event(s) fall outside the run window and were excluded.", d.OutsideWindow, mi.Spec.EventName),

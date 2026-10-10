@@ -37,12 +37,64 @@ Subjects with no matching event count as 0 (they are in the denominator).
    `EVENTS_BEFORE_EXPOSURE` and `EVENTS_OUTSIDE_WINDOW` warnings carry the numbers.
 4. Events that were sent without an `experimentId` are **not used**: they are not
    attached to any experiment (see "Decisions" below).
-5. Timestamps are the client's (`occurred_at`), validated to a 5-minute-ahead /
-   90-day-back window at ingestion. Clients with skewed clocks can move an event
-   across the exposure or window boundary.
+5. Two clocks are stored per event: the client's (`occurred_at`, validated at
+   ingestion to at most 5 minutes ahead and 90 days back) and the server's receipt
+   time (`created_at`). How they are used is the clock rule below.
 
 Nothing is read into Go row by row: one SQL statement per metric returns counts,
 sums and sums of squares per variation (`results.MetricSumsSQL`).
+
+## Clock skew: the rule
+
+Client clocks are wrong more often than servers' (a device set to the wrong time, a
+server SDK and a browser disagreeing, an offline device replaying old events). Before
+this rule attribution used client time for both the run window and the order, so a
+client whose clock was two hours slow lost every conversion (all of its stamps fell
+before the experiment's start), and one stamped ahead lost the events that followed
+its exposure. Now:
+
+1. **Run window: server receipt time only.** An event counts only if `created_at`
+   (when the batch was stored) is between `started_at` and `stopped_at` (or now).
+   `/track` already refuses events for experiments that are not running, so this is
+   almost always true; what it removes is client time as a way to push an event into
+   or out of the run. An event received after the stop is out, whatever its stamp.
+2. **Order against the exposure: client times, after clamping each into
+   `[started_at, received_at]`.** `eff(t) = LEAST(GREATEST(t, started_at), created_at)`.
+   An event cannot have happened after it was received, nor an exposure before the
+   experiment existed. The event counts when `eff(event) > eff(exposure)`, or they are
+   equal and the **raw** client times say event >= exposure (so a client whose
+   clock is 60 days off still orders its own events correctly), or both came in the
+   same request and the event is at most one second before the exposure (a batch is
+   one moment, and stamps within it race).
+3. Nothing is silent: events excluded as "before the exposure" and "outside the
+   window" are counted in warnings, and `CLIENT_CLOCK_ADJUSTED` counts events that
+   were attributed but whose client stamp was more than a minute outside
+   `[started_at, received_at]` (a sign of clients with clock problems).
+
+Why not the alternatives: using receipt time for the order too would break offline
+clients (a late event would look later than a fresh exposure); trusting client time
+for everything is the old behaviour; adding a tolerance band (say 5 minutes) was
+rejected because it misattributes real events by the same amount while not helping
+the skews that matter (hours).
+
+Cases, each with a test in `TestResultsClockSkew` using fixed offsets:
+
+| case | before | now |
+|---|---|---|
+| client two hours slow, data received during the run | lost | counted |
+| exposure stamped 4 minutes ahead by one clock, event by an accurate one | lost | counted |
+| exposure and event in one batch, event 0.5 s earlier / 10 s earlier | lost / lost | counted / not |
+| offline: event truly before the exposure, sent late / truly after, sent late | not / counted | not / counted |
+| both stamped 60 days in the past, event a day after / a day before | lost / lost | counted / not |
+| event stamped nine days ahead, received three hours in | lost | counted |
+| event stamped inside the run, received after the stop | counted | not |
+| event stamped after the exposure but received before it | counted | not |
+
+Known limits: when a client's clock runs ahead and an event genuinely a few seconds
+before the exposure is received after it, it is counted (the ahead stamp was clamped
+down to the receipt time); and if both stamps fall before the experiment started, the
+order rests on the raw client times alone. Phase 2's golden vectors and simulations
+test the statistics from counts and are unaffected by this rule (re-run, unchanged).
 
 ## Control
 

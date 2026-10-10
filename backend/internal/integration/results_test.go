@@ -312,3 +312,119 @@ func TestEventCountsListsEventNames(t *testing.T) {
 	}
 	h.expect(404, x.b, "GET", "/environments/"+x.devA+"/experiments/"+expKey+"/event-counts", nil)
 }
+
+// seedAt is seed with both clocks explicit: occurredAt is what the client
+// claimed, receivedAt is the server's receipt time (events.created_at), both as
+// offsets from the experiment's start.
+func (x *tenants) seedAt(expID, subject, name, variation, occurredAt, receivedAt string) {
+	x.h.t.Helper()
+	var variationArg any
+	if variation != "" {
+		variationArg = variation
+	}
+	err := x.h.rawExec(`
+		INSERT INTO events (workspace_id, environment_id, experiment_id, event_id, event_name, subject_key, variation_id, occurred_at, created_at)
+		SELECT x.workspace_id, x.environment_id, x.id, $2, $3, $4, $5, x.started_at + $6::interval, x.started_at + $7::interval
+		FROM experiments x WHERE x.id = $1::uuid`,
+		expID, fmt.Sprintf("seed-%d", seedSeq.Add(1)), name, subject, variationArg, occurredAt, receivedAt)
+	if err != nil {
+		x.h.t.Fatal(err)
+	}
+}
+
+// legacyConverters is the attribution rule results used before the clock rule:
+// client time only, for the window and for the order. Kept here as evidence.
+func (x *tenants) legacyConverters(expID string) map[string]bool {
+	x.h.t.Helper()
+	rows, err := x.h.pool.Query(context.Background(), `
+		SELECT DISTINCT x.subject_key
+		FROM events x
+		JOIN experiments ex ON ex.id = x.experiment_id
+		JOIN events e ON e.workspace_id = x.workspace_id AND e.experiment_id = x.experiment_id AND e.subject_key = x.subject_key
+		             AND e.event_name = 'e' AND e.occurred_at >= x.occurred_at
+		             AND e.occurred_at >= ex.started_at AND e.occurred_at <= COALESCE(ex.stopped_at, now())
+		WHERE x.experiment_id = $1::uuid AND x.event_name = '$exposure'`, expID)
+	if err != nil {
+		x.h.t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var s string
+		_ = rows.Scan(&s)
+		out[s] = true
+	}
+	return out
+}
+
+// Client clocks are not trusted to decide the run window, and are only used to
+// order events against the exposure after being pulled into [started_at, received_at].
+func TestResultsClockSkew(t *testing.T) {
+	x := newTenants(t)
+	h := x.h
+	exp := x.backdated() // started three days ago
+	expose := func(subject, occurred, received string) {
+		x.seedAt(exp, subject, "$exposure", "on", occurred, received)
+	}
+	convert := func(subject, occurred, received string) { x.seedAt(exp, subject, "e", "", occurred, received) }
+
+	// A: client clock two hours BEHIND: every stamp precedes the experiment's start, yet the data was received during the run
+	expose("A", "-2 hours", "1 hour")
+	convert("A", "-118 minutes", "1 hour")
+	// B: the exposure was stamped four minutes ahead by one clock, the conversion by another, accurate clock
+	expose("B", "64 minutes", "1 hour")
+	convert("B", "62 minutes", "62 minutes")
+	// C and D: exposure and event in one batch; the event stamped 500 ms / 10 s before the exposure
+	expose("C", "1 hour", "1 hour")
+	convert("C", "59 minutes 59 seconds 500 milliseconds", "1 hour")
+	expose("D", "1 hour", "1 hour")
+	convert("D", "59 minutes 50 seconds", "1 hour")
+	// E and F: an offline client sends old events late: one truly before the exposure, one truly after
+	expose("E", "1 hour", "1 hour")
+	convert("E", "10 minutes", "5 hours")
+	expose("F", "1 hour", "1 hour")
+	convert("F", "2 hours", "5 hours")
+	// G and H: clocks 60 days in the past; the conversion is a day after the exposure (G) or a day before it (H)
+	expose("G", "-60 days", "1 hour")
+	convert("G", "-59 days", "2 hours")
+	expose("H", "-60 days", "1 hour")
+	convert("H", "-61 days", "2 hours")
+	// I: a conversion stamped nine days AHEAD of the run, received three hours in
+	expose("I", "1 hour", "1 hour")
+	convert("I", "9 days", "3 hours")
+	// K: an event stamped two hours after the exposure, but RECEIVED an hour before it: it cannot have happened after the exposure
+	expose("K", "2 hours", "2 hours")
+	convert("K", "3 hours", "1 hour")
+	// J: stamped inside the run by the client but received only after the experiment stopped
+	expose("J", "1 hour", "1 hour")
+	h.expect(200, x.a, "POST", "/environments/"+x.devA+"/experiments/"+expKey+"/stop", nil)
+	convert("J", "90 minutes", "3 days 1 hour")
+
+	r := x.results(x.a, x.devA, expKey, "")
+	on := variation(r, 0, "on")
+	if on.Exposures != 11 {
+		t.Fatalf("exposures %d, want 11", on.Exposures)
+	}
+	if on.ConvertingSubjects != 6 {
+		t.Errorf("%d subjects converted, want 6 (A B C F G I)", on.ConvertingSubjects)
+	}
+	w := warningCodes(r)
+	for code, n := range map[string]float64{"EVENTS_BEFORE_EXPOSURE": 4 /* D E H K */, "EVENTS_OUTSIDE_WINDOW": 1 /* J */, "CLIENT_CLOCK_ADJUSTED": 3 /* A G I */} {
+		if w[code].Detail["events"] != n {
+			t.Errorf("%s: %+v, want %v events", code, w[code], n)
+		}
+	}
+
+	// Evidence that the old rule mis-attributed: client time alone loses the behind-skewed client (A),
+	// the cross-clock pair (B), counts a late arrival that was stamped inside the run (J), and cannot order G or H.
+	old := x.legacyConverters(exp)
+	for _, s := range []string{"A", "B"} {
+		if old[s] {
+			t.Errorf("the legacy rule was expected to lose %s", s)
+		}
+	}
+	if !old["J"] {
+		t.Error("the legacy rule was expected to count J (received after the stop)")
+	}
+	t.Logf("legacy rule converters: %v; clock rule: 6 (A B C F G I)", old)
+}

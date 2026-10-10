@@ -115,21 +115,44 @@ func exposureCounts(ctx context.Context, q querier, workspaceID, expID string) (
 	return out, rows.Err()
 }
 
+// The clock rule (docs/RESULTS.md, "Clock skew"). A client's timestamp
+// (occurred_at) can be wrong; the server's receipt time (created_at, the time
+// the batch was stored) cannot, and an event cannot have happened after it was
+// received nor, for this experiment, before the experiment started. So:
+//
+//   - the run window is checked against the RECEIPT time only;
+//   - "after the exposure" compares the two client times after pulling each
+//     into [started_at, received_at], the only range in which it can be true;
+//     when that leaves them equal, the raw client times decide (a client whose
+//     clock is far off still orders its own events correctly);
+//   - events stored by the same request as the exposure get one second of grace,
+//     since a batch is one moment and client stamps within it race.
+//
+// $4::timestamptz is the window start in every fragment below.
+const (
+	effTimeExposure = `LEAST(GREATEST(x.occurred_at, $4::timestamptz), x.created_at)`
+	effTimeEvent    = `LEAST(GREATEST(e.occurred_at, $4::timestamptz), e.created_at)`
+	afterExposure   = `(` + effTimeEvent + ` > ` + effTimeExposure + `
+		          OR (` + effTimeEvent + ` = ` + effTimeExposure + ` AND e.occurred_at >= x.occurred_at)
+		          OR (e.created_at = x.created_at AND e.occurred_at + interval '1 second' >= x.occurred_at))`
+)
+
 // MetricSumsSQL is the per-variation aggregation of one event name; exported
 // so its plan can be inspected (EXPLAIN) by tests and tooling. Arguments:
 // workspace, experiment, event name, window start, window end, exposure event.
 const MetricSumsSQL = `
 		WITH exposed AS (
-			SELECT subject_key, variation_id, occurred_at AS exposed_at
-			FROM events
-			WHERE workspace_id = $1::uuid AND experiment_id = $2::uuid AND event_name = $6
+			SELECT x.subject_key, x.variation_id, x.occurred_at, x.created_at
+			FROM events x
+			WHERE x.workspace_id = $1::uuid AND x.experiment_id = $2::uuid AND x.event_name = $6
 		), per_subject AS (
 			SELECT x.variation_id, count(e.id) AS n, COALESCE(sum(e.value), 0) AS s
 			FROM exposed x
 			LEFT JOIN events e
 			       ON e.workspace_id = $1::uuid AND e.experiment_id = $2::uuid
 			      AND e.subject_key = x.subject_key AND e.event_name = $3
-			      AND e.occurred_at >= x.exposed_at AND e.occurred_at >= $4 AND e.occurred_at <= $5
+			      AND e.created_at >= $4::timestamptz AND e.created_at <= $5::timestamptz
+			      AND ` + afterExposure + `
 			GROUP BY x.variation_id, x.subject_key
 		)
 		SELECT variation_id,
@@ -176,26 +199,31 @@ func metricSums(ctx context.Context, q querier, workspaceID, expID, eventName st
 	return out, rows.Err()
 }
 
-// attribution counts the events of one name that the metric did NOT use.
+// attribution counts the events of one name that the metric did NOT use (and
+// how many of the used ones had a client clock the rule had to correct).
 type attribution struct {
 	NoExposure     int64 // from subjects with no exposure at all
-	BeforeExposure int64 // earlier than the subject's own exposure
-	OutsideWindow  int64 // before the start or after the stop (and otherwise counted)
+	BeforeExposure int64 // before the subject's own exposure, by the clock rule
+	OutsideWindow  int64 // received before the start or after the stop
+	ClockAdjusted  int64 // counted, but the client's timestamp was more than a minute outside [started_at, received_at]
 }
 
 func droppedEvents(ctx context.Context, q querier, workspaceID, expID, eventName string, start, end time.Time) (attribution, error) {
 	var a attribution
 	err := q.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE x.subject_key IS NULL),
-		       count(*) FILTER (WHERE x.subject_key IS NOT NULL AND e.occurred_at < x.occurred_at
-		                          AND e.occurred_at >= $4 AND e.occurred_at <= $5),
-		       count(*) FILTER (WHERE x.subject_key IS NOT NULL AND (e.occurred_at < $4 OR e.occurred_at > $5))
+		       count(*) FILTER (WHERE x.subject_key IS NOT NULL AND e.created_at >= $4::timestamptz AND e.created_at <= $5::timestamptz
+		                          AND NOT `+afterExposure+`),
+		       count(*) FILTER (WHERE x.subject_key IS NOT NULL AND (e.created_at < $4::timestamptz OR e.created_at > $5::timestamptz)),
+		       count(*) FILTER (WHERE x.subject_key IS NOT NULL AND e.created_at >= $4::timestamptz AND e.created_at <= $5::timestamptz
+		                          AND `+afterExposure+`
+		                          AND (e.occurred_at < $4::timestamptz - interval '1 minute' OR e.occurred_at > e.created_at + interval '1 minute'))
 		FROM events e
 		LEFT JOIN events x
 		       ON x.workspace_id = e.workspace_id AND x.experiment_id = e.experiment_id
 		      AND x.subject_key = e.subject_key AND x.event_name = $6
 		WHERE e.workspace_id = $1::uuid AND e.experiment_id = $2::uuid AND e.event_name = $3`,
-		workspaceID, expID, eventName, start, end, ExposureEvent).Scan(&a.NoExposure, &a.BeforeExposure, &a.OutsideWindow)
+		workspaceID, expID, eventName, start, end, ExposureEvent).Scan(&a.NoExposure, &a.BeforeExposure, &a.OutsideWindow, &a.ClockAdjusted)
 	return a, err
 }
 
@@ -225,7 +253,7 @@ func flagChanges(ctx context.Context, q querier, workspaceID, envID, flagKey str
 		WHERE workspace_id = $1::uuid AND environment_id = $2::uuid
 		  AND resource_type = 'flag' AND resource_id = $3
 		  AND action IN ('flag.update', 'flag.kill')
-		  AND created_at >= $4 AND created_at <= $5
+		  AND created_at >= $4::timestamptz AND created_at <= $5::timestamptz
 		ORDER BY created_at
 		LIMIT 50`, workspaceID, envID, flagKey, start, end)
 	if err != nil {
