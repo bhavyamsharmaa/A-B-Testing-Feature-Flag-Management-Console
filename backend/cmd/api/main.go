@@ -107,26 +107,26 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	tokenMaxAge := exposuretoken.DefaultMaxAge
+	exposureMaxAge := exposuretoken.DefaultMaxAge
 	if v := strings.TrimSpace(cfg.ExposureTokenMaxAge); v != "" {
-		if tokenMaxAge, err = time.ParseDuration(v); err != nil || tokenMaxAge < time.Minute {
+		if exposureMaxAge, err = time.ParseDuration(v); err != nil || exposureMaxAge < time.Minute {
 			log.Fatalf("EXPOSURE_TOKEN_MAX_AGE must be a duration of at least 1m, such as 24h")
 		}
 	}
 	var keyring *exposuretoken.Keyring
 	if cfg.ExposureTokenKey != "" {
-		if keyring, err = exposuretoken.NewKeyring(cfg.ExposureTokenKey, cfg.ExposureTokenKeyPrevious, tokenMaxAge); err != nil {
+		if keyring, err = exposuretoken.NewKeyring(cfg.ExposureTokenKey, cfg.ExposureTokenKeyPrevious, exposureMaxAge); err != nil {
 			log.Fatal(err) // the message never quotes the secret
 		}
 	} else {
 		if exposureMode == exposuretoken.ModeRequired {
 			log.Fatalf("EXPOSURE_VERIFICATION=required needs EXPOSURE_TOKEN_KEY: a key generated at startup would differ on every instance and restart")
 		}
-		if keyring, err = exposuretoken.DevKeyring(tokenMaxAge); err != nil {
+		if keyring, err = exposuretoken.DevKeyring(exposureMaxAge); err != nil {
 			log.Fatal(err)
 		}
 	}
-	log.Printf("exposure verification: %s (tokens valid %s)", exposureMode, tokenMaxAge)
+	log.Printf("exposure verification: %s (tokens valid %s)", exposureMode, exposureMaxAge)
 	if exposureMode == exposuretoken.ModeReport && keyring.Dev {
 		log.Printf("WARNING: EXPOSURE_VERIFICATION=report with a development key: with more than one instance most tokens will fail to verify")
 	}
