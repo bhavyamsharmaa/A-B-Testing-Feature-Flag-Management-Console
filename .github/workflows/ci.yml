@@ -1,0 +1,211 @@
+# Continuous integration. Runs checks only: it never deploys, publishes, or talks to
+# any hosted service. Everything runs against throwaway Postgres and Redis service
+# containers on the runner, and no secret is used anywhere in this file.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ['feature/**']
+
+# Least privilege for every job: read the repository, nothing else.
+permissions:
+  contents: read
+
+# A new push to the same branch or pull request cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+# NOTE: the actions below (checkout, setup-go, setup-node, cache, upload-artifact) are
+# the official GitHub ones, pinned to MAJOR version tags. Pin each to a full commit SHA
+# (with the version in a comment) once the SHAs have been looked up on GitHub.
+
+jobs:
+  backend:
+    name: Backend (format, vet, tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: helios
+          POSTGRES_DB: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust # a throwaway container reachable only from this job
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U helios"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      HELIOS_TEST_DATABASE_URL: postgres://helios@127.0.0.1:5432/postgres?sslmode=disable
+      HELIOS_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum # caches the module and build caches
+
+      - name: Apply every migration, and each one's verify script, to a service database
+        run: |
+          psql --version
+          psql -h 127.0.0.1 -U helios -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE helios_ci'
+          PGHOST=127.0.0.1 PGUSER=helios PGDATABASE=helios_ci backend/scripts/apply_migrations.sh
+
+      - name: gofmt
+        working-directory: backend
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        working-directory: backend
+        run: go vet ./...
+
+      - name: go test (database and Redis tests on)
+        working-directory: backend
+        run: go test -count=1 ./...
+
+  frontend:
+    name: Frontend (typecheck, build, unit tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Unit tests (no browser)
+        working-directory: frontend
+        run: npx playwright test e2e/unit
+
+  e2e:
+    name: End-to-end (Playwright against a local stack)
+    needs: [backend, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: helios
+          POSTGRES_DB: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U helios"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgres://helios@127.0.0.1:5432/helios_dev?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Create the local database (migrations 0001 onward)
+        run: |
+          psql -h 127.0.0.1 -U helios -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE helios_dev'
+          PGHOST=127.0.0.1 PGUSER=helios PGDATABASE=helios_dev backend/scripts/apply_migrations.sh
+
+      - name: Build and start the stack (auth stand-in, API, console), all on this runner
+        run: |
+          mkdir -p "$RUNNER_TEMP/helios"
+          (cd backend && go build -o "$RUNNER_TEMP/helios/devauth" ./cmd/devauth && go build -o "$RUNNER_TEMP/helios/api" ./cmd/api)
+          nohup "$RUNNER_TEMP/helios/devauth" > "$RUNNER_TEMP/helios/devauth.log" 2>&1 &
+          SUPABASE_URL=http://127.0.0.1:54321 CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173 \
+            REDIS_URL=redis://127.0.0.1:6379/0 PORT=8080 \
+            nohup "$RUNNER_TEMP/helios/api" > "$RUNNER_TEMP/helios/api.log" 2>&1 &
+          cat > frontend/.env.local <<'ENV'
+          VITE_API_BASE_URL=http://localhost:8080
+          VITE_SUPABASE_URL=http://127.0.0.1:54321
+          VITE_SUPABASE_PUBLISHABLE_KEY=local-dev-not-a-secret
+          ENV
+          (cd frontend && npm ci)
+          (cd frontend && nohup npm run dev -- --host 127.0.0.1 > "$RUNNER_TEMP/helios/console.log" 2>&1 &)
+          for url in http://127.0.0.1:54321/dev/health http://127.0.0.1:8080/healthz http://127.0.0.1:5173/; do
+            for i in $(seq 1 60); do
+              curl -fsS -o /dev/null "$url" && break
+              [ "$i" = 60 ] && { echo "not up: $url"; tail -n 30 "$RUNNER_TEMP"/helios/*.log; exit 1; }
+              sleep 1
+            done
+          done
+
+      - name: Cache Playwright's browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright specs
+        working-directory: frontend
+        run: npx playwright test
+
+      - name: Service logs (only when something failed)
+        if: failure()
+        run: tail -n 60 "$RUNNER_TEMP"/helios/*.log || true
+
+      # Traces and screenshots only, only on failure. Nothing else is uploaded: no
+      # database, no .env file, no service logs.
+      - name: Upload Playwright traces and failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: frontend/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
