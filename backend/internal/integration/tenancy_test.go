@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"helios/backend/internal/server"
 )
 
 const secretFlag = "acme-secret-flag"
@@ -24,8 +26,12 @@ type tenants struct {
 	sdkKeyA  string // plaintext, shown once
 }
 
-func newTenants(t *testing.T) *tenants {
-	h := newHarness(t)
+func newTenants(t *testing.T) *tenants { return newTenantsWith(t, nil) }
+
+// newTenantsWith is newTenants over a harness whose dependencies (rate
+// limits, ...) the caller adjusts.
+func newTenantsWith(t *testing.T, adjust func(*server.Deps)) *tenants {
+	h := newHarnessWith(t, adjust)
 	x := &tenants{h: h, a: h.newUser("alice"), b: h.newUser("bob")}
 	x.wsA = h.me(x.a).Workspaces[0]
 	x.wsB = h.me(x.b).Workspaces[0]

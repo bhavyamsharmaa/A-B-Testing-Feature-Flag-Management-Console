@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/dataplane/track"
 	"helios/backend/internal/platform/events"
 	"helios/backend/internal/server"
 )
@@ -54,7 +55,7 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 	h.expect(200, ghost, "GET", "/environments/"+x.devA+"/flags", nil) // a member, for now
 	h.expect(204, x.a, "DELETE", "/workspaces/"+x.wsA.ID+"/members/"+ghost.id, nil)
 
-	forbidden := []string{secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, x.devA, x.wsA.Name, "alice key", keyID, inviteID, "someone@example.com", x.sdkKeyA[:12]}
+	forbidden := []string{secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, x.devA, x.wsA.Name, "alice key", keyID, inviteID, x.expID(), "someone@example.com", x.sdkKeyA[:12]}
 	fill := func(path string) string {
 		key := secretFlag
 		if strings.Contains(path, "/experiments/") {
@@ -183,6 +184,21 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 				}
 				// The response repeats the flag key B itself asked for; anything else of A's would be a leak.
 				assertNoLeak(label+" with B's key", bytes.ReplaceAll(b, []byte(secretFlag), nil))
+			case "POST /track":
+				// B's key naming A's experiment (and A's flag, as a subject) writes nothing
+				// and learns nothing: the experiment is "not found", as if it never existed.
+				expID := x.expID()
+				b := h.sdkPost(keyB, "/track", map[string]any{"events": []map[string]any{
+					evt("route-1", track.ExposureEvent, "s", map[string]any{"experimentId": expID, "variationId": "on"}),
+					evt("route-2", "purchase", "s", map[string]any{"experimentId": expID}),
+				}})
+				if bytes.Count(b, []byte(track.CodeExperimentNotFound)) != 2 {
+					t.Errorf("%s with B's key: %s", label, b)
+				}
+				assertNoLeak(label+" with B's key", bytes.ReplaceAll(b, []byte(expID), nil))
+				if n := h.eventRows(`true`); n != 0 {
+					t.Errorf("%s with B's key wrote %d events", label, n)
+				}
 			case "GET /sdk/stream":
 				s := h.openStream(keyB)
 				for _, name := range h.bus.Subscribers() {
