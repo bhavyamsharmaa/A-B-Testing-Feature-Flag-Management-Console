@@ -126,3 +126,29 @@ export interface AuditLogPage {
   entries: AuditEntry[]
   nextCursor: number | null
 }
+
+export type ExperimentStatus = 'draft' | 'running' | 'stopped'
+
+export interface Experiment {
+  id: string
+  key: string
+  name: string
+  hypothesis: string
+  flagKey: string
+  environment: string
+  status: ExperimentStatus
+  startedAt: string | null
+  stoppedAt: string | null
+  metrics: { name: string; eventName: string; type: 'conversion' | 'value'; isPrimary: boolean }[]
+  configChangedSinceStart: boolean
+  createdAt: string
+}
+
+/** Raw data arriving for an experiment. Not results: no rates, no significance. */
+export interface EventCounts {
+  exposures: { variationId: string; count: number }[]
+  exposureTotal: number
+  /** Events other than exposures. */
+  events: number
+  lastEventAt: string | null
+}

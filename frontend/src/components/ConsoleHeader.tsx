@@ -32,6 +32,9 @@ export function ConsoleHeader({ email, onSignOut }: { email: string; onSignOut: 
         <NavLink to="/console" end className={tab}>
           Flags
         </NavLink>
+        <NavLink to="/console/experiments" className={tab}>
+          Experiments
+        </NavLink>
         <NavLink to="/console/audit" className={tab}>
           Audit log
         </NavLink>
