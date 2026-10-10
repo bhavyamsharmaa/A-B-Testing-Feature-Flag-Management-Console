@@ -16,6 +16,10 @@ new backend live and verified, and 0005 applied at G6b), because it needs
 `events`, so nothing in this plan depends on it. It has its own checks
 (`backend/db/verify_0008.sql`) and its own lock analysis in the file's header.
 
+The experiment **results API** (`feature/experiments-results`) needs no further
+migration: there is no 0009. It reads only what 0008 created, so it has the same
+placement as 0008: after the multi-tenancy release, not part of it.
+
 ## What ships
 
 | Piece | Production today | After |

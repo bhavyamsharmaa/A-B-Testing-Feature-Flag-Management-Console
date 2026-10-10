@@ -569,8 +569,7 @@ paths:
 
   # --- Experiments -------------------------------------------------------
   # Data collection: POST /track (SDK-key event ingestion, including the
-  # reserved "$exposure" event) and .../event-counts. Not yet paths:
-  # GET /environments/{envId}/experiments/{key}/results.
+  # reserved "$exposure" event) and .../event-counts; analysis: .../results.
 
   /environments/{envId}/experiments:
     parameters: [{ $ref: "#/components/parameters/EnvPath" }]
@@ -719,6 +718,50 @@ paths:
                   lastEventAt: { type: [string, "null"], format: date-time }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { description: ENVIRONMENT_NOT_FOUND or EXPERIMENT_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{envId}/experiments/{key}/results:
+    parameters:
+      - { $ref: "#/components/parameters/EnvPath" }
+      - { name: key, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [control-plane]
+      summary: Results of a running or stopped experiment (any role)
+      description: >-
+        Per-variation numbers and comparisons against the control (the first
+        variation of the flag), a sample-ratio check and data-quality warnings,
+        computed from the exposures and events `POST /track` collected. No
+        winner is declared. Attribution: a subject belongs to the variation in
+        their `$exposure` event; only their events at or after that exposure and
+        inside the run window (started_at to stopped_at, or now) count; a
+        conversion counts a subject once. Below 100 exposures per variation (or
+        25 conversions in total for a conversion metric) comparisons are
+        `insufficient_data`. A number that cannot be computed is null with a
+        reason, never NaN or Infinity. P-values are valid only for a fixed sample
+        size; see `peekingNote`. Rate limited per user (429 RATE_LIMITED);
+        answers are cached for 5 seconds. Draft experiments answer 409
+        EXPERIMENT_NOT_STARTED. See docs/RESULTS.md for every formula.
+      security: [{ supabaseJWT: [] }]
+      parameters:
+        - name: metrics
+          in: query
+          required: false
+          description: >-
+            Up to 3 comma-separated `<eventName>:<kind>` pairs (kind: conversion,
+            count, value). Default: the experiment's primary metric. An event
+            name the experiment does not define must exist among its events.
+          schema: { type: string, example: "purchase:conversion,purchase:value" }
+      responses:
+        "200":
+          description: Results
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExperimentResults" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: ENVIRONMENT_NOT_FOUND or EXPERIMENT_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: EXPERIMENT_NOT_STARTED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: RATE_LIMITED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { description: RESULTS_TIMEOUT (the query exceeded its 5 s limit), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /track:
     post:
@@ -1211,6 +1254,110 @@ components:
         attributes:
           type: object
           additionalProperties: true
+
+    ExperimentResults:
+      type: object
+      required: [experimentKey, flagKey, status, readAt, window, control, sampleSize, trustworthy, srm, metrics, warnings, alpha, thresholds, peekingNote, method]
+      properties:
+        experimentKey: { type: string }
+        flagKey: { type: string }
+        status: { type: string, enum: [running, stopped] }
+        readAt: { type: string, format: date-time }
+        window:
+          type: object
+          required: [start, end, stoppedAt, running, hours]
+          properties:
+            start: { type: string, format: date-time }
+            end: { type: string, format: date-time, description: "stoppedAt, or readAt while running" }
+            stoppedAt: { type: [string, "null"], format: date-time }
+            running: { type: boolean }
+            hours: { type: number }
+        control: { type: string, description: "The variation everything is compared with: the first variation of the flag" }
+        sampleSize: { type: integer, description: "Total exposures at this reading" }
+        trustworthy: { type: boolean, description: "false when the sample-ratio check failed" }
+        srm:
+          type: object
+          required: [observed, expected, expectedSource, confidence, threshold, detected, degreesOfFreedom]
+          properties:
+            observed: { type: array, items: { type: object, properties: { variationId: { type: string }, count: { type: integer } } } }
+            expected: { type: array, items: { type: object, properties: { variationId: { type: string }, share: { type: number } } } }
+            expectedSource: { type: string, enum: [rollout_at_start, equal_assumed] }
+            confidence: { type: string, enum: [high, low] }
+            confidenceReason: { type: string }
+            chiSquare: { type: [number, "null"] }
+            degreesOfFreedom: { type: integer }
+            pValue: { type: [number, "null"] }
+            threshold: { type: number }
+            detected: { type: boolean }
+            reason: { type: string, description: "Why the check could not run" }
+        metrics:
+          type: array
+          items:
+            type: object
+            required: [metric, variations, comparisons]
+            properties:
+              metric:
+                type: object
+                required: [eventName, kind, isPrimary]
+                properties:
+                  name: { type: string }
+                  eventName: { type: string }
+                  kind: { type: string, enum: [conversion, count, value] }
+                  isPrimary: { type: boolean }
+              variations:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    variationId: { type: string }
+                    isControl: { type: boolean }
+                    exposures: { type: integer }
+                    convertingSubjects: { type: integer }
+                    events: { type: integer }
+                    rate: { type: [number, "null"], description: "conversion metrics" }
+                    mean: { type: [number, "null"], description: "count and value metrics" }
+                    stdDev: { type: [number, "null"] }
+                    trustworthy: { type: boolean }
+              comparisons:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    variationId: { type: string }
+                    against: { type: string }
+                    status: { type: string, enum: [significant, not_significant, insufficient_data, invalid] }
+                    statusReasons: { type: array, items: { type: string } }
+                    difference: { type: [number, "null"] }
+                    differenceInterval: { type: object, properties: { low: { type: [number, "null"] }, high: { type: [number, "null"] } } }
+                    relativeLift: { type: [number, "null"] }
+                    relativeLiftInterval: { type: object, properties: { low: { type: [number, "null"] }, high: { type: [number, "null"] } } }
+                    statistic: { type: [number, "null"], description: "z (conversion) or t (count, value)" }
+                    degreesOfFreedom: { type: [number, "null"] }
+                    pValue: { type: [number, "null"], description: "two-sided, unadjusted" }
+                    adjustedPValue: { type: [number, "null"], description: "Bonferroni: pValue times the number of comparisons, at most 1" }
+                    alphaPerComparison: { type: number }
+                    confidenceLevel: { type: number }
+                    reasons: { type: object, additionalProperties: { type: string }, description: "Why a null field is null" }
+                    trustworthy: { type: boolean }
+        warnings:
+          type: array
+          items:
+            type: object
+            required: [code, severity, message]
+            properties:
+              code: { type: string, enum: [NO_EXPOSURES, SRM_FAILED, SRM_LOW_CONFIDENCE, INSUFFICIENT_DATA, EVENTS_WITHOUT_EXPOSURE, EVENTS_BEFORE_EXPOSURE, EVENTS_OUTSIDE_WINDOW, FLAG_CONFIG_CHANGED, EXPERIMENT_RESTARTED, SHORT_RUN, SINGLE_VARIATION] }
+              severity: { type: string, enum: [info, warning, critical] }
+              message: { type: string }
+              detail: { type: object }
+        alpha: { type: number, description: "Family-wise level; each comparison is tested at alpha divided by the number of comparisons" }
+        thresholds:
+          type: object
+          properties:
+            minExposuresPerVariation: { type: integer }
+            minConversionsTotal: { type: integer }
+            srmPValue: { type: number }
+        peekingNote: { type: string, description: "Plain language: results are only valid for a fixed sample size" }
+        method: { type: array, items: { type: string }, description: "Plain-language description of how the numbers were computed" }
 
     EvaluationResult:
       type: object

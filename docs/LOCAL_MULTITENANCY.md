@@ -84,7 +84,7 @@ HELIOS_TEST_REDIS_URL='redis://127.0.0.1:56379/0' go test ./internal/integration
 | `SUPABASE_ANON_KEY` | unset | The project's **public** key; lets the backend ask Supabase whether an email is confirmed |
 | `INVITES_BY_ID` | `true` | `false`: only the one-time invite link works; the console's Accept banner disappears |
 | `RATE_LIMIT_DISABLED` | `false` | `true` switches every limit off |
-| `RATE_LIMITS` | built-in | Overrides, `class=perSecond/burst,...`; classes: `ip user me workspace invite accept sdk_key_create sdk_key sdk_invalid stream_open sdk_track sdk_track_events` |
+| `RATE_LIMITS` | built-in | Overrides, `class=perSecond/burst,...`; classes: `ip user me workspace invite accept sdk_key_create sdk_key sdk_invalid stream_open sdk_track sdk_track_events results` |
 | `TRUSTED_PROXY_HOPS` | `0` (`1` when `RENDER=true`) | Reverse proxies in front of the API appending to `X-Forwarded-For` |
 | `STREAMS_PER_KEY` | `100` | Concurrent `/sdk/stream` connections per SDK key |
 

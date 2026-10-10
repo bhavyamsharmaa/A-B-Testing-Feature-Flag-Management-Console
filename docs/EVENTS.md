@@ -25,22 +25,44 @@ experiment, so the join is one row).
 `track.Retention` (90 days) is the window. `/track` refuses events older than it
 (they would be purged at once) and more than 5 minutes in the future.
 
-**Purging is not implemented yet.** When it is: a daily job runs
+Purging is implemented as `internal/platform/eventpurge` and the admin command
+`cmd/purgeevents` (a CLI, not an HTTP route, and **not scheduled**):
 
-```sql
-DELETE FROM events WHERE occurred_at < now() - interval '90 days' AND ...
+```bash
+DATABASE_URL=... go run ./cmd/purgeevents -dry-run          # counts only
+DATABASE_URL=... go run ./cmd/purgeevents                   # 90 days (HELIOS_EVENT_RETENTION_DAYS or -retention-days; minimum 7)
+DATABASE_URL=... go run ./cmd/purgeevents -max-batches 200 -pause 100ms
 ```
 
-in batches (`LIMIT`ed by primary key, a few thousand rows at a time, so no long
-lock and bounded WAL), or, once partitioned, drops whole partitions. Exposures
-of an experiment that is still running must be kept however old they are (a
-running experiment older than 90 days would lose its denominators); the purge
-therefore skips `$exposure` rows of `running` experiments. Deleting an experiment
-or a workspace removes its events by `ON DELETE CASCADE`.
+Rules: events older than the retention window are deleted in small batches
+(default 5,000 rows per statement, one environment at a time so each batch is a
+range scan of `idx_events_time`). **Every event of an experiment that is running,
+or that stopped inside the window, is kept regardless of age.** This is broader
+than "exposures only": deleting a running experiment's old conversions while
+keeping its exposures would silently bias its results. Events of experiments that
+stopped before the window, and events that belong to no experiment, go.
+The batch locks its rows with `FOR UPDATE SKIP LOCKED`, so two runs (or a run and
+anything else) never wait for each other, double-delete or deadlock, and the
+command can be repeated freely. It prints counts only, never an event's content.
+Deleting an experiment or a workspace removes its events by `ON DELETE CASCADE`.
 
-Until the job exists the table only grows: at the default limit (6,000 events per
-key per minute) one busy key can add about 8.6 million rows a day, so the purge
-and the partitioning decision below must precede any real traffic.
+At the default limit (6,000 events per key per minute) one busy key can add about
+8.6 million rows a day, so the purge must be scheduled before real traffic.
+
+### Scheduling it later (not done)
+
+The API cannot do this itself: on Cloud Run an instance may not exist at the time
+a timer would fire, may be one of many, and is frozen between requests. The command
+is built to be run from outside:
+
+* **Cloud Run Job** running the same image with the command
+  `purgeevents -max-batches 500 -pause 100ms`, triggered daily by **Cloud
+  Scheduler**. `-max-batches` bounds one run (`Truncated: true` in the log line
+  means more is left; the next run continues), and overlapping runs are harmless.
+* Alternatively a scheduled GitHub Actions or `pg_cron` job; `pg_cron` would need
+  the same predicate in SQL.
+* Alert on the job failing, and watch the table size (`pg_total_relation_size`);
+  when it passes about 50 million rows, plan partitioning (below).
 
 ## Index plan
 
