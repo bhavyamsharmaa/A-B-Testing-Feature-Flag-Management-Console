@@ -60,7 +60,7 @@ export default function ExperimentsPage() {
             {experiments !== null && experiments.length > 0 && (
               <div className="space-y-3">
                 {experiments.map((x) => (
-                  <ExperimentCard key={x.id} experiment={x} env={env} />
+                  <ExperimentCard key={x.id} experiment={x} env={env} link />
                 ))}
               </div>
             )}

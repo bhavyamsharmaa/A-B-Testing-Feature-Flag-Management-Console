@@ -7,6 +7,7 @@ import { Splash } from './components/Splash'
 import AuditPage from './pages/AuditPage'
 import ConsolePage from './pages/ConsolePage'
 import DemoPage from './pages/DemoPage'
+import ExperimentPage from './pages/ExperimentPage'
 import ExperimentsPage from './pages/ExperimentsPage'
 import InvitePage from './pages/InvitePage'
 import LoginPage from './pages/LoginPage'
@@ -45,6 +46,8 @@ export default function App() {
             <Route element={<WorkspaceScope />}>
               <Route path="/console" element={<ConsolePage />} />
               <Route path="/console/experiments" element={<ExperimentsPage />} />
+              <Route path="/console/experiments/:key" element={<ExperimentPage tab="data" />} />
+              <Route path="/console/experiments/:key/results" element={<ExperimentPage tab="results" />} />
               <Route path="/console/audit" element={<AuditPage />} />
               <Route path="/console/settings" element={<SettingsPage />} />
             </Route>

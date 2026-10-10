@@ -146,9 +146,99 @@ export interface Experiment {
 
 /** Raw data arriving for an experiment. Not results: no rates, no significance. */
 export interface EventCounts {
+  /** Event names (other than $exposure) that exist for the experiment, most frequent first. */
+  eventNames: { name: string; count: number }[]
   exposures: { variationId: string; count: number }[]
   exposureTotal: number
   /** Events other than exposures. */
   events: number
   lastEventAt: string | null
+}
+
+export type MetricKind = 'conversion' | 'count' | 'value'
+
+export interface MetricSelection {
+  eventName: string
+  kind: MetricKind
+}
+
+export interface Interval {
+  low: number | null
+  high: number | null
+}
+
+export type ComparisonStatus = 'significant' | 'not_significant' | 'insufficient_data' | 'invalid'
+
+export interface ResultsVariation {
+  variationId: string
+  isControl: boolean
+  exposures: number
+  convertingSubjects: number
+  events: number
+  rate: number | null
+  mean: number | null
+  stdDev: number | null
+  trustworthy: boolean
+}
+
+export interface ResultsComparison {
+  variationId: string
+  against: string
+  status: ComparisonStatus
+  statusReasons?: string[]
+  difference: number | null
+  differenceInterval: Interval
+  relativeLift: number | null
+  relativeLiftInterval: Interval
+  statistic: number | null
+  degreesOfFreedom: number | null
+  pValue: number | null
+  adjustedPValue: number | null
+  alphaPerComparison: number
+  confidenceLevel: number
+  reasons?: Record<string, string>
+  trustworthy: boolean
+}
+
+export interface ResultsWarning {
+  code: string
+  severity: 'info' | 'warning' | 'critical'
+  message: string
+  detail?: Record<string, unknown>
+}
+
+export interface ResultsMetric {
+  metric: { name?: string; eventName: string; kind: MetricKind; isPrimary: boolean }
+  variations: ResultsVariation[]
+  comparisons: ResultsComparison[]
+}
+
+export interface ExperimentResults {
+  experimentKey: string
+  flagKey: string
+  status: 'running' | 'stopped'
+  readAt: string
+  window: { start: string; end: string; stoppedAt: string | null; running: boolean; hours: number }
+  control: string
+  sampleSize: number
+  trustworthy: boolean
+  srm: {
+    observed: { variationId: string; count: number }[]
+    expected: { variationId: string; share: number }[]
+    expectedSource: 'rollout_at_start' | 'equal_assumed'
+    confidence: 'high' | 'low'
+    confidenceReason?: string
+    chiSquare: number | null
+    degreesOfFreedom: number
+    pValue: number | null
+    threshold: number
+    detected: boolean
+    reason?: string
+  }
+  metrics: ResultsMetric[]
+  warnings: ResultsWarning[]
+  alpha: number
+  thresholds: { minExposuresPerVariation: number; minConversionsTotal: number; srmPValue: number }
+  peekingNote: string
+  method: string[]
 }

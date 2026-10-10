@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { useEventCounts } from '../lib/useEventCounts'
 import { absoluteTime, relativeTime, useNow } from '../lib/time'
 import type { Experiment, ExperimentStatus } from '../types'
@@ -9,7 +10,7 @@ const STATUS: Record<ExperimentStatus, { label: string; cls: string }> = {
 }
 
 /** One experiment and the raw data arriving for it. Read-only for every role; no results here. */
-export function ExperimentCard({ experiment, env }: { experiment: Experiment; env: string }) {
+export function ExperimentCard({ experiment, env, link = false }: { experiment: Experiment; env: string; link?: boolean }) {
   const { counts, failed } = useEventCounts(env, experiment.key, experiment.status === 'running')
   const now = useNow()
   const status = STATUS[experiment.status]
@@ -68,6 +69,13 @@ export function ExperimentCard({ experiment, env }: { experiment: Experiment; en
         {experiment.status === 'running' && !failed && <span className="ml-2 text-emerald-400/80">· updating live</span>}
         {failed && <span className="ml-2 text-red-300">· could not refresh</span>}
       </p>
+      {link && (
+        <p className="mt-3 text-sm">
+          <Link to={`/console/experiments/${encodeURIComponent(experiment.key)}/results`} className="text-zinc-200 underline-offset-2 hover:text-white hover:underline" data-testid="open-results">
+            Open data and results →
+          </Link>
+        </p>
+      )}
       {experiment.configChangedSinceStart && (
         <p className="mt-2 text-xs text-amber-300/90">The flag's targeting or rollout changed since this experiment started.</p>
       )}

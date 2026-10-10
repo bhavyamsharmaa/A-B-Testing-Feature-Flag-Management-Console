@@ -8,12 +8,15 @@ import { supabase } from '../lib/supabase'
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
+  /** Seconds the server asked us to wait (Retry-After), when it sent one. */
+  readonly retryAfter?: number
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, retryAfter?: number) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
+    this.retryAfter = retryAfter
   }
 }
 
@@ -31,11 +34,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  // A caller's signal (a page that went away, a changed selection) cancels the request too.
+  const outer = init.signal ?? undefined
+  const onOuterAbort = () => controller.abort()
+  if (outer?.aborted) controller.abort()
+  else outer?.addEventListener('abort', onOuterAbort)
   try {
     let res: Response
     try {
       res = await fetch(`${config.apiBaseUrl}${path}`, { ...init, headers, signal: controller.signal })
     } catch {
+      if (outer?.aborted) {
+        throw new ApiError(0, 'ABORTED', 'The request was cancelled.')
+      }
       if (controller.signal.aborted) {
         throw new ApiError(0, 'TIMEOUT', 'The server took too long to respond. Try again.')
       }
@@ -51,18 +62,25 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       // Backend errors are { code, message }; fall back if the body is not JSON
       // (e.g. a gateway error page while Render is waking up).
       const body = (await res.json().catch(() => null)) as { code?: string; message?: string } | null
-      throw new ApiError(res.status, body?.code ?? 'HTTP_ERROR', body?.message ?? `Request failed (${res.status})`)
+      const retryAfter = Number(res.headers.get('Retry-After'))
+      throw new ApiError(
+        res.status,
+        body?.code ?? 'HTTP_ERROR',
+        body?.message ?? `Request failed (${res.status})`,
+        Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined,
+      )
     }
 
     if (res.status === 204) return undefined as T
     return (await res.json()) as T
   } finally {
     clearTimeout(timer)
+    outer?.removeEventListener('abort', onOuterAbort)
   }
 }
 
 export const apiClient = {
-  get: <T>(path: string) => request<T>(path),
+  get: <T>(path: string, opts?: { signal?: AbortSignal }) => request<T>(path, { signal: opts?.signal }),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
   patch: <T>(path: string, body: unknown) =>
