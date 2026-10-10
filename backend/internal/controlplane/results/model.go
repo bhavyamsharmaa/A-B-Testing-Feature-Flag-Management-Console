@@ -83,11 +83,26 @@ type Comparison struct {
 	Trustworthy     bool    `json:"trustworthy"`
 }
 
+// Statuses of a metric as a whole.
+const (
+	MetricOK               = "ok"
+	MetricInsufficientData = "insufficient_data"
+	MetricUnavailable      = "unavailable"
+)
+
 // MetricResult is everything for one metric.
 type MetricResult struct {
-	Metric      MetricSpec       `json:"metric"`
-	Variations  []VariationStats `json:"variations"`
-	Comparisons []Comparison     `json:"comparisons"`
+	Metric MetricSpec `json:"metric"`
+	// Status summarises the metric so a client need not repeat the same
+	// message for every comparison: "insufficient_data" when any comparison is
+	// below the data minimum, "unavailable" when nothing can be compared,
+	// else "ok" (individual comparisons can still be not_significant etc.).
+	Status string `json:"status"`
+	// StatusReasons are the distinct reason codes behind a status other than ok
+	// (EXPOSURES_BELOW_100, CONVERSIONS_BELOW_25, SINGLE_VARIATION, ...).
+	StatusReasons []string         `json:"statusReasons,omitempty"`
+	Variations    []VariationStats `json:"variations"`
+	Comparisons   []Comparison     `json:"comparisons"`
 }
 
 // Warning is one data-quality finding.
@@ -95,7 +110,7 @@ type Warning struct {
 	Code     string         `json:"code"`
 	Severity string         `json:"severity"` // "info" | "warning" | "critical"
 	Message  string         `json:"message"`
-	Detail   map[string]any `json:"detail,omitempty"`
+	Detail   map[string]any `json:"detail"`
 }
 
 // SRMBlock is the sample-ratio check.
@@ -150,9 +165,18 @@ type Response struct {
 	Metrics     []MetricResult `json:"metrics"`
 	Warnings    []Warning      `json:"warnings"`
 	// Alpha is the family-wise level; comparisons are tested at Alpha/m.
-	Alpha      float64    `json:"alpha"`
-	Thresholds Thresholds `json:"thresholds"`
-	// PeekingNote and Method are plain language; no winner is declared.
+	Alpha float64 `json:"alpha"`
+	// ComparisonCount is m: the variations other than the control (0 when there
+	// is only one variation). Each comparison is tested at AlphaPerComparison =
+	// Alpha/m and its intervals use ConfidenceLevel = 1 - AlphaPerComparison.
+	ComparisonCount    int        `json:"comparisonCount"`
+	AlphaPerComparison float64    `json:"alphaPerComparison"`
+	ConfidenceLevel    float64    `json:"confidenceLevel"`
+	Thresholds         Thresholds `json:"thresholds"`
+	// PeekingNoteCode is stable ("FIXED_SAMPLE_SIZE"); PeekingNote is its
+	// default English text, for clients that do not translate it.
+	PeekingNoteCode string `json:"peekingNoteCode"`
+	// Method is plain language too; no winner is declared.
 	PeekingNote string   `json:"peekingNote"`
 	Method      []string `json:"method"`
 }

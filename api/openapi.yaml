@@ -710,10 +710,14 @@ paths:
                     description: "Event names (other than $exposure) that exist for the experiment, most frequent first, at most 50: what a results metric can be chosen from"
                     items:
                       type: object
-                      required: [name, count]
+                      required: [name, count, kinds]
                       properties:
                         name: { type: string }
                         count: { type: integer }
+                        kinds:
+                          type: array
+                          description: "Metric kinds the data supports for this event: conversion and count always, value only if some event of this name carries a value"
+                          items: { type: string, enum: [conversion, count, value] }
                   exposures:
                     type: array
                     items:
@@ -813,6 +817,7 @@ paths:
                       variationId: { type: string, description: "Only on $exposure: the variationId that was served" }
                       timestamp: { type: string, format: date-time, description: "When it happened; default now. Not more than 5 minutes ahead or 90 days back." }
                       properties: { type: object, description: "At most 2048 bytes serialized" }
+                      exposureToken: { type: string, description: "Only on $exposure: the exposureToken /evaluate returned. Required when the server runs EXPOSURE_VERIFICATION=required" }
       responses:
         "200":
           description: Per-event results, in request order
@@ -831,7 +836,7 @@ paths:
                         index: { type: integer }
                         id: { type: string }
                         status: { type: string, enum: [accepted, duplicate, rejected] }
-                        code: { type: string, enum: [INVALID_EVENT, EXPERIMENT_NOT_FOUND, EXPERIMENT_NOT_RUNNING, INVALID_VARIATION] }
+                        code: { type: string, enum: [INVALID_EVENT, EXPERIMENT_NOT_FOUND, EXPERIMENT_NOT_RUNNING, INVALID_VARIATION, EXPOSURE_TOKEN_MISSING, EXPOSURE_TOKEN_INVALID, EXPOSURE_TOKEN_EXPIRED] }
                         message: { type: string }
                   accepted: { type: integer }
                   duplicates: { type: integer }
@@ -1266,7 +1271,7 @@ components:
 
     ExperimentResults:
       type: object
-      required: [experimentKey, flagKey, status, readAt, window, control, sampleSize, trustworthy, srm, metrics, warnings, alpha, thresholds, peekingNote, method]
+      required: [experimentKey, flagKey, status, readAt, window, control, sampleSize, trustworthy, srm, metrics, warnings, alpha, comparisonCount, alphaPerComparison, confidenceLevel, thresholds, peekingNoteCode, peekingNote, method]
       properties:
         experimentKey: { type: string }
         flagKey: { type: string }
@@ -1303,8 +1308,16 @@ components:
           type: array
           items:
             type: object
-            required: [metric, variations, comparisons]
+            required: [metric, status, variations, comparisons]
             properties:
+              status:
+                type: string
+                enum: [ok, insufficient_data, unavailable]
+                description: "The metric as a whole: insufficient_data when any comparison is below the data minimum, unavailable when nothing can be compared, else ok. Show a message about it once, not per comparison"
+              statusReasons:
+                type: array
+                items: { type: string }
+                description: "Distinct reason codes behind a status other than ok (EXPOSURES_BELOW_100, CONVERSIONS_BELOW_25, SINGLE_VARIATION, ...)"
               metric:
                 type: object
                 required: [eventName, kind, isPrimary]
@@ -1344,8 +1357,8 @@ components:
                     degreesOfFreedom: { type: [number, "null"] }
                     pValue: { type: [number, "null"], description: "two-sided, unadjusted" }
                     adjustedPValue: { type: [number, "null"], description: "Bonferroni: pValue times the number of comparisons, at most 1" }
-                    alphaPerComparison: { type: number }
-                    confidenceLevel: { type: number }
+                    alphaPerComparison: { type: number, deprecated: true, description: "Deprecated: the same for every comparison; use the top-level alphaPerComparison" }
+                    confidenceLevel: { type: number, deprecated: true, description: "Deprecated: the same for every comparison; use the top-level confidenceLevel" }
                     reasons: { type: object, additionalProperties: { type: string }, description: "Why a null field is null" }
                     trustworthy: { type: boolean }
         warnings:
@@ -1354,18 +1367,22 @@ components:
             type: object
             required: [code, severity, message]
             properties:
-              code: { type: string, enum: [NO_EXPOSURES, SRM_FAILED, SRM_LOW_CONFIDENCE, INSUFFICIENT_DATA, EVENTS_WITHOUT_EXPOSURE, EVENTS_BEFORE_EXPOSURE, EVENTS_OUTSIDE_WINDOW, FLAG_CONFIG_CHANGED, EXPERIMENT_RESTARTED, SHORT_RUN, SINGLE_VARIATION] }
+              code: { type: string, enum: [NO_EXPOSURES, SRM_FAILED, SRM_LOW_CONFIDENCE, INSUFFICIENT_DATA, EXPOSURES_UNVERIFIED, CLIENT_CLOCK_ADJUSTED, EVENTS_WITHOUT_EXPOSURE, EVENTS_BEFORE_EXPOSURE, EVENTS_OUTSIDE_WINDOW, FLAG_CONFIG_CHANGED, EXPERIMENT_RESTARTED, SHORT_RUN, SINGLE_VARIATION] }
               severity: { type: string, enum: [info, warning, critical] }
-              message: { type: string }
-              detail: { type: object }
+              message: { type: string, description: "An English convenience sentence built from detail. Do not parse it; it can change" }
+              detail: { type: object, description: "The contract: structured facts for this code (counts, dates, ids, reason codes), always present", additionalProperties: true }
         alpha: { type: number, description: "Family-wise level; each comparison is tested at alpha divided by the number of comparisons" }
+        comparisonCount: { type: integer, description: "m: the variations other than the control (0 with a single variation)" }
+        alphaPerComparison: { type: number, description: "alpha / comparisonCount (alpha when there is no comparison)" }
+        confidenceLevel: { type: number, description: "1 - alphaPerComparison: the level of every interval in this response (0.95 with one comparison, wider with more). Use this instead of the per-comparison field" }
         thresholds:
           type: object
           properties:
             minExposuresPerVariation: { type: integer }
             minConversionsTotal: { type: integer }
             srmPValue: { type: number }
-        peekingNote: { type: string, description: "Plain language: results are only valid for a fixed sample size" }
+        peekingNoteCode: { type: string, enum: [FIXED_SAMPLE_SIZE], description: "Stable code of the caveat that p-values are only valid for a fixed sample size; a client can show its own translation" }
+        peekingNote: { type: string, description: "The default English text of peekingNoteCode" }
         method: { type: array, items: { type: string }, description: "Plain-language description of how the numbers were computed" }
 
     EvaluationResult:
@@ -1384,3 +1401,11 @@ components:
             The flag's RUNNING experiment in this environment, when a variation
             was served; otherwise null. Report an $exposure for it via /track.
             The variation is the flag's own: an experiment does not re-bucket.
+        exposureToken:
+          type: string
+          description: >-
+            Present only together with experimentId. A short signed proof that
+            the server served this variation of this experiment to this subject;
+            pass it back unchanged as `exposureToken` on the $exposure event.
+            Bound to the workspace, environment, experiment, variation and subject,
+            and valid for about 24 hours. See docs/SDK_TRACKING.md.

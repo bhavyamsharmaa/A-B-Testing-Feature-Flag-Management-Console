@@ -15,6 +15,9 @@ import (
 type eventNameCount struct {
 	Name  string `json:"name"`
 	Count int64  `json:"count"`
+	// Kinds are the metric kinds the data supports for this event: conversion
+	// and count always, value only when some event of this name carries a value.
+	Kinds []string `json:"kinds"`
 }
 
 type exposureCount struct {
@@ -97,7 +100,7 @@ func (h *Handlers) EventCounts(w http.ResponseWriter, r *http.Request) {
 	// be chosen from), most frequent first, capped. Uses idx_events_results.
 	names := []eventNameCount{}
 	nameRows, err := h.pool.Query(r.Context(), `
-		SELECT event_name, count(*) FROM events
+		SELECT event_name, count(*), count(*) FILTER (WHERE value IS NOT NULL) FROM events
 		WHERE workspace_id = $1::uuid AND experiment_id = $2::uuid AND event_name <> $3
 		GROUP BY event_name ORDER BY count(*) DESC, event_name LIMIT 50`,
 		access.Env.WorkspaceID, expID, ExposureEvent)
@@ -108,9 +111,14 @@ func (h *Handlers) EventCounts(w http.ResponseWriter, r *http.Request) {
 	defer nameRows.Close()
 	for nameRows.Next() {
 		var n eventNameCount
-		if err := nameRows.Scan(&n.Name, &n.Count); err != nil {
+		var valued int64
+		if err := nameRows.Scan(&n.Name, &n.Count, &valued); err != nil {
 			httpx.WriteInternal(w, r, err)
 			return
+		}
+		n.Kinds = []string{"conversion", "count"}
+		if valued > 0 {
+			n.Kinds = append(n.Kinds, "value")
 		}
 		names = append(names, n)
 	}

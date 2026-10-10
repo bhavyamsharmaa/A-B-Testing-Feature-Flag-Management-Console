@@ -230,3 +230,58 @@ func TestComputeNeverSerialisesNonFiniteNumbers(t *testing.T) {
 		}
 	}
 }
+
+func TestConfidenceLevelAndMetricStatusAreTopLevel(t *testing.T) {
+	// one comparison: 95%
+	r := Compute(input(map[string]int64{"control": 10000, "variant": 10000}, map[string]int64{"control": 1000, "variant": 1200}, even()))
+	if r.ComparisonCount != 1 || r.ConfidenceLevel != 0.95 || r.AlphaPerComparison != 0.05 || r.Metrics[0].Status != MetricOK || len(r.Metrics[0].StatusReasons) != 0 {
+		t.Errorf("%+v / %+v", r.ConfidenceLevel, r.Metrics[0])
+	}
+	if r.PeekingNoteCode != "FIXED_SAMPLE_SIZE" || strings.Contains(r.PeekingNote, "sampleSize") || r.PeekingNote == "" {
+		t.Errorf("peeking note: %q %q", r.PeekingNoteCode, r.PeekingNote)
+	}
+	// three variations: 97.5%, and the per-comparison field still agrees (deprecated, kept)
+	in := input(map[string]int64{"control": 5000, "a": 5000, "b": 5000}, map[string]int64{"control": 500, "a": 560, "b": 520}, nil)
+	in.Experiment.Variations = []string{"control", "a", "b"}
+	in.Experiment.StartConfig.Rollout = map[string]uint32{"control": 33334, "a": 33333, "b": 33333}
+	r = Compute(in)
+	if r.ComparisonCount != 2 || r.ConfidenceLevel != 0.975 || r.AlphaPerComparison != 0.025 {
+		t.Errorf("%+v", r)
+	}
+	for _, c := range r.Metrics[0].Comparisons {
+		if c.ConfidenceLevel != r.ConfidenceLevel {
+			t.Error("the per-comparison level disagrees with the top-level one")
+		}
+	}
+	// insufficient data: one status for the metric, reasons listed once
+	r = Compute(input(map[string]int64{"control": 50, "variant": 50}, map[string]int64{"control": 3, "variant": 4}, even()))
+	m := r.Metrics[0]
+	if m.Status != MetricInsufficientData || len(m.StatusReasons) != 2 || m.StatusReasons[0] != "EXPOSURES_BELOW_100" || m.StatusReasons[1] != "CONVERSIONS_BELOW_25" {
+		t.Errorf("%+v", m)
+	}
+	// nothing to compare, or nothing computable
+	one := input(map[string]int64{"control": 500}, nil, nil)
+	one.Experiment.Variations = []string{"control"}
+	if m := Compute(one).Metrics[0]; m.Status != MetricUnavailable || m.StatusReasons[0] != "SINGLE_VARIATION" {
+		t.Errorf("%+v", m)
+	}
+	if m := Compute(input(map[string]int64{"control": 500}, nil, even())).Metrics[0]; m.Status != MetricUnavailable || m.StatusReasons[0] != "VARIANT_HAS_NO_EXPOSURES" {
+		t.Errorf("%+v", m)
+	}
+}
+
+func TestEveryWarningHasStructuredDetail(t *testing.T) {
+	in := input(map[string]int64{}, nil, even())
+	one := Compute(in)
+	one2 := input(map[string]int64{"control": 500}, nil, nil)
+	one2.Experiment.Variations = []string{"control"}
+	for _, w := range append(one.Warnings, Compute(one2).Warnings...) {
+		if w.Detail == nil {
+			t.Errorf("%s has no detail object", w.Code)
+		}
+	}
+	b, _ := json.Marshal(one)
+	if strings.Contains(string(b), `"detail":null`) {
+		t.Error("a warning serialises a null detail")
+	}
+}

@@ -294,7 +294,7 @@ func TestEventCountsListsEventNames(t *testing.T) {
 	h := x.h
 	exp := x.runningExperiment()
 	x.seed(exp, "u1", "$exposure", "on", "1 second", nil)
-	x.seed(exp, "u1", "purchase", "", "2 seconds", nil)
+	x.seed(exp, "u1", "purchase", "", "2 seconds", 19.5) // carries a value
 	x.seed(exp, "u1", "page_view", "", "2 seconds", nil)
 	x.seed(exp, "u1", "page_view", "", "3 seconds", nil)
 	path := "/environments/" + x.devA + "/experiments/" + expKey + "/event-counts"
@@ -302,6 +302,7 @@ func TestEventCountsListsEventNames(t *testing.T) {
 		EventNames []struct {
 			Name  string
 			Count int
+			Kinds []string
 		}
 		ExposureTotal int
 		Events        int
@@ -309,6 +310,14 @@ func TestEventCountsListsEventNames(t *testing.T) {
 	if got.ExposureTotal != 1 || got.Events != 3 || len(got.EventNames) != 2 ||
 		got.EventNames[0].Name != "page_view" || got.EventNames[0].Count != 2 || got.EventNames[1].Name != "purchase" {
 		t.Errorf("%+v", got)
+	}
+	// the kinds the data supports: "value" only for an event that carries a value
+	kinds := map[string]string{}
+	for _, e := range got.EventNames {
+		kinds[e.Name] = strings.Join(e.Kinds, ",")
+	}
+	if kinds["purchase"] != "conversion,count,value" || kinds["page_view"] != "conversion,count" {
+		t.Errorf("kinds: %v", kinds)
 	}
 	h.expect(404, x.b, "GET", "/environments/"+x.devA+"/experiments/"+expKey+"/event-counts", nil)
 }

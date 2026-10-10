@@ -27,17 +27,20 @@ type MetricInput struct {
 	Dropped attribution
 }
 
+// PeekingNoteCode names the fixed-sample-size caveat; a client can show its own
+// translation of it. The text is the default English.
+const PeekingNoteCode = "FIXED_SAMPLE_SIZE"
+
 const peekingNote = "These p-values and intervals are valid only for a sample size fixed in advance. " +
 	"Looking at results repeatedly while the experiment runs and stopping when a difference appears " +
-	"inflates the false-positive rate well above 5%. The sample size at this reading is given in sampleSize. " +
-	"No sequential correction is applied."
+	"makes false alarms far more common than 5%. No sequential correction is applied."
 
 // Compute turns counts into the response. It never returns NaN or Infinity.
 func Compute(in Inputs) Response {
 	x := in.Experiment
 	resp := Response{
 		ExperimentKey: x.Key, FlagKey: x.FlagKey, Status: x.Status, ReadAt: in.Now.UTC(),
-		Alpha: Alpha, PeekingNote: peekingNote,
+		Alpha: Alpha, PeekingNoteCode: PeekingNoteCode, PeekingNote: peekingNote,
 		Thresholds: Thresholds{MinExposuresPerVariation, MinConversionsTotal, SRMThreshold},
 		Method:     methodNotes(),
 		Warnings:   []Warning{},
@@ -78,6 +81,12 @@ func Compute(in Inputs) Response {
 	resp.SRM = srmBlock(x, variations, in.Exposures)
 	resp.Trustworthy = !resp.SRM.Detected
 
+	resp.ComparisonCount = max(len(variations)-1, 0)
+	resp.AlphaPerComparison, resp.ConfidenceLevel = Alpha, 1-Alpha
+	if resp.ComparisonCount > 0 {
+		resp.AlphaPerComparison = Alpha / float64(resp.ComparisonCount)
+		resp.ConfidenceLevel = 1 - resp.AlphaPerComparison
+	}
 	for _, mi := range in.Metrics {
 		resp.Metrics = append(resp.Metrics, computeMetric(mi, variations, in.Exposures, resp.Trustworthy))
 	}
@@ -86,6 +95,54 @@ func Compute(in Inputs) Response {
 }
 
 func computeMetric(mi MetricInput, variations []string, exposures map[string]int64, trustworthy bool) MetricResult {
+	res := computeComparisons(mi, variations, exposures, trustworthy)
+	res.Status, res.StatusReasons = metricStatus(res)
+	return res
+}
+
+// metricStatus summarises a metric's comparisons (see MetricResult.Status).
+func metricStatus(res MetricResult) (string, []string) {
+	if len(res.Comparisons) == 0 {
+		return MetricUnavailable, []string{"SINGLE_VARIATION"}
+	}
+	seen := map[string]bool{}
+	var insufficient, usable []string
+	for _, c := range res.Comparisons {
+		switch c.Status {
+		case StatusInsufficientData:
+			for _, r := range c.StatusReasons {
+				if !seen[r] {
+					seen[r] = true
+					insufficient = append(insufficient, r)
+				}
+			}
+			if len(c.StatusReasons) == 0 {
+				insufficient = append(insufficient, "INSUFFICIENT_DATA")
+			}
+		case StatusInvalid:
+		default:
+			usable = append(usable, c.VariationID)
+		}
+	}
+	switch {
+	case len(insufficient) > 0:
+		return MetricInsufficientData, insufficient
+	case len(usable) == 0:
+		var reasons []string
+		for _, c := range res.Comparisons {
+			for _, r := range c.StatusReasons {
+				if !seen[r] {
+					seen[r] = true
+					reasons = append(reasons, r)
+				}
+			}
+		}
+		return MetricUnavailable, reasons
+	}
+	return MetricOK, nil
+}
+
+func computeComparisons(mi MetricInput, variations []string, exposures map[string]int64, trustworthy bool) MetricResult {
 	res := MetricResult{Metric: mi.Spec, Variations: []VariationStats{}, Comparisons: []Comparison{}}
 	moments := map[string]Moments{}
 	var converters int64
@@ -209,7 +266,12 @@ func srmBlock(x experimentRow, variations []string, exposures map[string]int64) 
 
 func warnings(in Inputs, r Response, variations []string) []Warning {
 	out := []Warning{}
+	// detail is the contract (always present, structured); message is an English
+	// convenience built from it and must not be parsed.
 	add := func(code, sev, msg string, detail map[string]any) {
+		if detail == nil {
+			detail = map[string]any{}
+		}
 		out = append(out, Warning{Code: code, Severity: sev, Message: msg, Detail: detail})
 	}
 	if in.UnverifiedExposures > 0 {
@@ -229,7 +291,8 @@ func warnings(in Inputs, r Response, variations []string) []Warning {
 			"Sample ratio mismatch: the exposures per variation differ from the expected split (p = %.3g < %g). Every number below is untrustworthy until the cause is found (assignment or exposure-reporting bug, bots, redirects).", p, SRMThreshold),
 			map[string]any{"pValue": r.SRM.PValue, "confidence": r.SRM.Confidence})
 	} else if r.SRM.Confidence == "low" && r.SampleSize > 0 {
-		add("SRM_LOW_CONFIDENCE", "info", "The sample-ratio check is low confidence: "+r.SRM.ConfidenceReason+".", nil)
+		add("SRM_LOW_CONFIDENCE", "info", "The sample-ratio check is low confidence: "+r.SRM.ConfidenceReason+".",
+			map[string]any{"expectedSource": r.SRM.ExpectedSource})
 	}
 	for _, m := range r.Metrics {
 		for _, c := range m.Comparisons {
