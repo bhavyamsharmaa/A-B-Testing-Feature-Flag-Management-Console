@@ -132,6 +132,10 @@ func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+	if in.UnverifiedExposures, err = unverifiedExposures(ctx, tx, ws, x.ID); err != nil {
+		h.fail(w, r, err)
+		return
+	}
 
 	resp := Compute(in)
 	h.store(cacheKey, resp)

@@ -301,3 +301,15 @@ func jsonSame(x, y json.RawMessage) bool {
 	jb, _ := json.Marshal(b)
 	return string(ja) == string(jb)
 }
+
+// unverifiedExposures counts the exposures that were accepted although their
+// exposure token did not verify (EXPOSURE_VERIFICATION=report). Uses the
+// partial index idx_events_unverified_exposures.
+func unverifiedExposures(ctx context.Context, q querier, workspaceID, expID string) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx, `
+		SELECT count(*) FROM events
+		WHERE workspace_id = $1::uuid AND experiment_id = $2::uuid AND exposure_verified = false`,
+		workspaceID, expID).Scan(&n)
+	return n, err
+}

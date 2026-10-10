@@ -21,6 +21,7 @@ import (
 	"helios/backend/internal/platform/cors"
 	"helios/backend/internal/platform/db"
 	"helios/backend/internal/platform/events"
+	"helios/backend/internal/platform/exposuretoken"
 	"helios/backend/internal/platform/ratelimit"
 	"helios/backend/internal/platform/redisx"
 	"helios/backend/internal/server"
@@ -102,7 +103,37 @@ func main() {
 		log.Printf("rate limits on, client IP from X-Forwarded-For (%d trusted proxy hop(s))", limits.TrustedProxyHops)
 	}
 
+	exposureMode, err := exposuretoken.ParseMode(cfg.ExposureVerification)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tokenMaxAge := exposuretoken.DefaultMaxAge
+	if v := strings.TrimSpace(cfg.ExposureTokenMaxAge); v != "" {
+		if tokenMaxAge, err = time.ParseDuration(v); err != nil || tokenMaxAge < time.Minute {
+			log.Fatalf("EXPOSURE_TOKEN_MAX_AGE must be a duration of at least 1m, such as 24h")
+		}
+	}
+	var keyring *exposuretoken.Keyring
+	if cfg.ExposureTokenKey != "" {
+		if keyring, err = exposuretoken.NewKeyring(cfg.ExposureTokenKey, cfg.ExposureTokenKeyPrevious, tokenMaxAge); err != nil {
+			log.Fatal(err) // the message never quotes the secret
+		}
+	} else {
+		if exposureMode == exposuretoken.ModeRequired {
+			log.Fatalf("EXPOSURE_VERIFICATION=required needs EXPOSURE_TOKEN_KEY: a key generated at startup would differ on every instance and restart")
+		}
+		if keyring, err = exposuretoken.DevKeyring(tokenMaxAge); err != nil {
+			log.Fatal(err)
+		}
+	}
+	log.Printf("exposure verification: %s (tokens valid %s)", exposureMode, tokenMaxAge)
+	if exposureMode == exposuretoken.ModeReport && keyring.Dev {
+		log.Printf("WARNING: EXPOSURE_VERIFICATION=report with a development key: with more than one instance most tokens will fail to verify")
+	}
+
 	router := server.New(server.Deps{
+		ExposureTokens: keyring,
+		ExposureMode:   exposureMode,
 		Context:        appCtx,
 		InvitesByID:    !strings.EqualFold(strings.TrimSpace(cfg.InvitesByID), "false"),
 		Limiter:        ratelimit.New(limits),

@@ -16,6 +16,8 @@ type Inputs struct {
 	Metrics    []MetricInput
 	Changes    []flagChange
 	OtherRuns  []otherRun
+	// UnverifiedExposures accepted without a verifying exposure token.
+	UnverifiedExposures int64
 }
 
 // MetricInput is one requested metric with its aggregated sums.
@@ -209,6 +211,11 @@ func warnings(in Inputs, r Response, variations []string) []Warning {
 	out := []Warning{}
 	add := func(code, sev, msg string, detail map[string]any) {
 		out = append(out, Warning{Code: code, Severity: sev, Message: msg, Detail: detail})
+	}
+	if in.UnverifiedExposures > 0 {
+		add("EXPOSURES_UNVERIFIED", "warning", fmt.Sprintf(
+			"%d exposure(s) were accepted without a valid exposure token, so they cannot be shown to have been served by Helios. They are included in the numbers.", in.UnverifiedExposures),
+			map[string]any{"exposures": in.UnverifiedExposures})
 	}
 	if r.SampleSize == 0 {
 		add("NO_EXPOSURES", "warning", "No exposures have been recorded yet, so there is nothing to compare.", nil)

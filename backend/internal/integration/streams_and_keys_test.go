@@ -178,7 +178,7 @@ func TestRevocationIsImmediateHereAndBoundedElsewhere(t *testing.T) {
 	const otherTTL = 400 * time.Millisecond
 	other := apikey.NewVerifier(h.pool, otherTTL)
 	otherMux := http.NewServeMux()
-	otherMux.Handle("POST /evaluate", other.Middleware(evaluation.Handler(h.pool)))
+	otherMux.Handle("POST /evaluate", other.Middleware(evaluation.Handler(h.pool, nil)))
 	otherSrv := httptest.NewServer(otherMux)
 	defer otherSrv.Close()
 	evalOther := func() int {

@@ -80,6 +80,7 @@ func (s *PgStore) Insert(ctx context.Context, sc apikey.Scope, batch []Event) (m
 	ids, names, subjects := make([]string, n), make([]string, n), make([]string, n)
 	exps, vars, props := make([]*string, n), make([]*string, n), make([]*string, n)
 	vals := make([]*float64, n)
+	verified := make([]*bool, n)
 	times := make([]time.Time, n)
 	for i, e := range batch {
 		ids[i], names[i], subjects[i], times[i] = e.ID, e.Name, e.SubjectKey, e.OccurredAt
@@ -93,17 +94,18 @@ func (s *PgStore) Insert(ctx context.Context, sc apikey.Scope, batch []Event) (m
 			props[i] = &batch[i].Properties
 		}
 		vals[i] = e.Value
+		verified[i] = e.Verified
 	}
 	rows, err := s.pool.Query(ctx, `
 		INSERT INTO events (workspace_id, environment_id, event_id, event_name, subject_key,
-		                    experiment_id, variation_id, value, properties, occurred_at)
-		SELECT $1::uuid, $2::uuid, t.event_id, t.name, t.subject, t.exp::uuid, t.var, t.val, t.props::jsonb, t.ts
-		FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::float8[], $9::text[], $10::timestamptz[])
-		     WITH ORDINALITY AS t(event_id, name, subject, exp, var, val, props, ts, ord)
+		                    experiment_id, variation_id, value, properties, occurred_at, exposure_verified)
+		SELECT $1::uuid, $2::uuid, t.event_id, t.name, t.subject, t.exp::uuid, t.var, t.val, t.props::jsonb, t.ts, t.verified
+		FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::float8[], $9::text[], $10::timestamptz[], $11::bool[])
+		     WITH ORDINALITY AS t(event_id, name, subject, exp, var, val, props, ts, verified, ord)
 		ORDER BY t.ord
 		ON CONFLICT DO NOTHING
 		RETURNING event_id`,
-		sc.WorkspaceID, sc.EnvironmentID, ids, names, subjects, exps, vars, vals, props, times)
+		sc.WorkspaceID, sc.EnvironmentID, ids, names, subjects, exps, vars, vals, props, times, verified)
 	if err != nil {
 		return nil, err
 	}

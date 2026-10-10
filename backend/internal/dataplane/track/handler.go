@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"helios/backend/internal/platform/apikey"
+	"helios/backend/internal/platform/exposuretoken"
 	"helios/backend/internal/platform/httpx"
 	"helios/backend/internal/platform/ratelimit"
 )
@@ -43,6 +44,10 @@ type Deps struct {
 	Limiter *ratelimit.Limiter
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// Tokens verifies exposure tokens; with Mode off (or nil) none are checked.
+	Tokens *exposuretoken.Keyring
+	// Mode is what to do with an exposure whose token does not verify.
+	Mode exposuretoken.Mode
 }
 
 // Handler serves POST /track. It must run behind apikey's middleware: the
@@ -146,6 +151,16 @@ func Handler(d Deps) http.HandlerFunc {
 					reject(&results[i], CodeInvalidVariation, "variationId is not a variation of the experiment's flag")
 					continue
 				}
+				if ev.Name == ExposureEvent && d.Tokens != nil && d.Mode != exposuretoken.ModeOff {
+					code := checkToken(d.Tokens, sc, ev, clock)
+					ok := code == ""
+					valid[j].Verified = &ok
+					if !ok && d.Mode == exposuretoken.ModeRequired {
+						reject(&results[i], code, exposureMessages[code])
+						continue
+					}
+					ev = valid[j]
+				}
 			}
 			store = append(store, ev)
 			storeAt = append(storeAt, i)
@@ -195,4 +210,32 @@ func unavailable(w http.ResponseWriter, step string, err error) {
 		log.Printf("track: %s failed: %T", step, err)
 	}
 	httpx.WriteError(w, http.StatusServiceUnavailable, "TRACK_UNAVAILABLE", "events could not be stored; retry with the same ids")
+}
+
+// exposureMessages are fixed: they never quote the token or anything else sent.
+var exposureMessages = map[string]string{
+	CodeExposureTokenMissing: "this exposure needs the exposureToken that /evaluate returned for it",
+	CodeExposureTokenInvalid: "the exposureToken does not match this exposure",
+	CodeExposureTokenExpired: "the exposureToken has expired; evaluate again",
+}
+
+// checkToken returns "" when the exposure's token verifies for the key's own
+// workspace and environment and the event's experiment, variation and subject,
+// else the code to report.
+func checkToken(k *exposuretoken.Keyring, sc apikey.Scope, ev Event, now time.Time) string {
+	if ev.ExposureToken == "" {
+		return CodeExposureTokenMissing
+	}
+	err := k.Verify(ev.ExposureToken, exposuretoken.Binding{
+		Workspace: sc.WorkspaceID, Environment: sc.EnvironmentID, Experiment: ev.ExperimentID,
+		Variation: ev.VariationID, Subject: ev.SubjectKey,
+	}, now)
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, exposuretoken.ErrExpired):
+		return CodeExposureTokenExpired
+	default:
+		return CodeExposureTokenInvalid
+	}
 }

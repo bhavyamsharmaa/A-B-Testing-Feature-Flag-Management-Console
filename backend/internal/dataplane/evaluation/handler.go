@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"helios/backend/internal/platform/apikey"
+	"helios/backend/internal/platform/exposuretoken"
 	"helios/backend/internal/platform/httpx"
 )
 
@@ -28,6 +30,11 @@ type evaluationResult struct {
 	Value        any     `json:"value"`
 	Reason       Reason  `json:"reason"`
 	ExperimentID *string `json:"experimentId"`
+	// ExposureToken proves the server served this variation of the experiment
+	// to this subject; the client passes it back on its $exposure event. It is
+	// absent (not null) when the flag is in no running experiment, so
+	// evaluations of other flags are byte for byte what they always were.
+	ExposureToken *string `json:"exposureToken,omitempty"`
 }
 
 // Handler serves POST /evaluate. It must run behind apikey's middleware,
@@ -36,7 +43,7 @@ type evaluationResult struct {
 // This reads flag configs from Postgres on every request: the naive,
 // DB-backed step of M1. The PRD's in-memory ruleset with Redis-driven swaps
 // replaces this load in M2; Evaluate itself doesn't change.
-func Handler(pool *pgxpool.Pool) http.HandlerFunc {
+func Handler(pool *pgxpool.Pool, tokens *exposuretoken.Keyring) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		scope, ok := apikey.ScopeFrom(r.Context())
 		if !ok {
@@ -79,6 +86,13 @@ func Handler(pool *pgxpool.Pool) http.HandlerFunc {
 				// exposure. Assignment is the flag's own (nothing is re-bucketed).
 				if exp, ok := experiments[key]; ok {
 					out.ExperimentID = &exp
+					if tokens != nil {
+						t := tokens.Issue(exposuretoken.Binding{
+							Workspace: scope.WorkspaceID, Environment: scope.EnvironmentID, Experiment: exp,
+							Variation: res.VariationID, Subject: req.Context.SubjectKey,
+						}, time.Now())
+						out.ExposureToken = &t
+					}
 				}
 			}
 			results = append(results, out)

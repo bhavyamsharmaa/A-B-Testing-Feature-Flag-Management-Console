@@ -22,26 +22,36 @@ type Config struct {
 	StreamsPerKey     string // max concurrent /sdk/stream connections per SDK key
 	// InvitesByID: "false" disables accepting an invite by its id (and hides
 	// open invites in /me), leaving only the one-time link. See docs/SECURITY_REVIEW.md.
-	InvitesByID        string
-	CORSAllowedOrigins []string // browser origins allowed to call the API, e.g. the Vercel URL
+	InvitesByID string
+	// Signed exposure tokens (see internal/platform/exposuretoken). The key is a
+	// SECRET: "<id>:<secret of at least 32 bytes>". The previous key is only for rotation.
+	ExposureTokenKey         string
+	ExposureTokenKeyPrevious string
+	ExposureVerification     string   // off (default) | report | required
+	ExposureTokenMaxAge      string   // e.g. "24h"
+	CORSAllowedOrigins       []string // browser origins allowed to call the API, e.g. the Vercel URL
 }
 
 // Load reads configuration from the environment, applying defaults that match
 // the local docker-compose services.
 func Load() Config {
 	return Config{
-		Port:               getenv("PORT", "8080"),
-		DatabaseURL:        getenv("DATABASE_URL", "postgres://helios:helios@localhost:5432/helios?sslmode=disable"),
-		RedisURL:           os.Getenv("REDIS_URL"),
-		SupabaseURL:        os.Getenv("SUPABASE_URL"),
-		SupabaseAnonKey:    os.Getenv("SUPABASE_ANON_KEY"),
-		EmailConfirmation:  os.Getenv("EMAIL_CONFIRMATION"),
-		RateLimitDisabled:  os.Getenv("RATE_LIMIT_DISABLED"),
-		RateLimits:         os.Getenv("RATE_LIMITS"),
-		TrustedProxyHops:   trustedProxyHops(),
-		InvitesByID:        os.Getenv("INVITES_BY_ID"),
-		StreamsPerKey:      os.Getenv("STREAMS_PER_KEY"),
-		CORSAllowedOrigins: splitList(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		Port:                     getenv("PORT", "8080"),
+		DatabaseURL:              getenv("DATABASE_URL", "postgres://helios:helios@localhost:5432/helios?sslmode=disable"),
+		RedisURL:                 os.Getenv("REDIS_URL"),
+		SupabaseURL:              os.Getenv("SUPABASE_URL"),
+		SupabaseAnonKey:          os.Getenv("SUPABASE_ANON_KEY"),
+		EmailConfirmation:        os.Getenv("EMAIL_CONFIRMATION"),
+		RateLimitDisabled:        os.Getenv("RATE_LIMIT_DISABLED"),
+		RateLimits:               os.Getenv("RATE_LIMITS"),
+		TrustedProxyHops:         trustedProxyHops(),
+		InvitesByID:              os.Getenv("INVITES_BY_ID"),
+		StreamsPerKey:            os.Getenv("STREAMS_PER_KEY"),
+		ExposureTokenKey:         os.Getenv("EXPOSURE_TOKEN_KEY"),
+		ExposureTokenKeyPrevious: os.Getenv("EXPOSURE_TOKEN_KEY_PREVIOUS"),
+		ExposureVerification:     os.Getenv("EXPOSURE_VERIFICATION"),
+		ExposureTokenMaxAge:      os.Getenv("EXPOSURE_TOKEN_MAX_AGE"),
+		CORSAllowedOrigins:       splitList(os.Getenv("CORS_ALLOWED_ORIGINS")),
 	}
 }
 

@@ -51,6 +51,8 @@ type wireEvent struct {
 	VariationID  string          `json:"variationId"`
 	Timestamp    string          `json:"timestamp"`
 	Properties   json.RawMessage `json:"properties"`
+	// ExposureToken is the proof /evaluate issued; only meaningful on an $exposure.
+	ExposureToken string `json:"exposureToken"`
 }
 
 // Event is a validated event, ready to store.
@@ -63,6 +65,11 @@ type Event struct {
 	VariationID  string // only for $exposure
 	OccurredAt   time.Time
 	Properties   string // compact JSON object, or ""
+	// ExposureToken as sent ("" when none), consumed by the handler's verification.
+	ExposureToken string
+	// Verified is the result of checking the token: nil when not checked
+	// (verification off, or not an $exposure), else whether it verified.
+	Verified *bool
 }
 
 // Reject codes returned per event.
@@ -71,6 +78,12 @@ const (
 	CodeExperimentNotFound = "EXPERIMENT_NOT_FOUND"
 	CodeExperimentNotRun   = "EXPERIMENT_NOT_RUNNING"
 	CodeInvalidVariation   = "INVALID_VARIATION"
+	// Exposure verification (EXPOSURE_VERIFICATION=required). The codes do not say
+	// WHICH check failed beyond "missing", "expired" and "not valid": a signature
+	// failure, an unknown key id and a token for another subject look the same.
+	CodeExposureTokenMissing = "EXPOSURE_TOKEN_MISSING"
+	CodeExposureTokenInvalid = "EXPOSURE_TOKEN_INVALID"
+	CodeExposureTokenExpired = "EXPOSURE_TOKEN_EXPIRED"
 )
 
 // invalid is a validation failure with a fixed, content-free message.
@@ -131,8 +144,14 @@ func parse(raw json.RawMessage, now time.Time) (Event, error) {
 			return ev, bad("variationId is at most 128 characters")
 		}
 		ev.VariationID = w.VariationID
+		if len(w.ExposureToken) > 256 || strings.ContainsRune(w.ExposureToken, 0) {
+			return ev, bad("exposureToken is at most 256 characters")
+		}
+		ev.ExposureToken = w.ExposureToken
 	} else if w.VariationID != "" {
 		return ev, bad("variationId is only allowed on an $exposure")
+	} else if w.ExposureToken != "" {
+		return ev, bad("exposureToken is only allowed on an $exposure")
 	}
 
 	ev.OccurredAt = now
