@@ -45,10 +45,19 @@ export function ResultsTab({ experiment, env, workspaceId }: Props) {
   const options = useMemo<MetricOption[]>(() => {
     const byName = new Map<string, MetricOption>()
     for (const m of experiment.metrics) {
-      byName.set(m.eventName, { eventName: m.eventName, defaultKind: m.type, hint: m.isPrimary ? 'primary metric' : 'defined metric' })
+      // until events arrive, offer what the metric was defined as, plus the always-valid kinds
+      const kinds: MetricKind[] = [...new Set<MetricKind>([m.type, 'conversion', 'count'])]
+      byName.set(m.eventName, { eventName: m.eventName, defaultKind: m.type, kinds, hint: m.isPrimary ? 'primary metric' : 'defined metric' })
     }
     for (const e of counts?.eventNames ?? []) {
-      if (!byName.has(e.name)) byName.set(e.name, { eventName: e.name, defaultKind: 'conversion', hint: `${e.count.toLocaleString('en-US')} events` })
+      const existing = byName.get(e.name)
+      // what the data supports wins over the guess above
+      byName.set(e.name, {
+        eventName: e.name,
+        defaultKind: existing && e.kinds.includes(existing.defaultKind) ? existing.defaultKind : 'conversion',
+        kinds: e.kinds,
+        hint: existing ? existing.hint : `${e.count.toLocaleString('en-US')} events`,
+      })
     }
     return [...byName.values()]
   }, [experiment.metrics, counts])

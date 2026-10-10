@@ -92,7 +92,8 @@ async function seed(name: string, counts: { on: number; off: number }, rates: { 
     for (let i = 0; i < counts[arm]; i++) {
       const subject = `${name}-${arm}-${i}`
       events.push({ id: `x-${subject}`, name: '$exposure', subjectKey: subject, experimentId: e.id, variationId: arm })
-      if (rand() < rates[arm]) converts.push({ id: `p-${subject}`, name: 'purchase', subjectKey: subject, experimentId: e.id })
+      if (rand() < rates[arm]) converts.push({ id: `p-${subject}`, name: 'purchase', subjectKey: subject, experimentId: e.id, value: 20 + (i % 7) })
+      if (i < 50) converts.push({ id: `v-${subject}`, name: 'page_view', subjectKey: subject, experimentId: e.id }) // an event with no value
     }
   }
   await track(api, sdk, [...events, ...converts])
@@ -243,7 +244,8 @@ test('too little data: insufficient data and no verdict', async ({ browser }) =>
   await expect(page.getByTestId('warning-INSUFFICIENT_DATA')).toBeVisible()
   await expect(block.getByTestId('p-raw')).toContainText('—')
   await expect(block.getByTestId('abs-interval')).toContainText('—')
-  await expect(block.getByTestId('missing-reasons')).toContainText('fewer than 100 exposures')
+  await expect(page.getByTestId('metric-status')).toContainText('fewer than 100 exposures') // said once for the metric
+  await expect(page.getByTestId('metric-status')).toHaveCount(1)
   await expect(block.getByTestId('interval-plot')).toHaveAttribute('data-drawn', 'false')
   await expect(page.getByText(/Significant at this sample size|Not significant/)).toHaveCount(0)
   const api = await apiResults(exp.tiny.key)
@@ -283,7 +285,11 @@ test('metrics: the picker offers the experiment’s events, allows three at most
   await page.goto(resultsUrl(exp.clear.key))
   const picker = page.getByTestId('metric-picker')
   await expect(picker).toContainText('purchase')
+  // the kinds offered are the ones the data supports: a value only for an event that has values
+  await picker.getByLabel('Event').selectOption('page_view')
+  expect(await picker.getByLabel('Measured as').locator('option').allTextContents()).toEqual(['conversion', 'count per subject'])
   await picker.getByLabel('Event').selectOption('purchase')
+  expect(await picker.getByLabel('Measured as').locator('option').allTextContents()).toEqual(['conversion', 'count per subject', 'value per subject'])
   await picker.getByLabel('Measured as').selectOption('count')
   await picker.getByRole('button', { name: 'Add metric' }).click()
   await expect(page).toHaveURL(/metrics=purchase%3Acount|metrics=purchase:count/)

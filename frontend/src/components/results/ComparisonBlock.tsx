@@ -8,8 +8,12 @@ import { StatusBadge } from './StatusBadge'
 interface Props {
   comparison: ResultsComparison
   kind: MetricKind
-  /** Number of comparisons in the family (Bonferroni). */
+  /** Number of comparisons in the family (Bonferroni): the response's comparisonCount. */
   family: number
+  /** The level of every interval in the response (its top-level confidenceLevel). */
+  confidenceLevel: number
+  /** Alpha each comparison was tested at (its top-level alphaPerComparison). */
+  alphaPerComparison: number
   /** False while the experiment is stopped: a verdict is no longer provisional. */
   running: boolean
   /** False when the sample ratio check failed: nothing here can be relied on. */
@@ -17,18 +21,20 @@ interface Props {
 }
 
 /** One variation against the control. */
-export function ComparisonBlock({ comparison: c, kind, family, running, trustworthy }: Props) {
+export function ComparisonBlock({ comparison: c, kind, family, confidenceLevel, alphaPerComparison, running, trustworthy }: Props) {
   const info = statusInfo(c.status, trustworthy, running)
   const fmtDiff = differenceFormatter(kind)
-  const level = fmtLevel(c.confidenceLevel)
-  const alpha = fmtLevel(c.alphaPerComparison)
+  const level = fmtLevel(confidenceLevel)
+  const alpha = fmtLevel(alphaPerComparison)
+  // "Insufficient data" is said once for the metric (above the comparisons), not repeated here.
+  const insufficient = c.status === 'insufficient_data' && trustworthy
 
   // A value that is missing is a dash, with the reason in words (tooltip, screen-reader text, and listed below).
   const reasons = new Set<string>()
   const cell = (value: string, field: string) => {
     if (value !== DASH) return value
     const why = missingReason(c, field)
-    if (why) reasons.add(why)
+    if (why && !insufficient) reasons.add(why)
     return (
       <span title={why ?? 'not available'} tabIndex={0}>
         {DASH}
@@ -50,7 +56,7 @@ export function ComparisonBlock({ comparison: c, kind, family, running, trustwor
         </h4>
         <StatusBadge info={info} />
       </div>
-      <p className="mt-1.5 text-xs text-zinc-300">{info.detail}</p>
+      {!insufficient && <p className="mt-1.5 text-xs text-zinc-300">{info.detail}</p>}
 
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-4">
         <Stat label={kind === 'conversion' ? 'Absolute lift' : 'Difference in means'} testid="abs-lift">

@@ -164,6 +164,25 @@ when something looks significant inflates the false-positive rate. The response
 carries `peekingNote` and `sampleSize` (total exposures at this reading). No
 sequential testing is implemented.
 
+## Response fields clients should use
+
+* `confidenceLevel`, `alphaPerComparison`, `comparisonCount` at the top level: one
+  level for every interval in the response (95% with one comparison, wider with more).
+  The same fields on each comparison are **deprecated** and kept for compatibility.
+* `metrics[].status` (`ok`, `insufficient_data`, `unavailable`) and
+  `metrics[].statusReasons`: say "insufficient data" once per metric, not for every
+  comparison. A comparison still carries its own `status`.
+* `peekingNoteCode` (`FIXED_SAMPLE_SIZE`) is the stable identifier of the
+  fixed-sample-size caveat; `peekingNote` is its default English text. The sample size
+  is `sampleSize`.
+* `warnings[].detail` is the contract: structured facts (counts, dates, reason codes)
+  and always an object. `warnings[].message` is an English convenience built from it;
+  do not parse it.
+* `GET .../event-counts` lists `eventNames[].kinds`: the metric kinds the data supports
+  for each event (`value` only when some event of that name carries a value).
+* `EXPOSURES_UNVERIFIED` (exposure tokens in report mode) and `CLIENT_CLOCK_ADJUSTED`
+  are warnings with `detail.exposures` / `detail.events`.
+
 ## Warnings
 
 `NO_EXPOSURES`, `SRM_FAILED`, `SRM_LOW_CONFIDENCE`, `INSUFFICIENT_DATA`,

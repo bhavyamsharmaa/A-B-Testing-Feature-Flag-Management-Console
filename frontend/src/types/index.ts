@@ -147,7 +147,7 @@ export interface Experiment {
 /** Raw data arriving for an experiment. Not results: no rates, no significance. */
 export interface EventCounts {
   /** Event names (other than $exposure) that exist for the experiment, most frequent first. */
-  eventNames: { name: string; count: number }[]
+  eventNames: { name: string; count: number; /** the metric kinds the data supports */ kinds: MetricKind[] }[]
   exposures: { variationId: string; count: number }[]
   exposureTotal: number
   /** Events other than exposures. */
@@ -194,8 +194,10 @@ export interface ResultsComparison {
   degreesOfFreedom: number | null
   pValue: number | null
   adjustedPValue: number | null
-  alphaPerComparison: number
-  confidenceLevel: number
+  /** Deprecated: use the response's alphaPerComparison. */
+  alphaPerComparison?: number
+  /** Deprecated: use the response's confidenceLevel. */
+  confidenceLevel?: number
   reasons?: Record<string, string>
   trustworthy: boolean
 }
@@ -204,10 +206,16 @@ export interface ResultsWarning {
   code: string
   severity: 'info' | 'warning' | 'critical'
   message: string
-  detail?: Record<string, unknown>
+  /** The contract: structured facts for the code. `message` is an English convenience and is not used. */
+  detail: Record<string, unknown>
 }
 
+export type MetricStatus = 'ok' | 'insufficient_data' | 'unavailable'
+
 export interface ResultsMetric {
+  /** The metric as a whole; say "insufficient data" once, not per comparison. */
+  status: MetricStatus
+  statusReasons?: string[]
   metric: { name?: string; eventName: string; kind: MetricKind; isPrimary: boolean }
   variations: ResultsVariation[]
   comparisons: ResultsComparison[]
@@ -238,7 +246,13 @@ export interface ExperimentResults {
   metrics: ResultsMetric[]
   warnings: ResultsWarning[]
   alpha: number
+  comparisonCount: number
+  alphaPerComparison: number
+  /** The level of every interval in this response (wider than 95% with several comparisons). */
+  confidenceLevel: number
   thresholds: { minExposuresPerVariation: number; minConversionsTotal: number; srmPValue: number }
+  /** Stable code of the fixed-sample-size caveat; the page words it itself and falls back to `peekingNote`. */
+  peekingNoteCode: string
   peekingNote: string
   method: string[]
 }

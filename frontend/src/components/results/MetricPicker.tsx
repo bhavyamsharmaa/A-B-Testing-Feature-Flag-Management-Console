@@ -8,6 +8,8 @@ export interface MetricOption {
   eventName: string
   /** The kind to offer first (a defined metric's own type). */
   defaultKind: MetricKind
+  /** The kinds the data supports for this event (from event-counts). */
+  kinds: MetricKind[]
   /** Shown beside the name: "primary", "defined" or a count of events. */
   hint: string
 }
@@ -26,6 +28,7 @@ export function MetricPicker({ selected, options, primaryLabel, onChange }: Prop
   const [eventName, setEventName] = useState('')
   const [kind, setKind] = useState<MetricKind>('conversion')
   const full = selected.length >= MAX_METRICS
+  const kindsFor = options.find((o) => o.eventName === eventName)?.kinds ?? (Object.keys(KIND_WORDS) as MetricKind[])
   const duplicate = selected.some((m) => m.eventName === eventName && m.kind === kind)
 
   return (
@@ -70,7 +73,7 @@ export function MetricPicker({ selected, options, primaryLabel, onChange }: Prop
             onChange={(e) => {
               setEventName(e.target.value)
               const o = options.find((x) => x.eventName === e.target.value)
-              if (o) setKind(o.defaultKind)
+              if (o) setKind(o.kinds.includes(o.defaultKind) ? o.defaultKind : o.kinds[0])
             }}
             disabled={full || options.length === 0}
             className="mt-0.5 rounded-lg border border-white/15 bg-surface px-2.5 py-1.5 text-sm text-zinc-100 disabled:opacity-50"
@@ -92,7 +95,7 @@ export function MetricPicker({ selected, options, primaryLabel, onChange }: Prop
             disabled={full}
             className="mt-0.5 rounded-lg border border-white/15 bg-surface px-2.5 py-1.5 text-sm text-zinc-100 disabled:opacity-50"
           >
-            {(Object.keys(KIND_WORDS) as MetricKind[]).map((k) => (
+            {kindsFor.map((k) => (
               <option key={k} value={k}>{KIND_WORDS[k]}</option>
             ))}
           </select>

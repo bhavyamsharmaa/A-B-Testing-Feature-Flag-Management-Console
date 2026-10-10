@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { MetricPicker } from '../../src/components/results/MetricPicker'
 import { ResultsView } from '../../src/components/results/ResultsView'
 import {
   DASH, fmtCount, fmtInterval, fmtLevel, fmtNumber, fmtP, fmtPercent, fmtPoints, fmtSignedNumber, fmtSignedPercent,
-  reasonText, safeText, sortedWarnings, statusInfo,
+  metricStatusText, peekingText, reasonText, safeText, sortedWarnings, statusInfo,
 } from '../../src/lib/resultsFormat'
 import type { ExperimentResults, ResultsComparison, ResultsWarning } from '../../src/types'
 
@@ -87,13 +88,13 @@ test.describe('reasons and statuses', () => {
 
   test('warnings are ordered by severity and name the date and what changed', () => {
     const ws: ResultsWarning[] = [
-      { code: 'SINGLE_VARIATION', severity: 'warning', message: '' },
-      { code: 'SHORT_RUN', severity: 'info', message: '' },
+      { code: 'SINGLE_VARIATION', severity: 'warning', message: '', detail: {} },
+      { code: 'SHORT_RUN', severity: 'info', message: '', detail: {} },
       { code: 'EXPERIMENT_RESTARTED', severity: 'warning', message: '', detail: { experimentKey: 'older' } },
       { code: 'EVENTS_WITHOUT_EXPOSURE', severity: 'warning', message: '', detail: { events: 1234 } },
-      { code: 'INSUFFICIENT_DATA', severity: 'warning', message: '' },
+      { code: 'INSUFFICIENT_DATA', severity: 'warning', message: '', detail: {} },
       { code: 'FLAG_CONFIG_CHANGED', severity: 'warning', message: '', detail: { at: '2026-10-01T10:30:00Z', changed: ['rollout', 'targetingRules'] } },
-      { code: 'SRM_FAILED', severity: 'critical', message: '' },
+      { code: 'SRM_FAILED', severity: 'critical', message: '', detail: {} },
     ]
     const order = sortedWarnings(ws).map((w) => w.code)
     expect(order).toEqual(['SRM_FAILED', 'FLAG_CONFIG_CHANGED', 'INSUFFICIENT_DATA', 'EVENTS_WITHOUT_EXPOSURE', 'EXPERIMENT_RESTARTED', 'SHORT_RUN', 'SINGLE_VARIATION'])
@@ -114,17 +115,18 @@ test.describe('reasons and statuses', () => {
 const comparison = (over: Partial<ResultsComparison> = {}): ResultsComparison => ({
   variationId: 'variant', against: 'control', status: 'not_significant', difference: 0.01,
   differenceInterval: { low: -0.01, high: 0.03 }, relativeLift: 0.1, relativeLiftInterval: { low: -0.1, high: 0.3 },
-  statistic: 1, degreesOfFreedom: null, pValue: 0.2, adjustedPValue: 0.2, alphaPerComparison: 0.05, confidenceLevel: 0.95, trustworthy: true,
+  statistic: 1, degreesOfFreedom: null, pValue: 0.2, adjustedPValue: 0.2, trustworthy: true,
   ...over,
 })
 
 function results(over: Partial<ExperimentResults> = {}): ExperimentResults {
   return {
-    experimentKey: 'e', flagKey: 'f', status: 'running', readAt: '2026-10-10T10:00:00Z',
+    experimentKey: 'e', flagKey: 'f', status: 'running', comparisonCount: 1, alphaPerComparison: 0.05, confidenceLevel: 0.95, peekingNoteCode: 'FIXED_SAMPLE_SIZE', readAt: '2026-10-10T10:00:00Z',
     window: { start: '2026-10-09T10:00:00Z', end: '2026-10-10T10:00:00Z', stoppedAt: null, running: true, hours: 24 },
     control: 'control', sampleSize: 4000, trustworthy: true,
     srm: { observed: [], expected: [], expectedSource: 'rollout_at_start', confidence: 'high', chiSquare: 1, degreesOfFreedom: 1, pValue: 0.5, threshold: 0.001, detected: false },
     metrics: [{
+      status: 'ok',
       metric: { eventName: 'buy', kind: 'conversion', isPrimary: true, name: 'Purchase' },
       variations: [
         { variationId: 'control', isControl: true, exposures: 2000, convertingSubjects: 200, events: 200, rate: 0.1, mean: null, stdDev: null, trustworthy: true },
@@ -133,7 +135,7 @@ function results(over: Partial<ExperimentResults> = {}): ExperimentResults {
       comparisons: [comparison()],
     }],
     warnings: [], alpha: 0.05, thresholds: { minExposuresPerVariation: 100, minConversionsTotal: 25, srmPValue: 0.001 },
-    peekingNote: 'Valid only for a fixed sample size.', method: ['Subjects are the unit.'],
+    peekingNote: 'Default text.', method: ['Subjects are the unit.'],
     ...over,
   }
 }
@@ -142,7 +144,7 @@ test.describe('rendering', () => {
   test('a normal result shows the sample size and the fixed-horizon note next to the numbers', () => {
     const text = textOf(renderToStaticMarkup(<ResultsView data={results()} />))
     expect(text).toContain('4,000 exposures')
-    expect(text).toContain('Valid only for a fixed sample size.')
+    expect(text).toContain('valid only for a sample size fixed in advance')
     expect(text).toContain('10.00%')
     expect(text).toContain('Not significant')
     expect(text).toContain('One comparison, so no adjustment was needed')
@@ -163,13 +165,17 @@ test.describe('rendering', () => {
     const base = results()
     const weird = results({
       sampleSize: NaN,
+      alphaPerComparison: NaN,
+      confidenceLevel: Infinity,
+      comparisonCount: 2,
+      peekingNoteCode: 'SOMETHING_NEW',
       peekingNote: 'Seen NaN times',
       method: ['p = NaN here', 'ok'],
       metrics: [
         { ...base.metrics[0], comparisons: [nulls, nasty], variations: base.metrics[0].variations.map((v) => ({ ...v, rate: null, exposures: NaN, convertingSubjects: Infinity })) },
-        { metric: { eventName: 'rev', kind: 'value', isPrimary: false }, variations: base.metrics[0].variations.map((v) => ({ ...v, rate: null, mean: null, stdDev: NaN })), comparisons: [] },
+        { status: 'unavailable', statusReasons: ['SINGLE_VARIATION'], metric: { eventName: 'rev', kind: 'value', isPrimary: false }, variations: base.metrics[0].variations.map((v) => ({ ...v, rate: null, mean: null, stdDev: NaN })), comparisons: [] },
       ],
-      warnings: [{ code: 'EVENTS_WITHOUT_EXPOSURE', severity: 'warning', message: 'NaN', detail: { events: NaN } }, { code: 'BRAND_NEW', severity: 'info', message: 'undefined' }],
+      warnings: [{ code: 'EVENTS_WITHOUT_EXPOSURE', severity: 'warning', message: 'NaN', detail: { events: NaN } }, { code: 'BRAND_NEW', severity: 'info', message: 'undefined', detail: {} }],
     })
     const text = textOf(renderToStaticMarkup(<ResultsView data={weird} />))
     expect(text, text).not.toMatch(LEAK)
@@ -189,7 +195,7 @@ test.describe('rendering', () => {
     const base = results()
     const bad = results({
       trustworthy: false,
-      warnings: [{ code: 'SRM_FAILED', severity: 'critical', message: '' }],
+      warnings: [{ code: 'SRM_FAILED', severity: 'critical', message: '', detail: {} }],
       metrics: [{ ...base.metrics[0], comparisons: [comparison({ status: 'significant', trustworthy: false })] }],
     })
     const html = renderToStaticMarkup(<ResultsView data={bad} />)
@@ -203,8 +209,8 @@ test.describe('rendering', () => {
 
   test('with three variations the adjustment and the wider level are stated', () => {
     const base = results()
-    const c = (id: string) => comparison({ variationId: id, alphaPerComparison: 0.025, confidenceLevel: 0.975 })
-    const three = results({ metrics: [{ ...base.metrics[0], comparisons: [c('a'), c('b')] }] })
+    const c = (id: string) => comparison({ variationId: id })
+    const three = results({ comparisonCount: 2, alphaPerComparison: 0.025, confidenceLevel: 0.975, metrics: [{ ...base.metrics[0], comparisons: [c('a'), c('b')] }] })
     const text = textOf(renderToStaticMarkup(<ResultsView data={three} />))
     expect(text).toContain('Bonferroni adjustment applied')
     expect(text).toContain('97.5%')
@@ -225,5 +231,55 @@ test.describe('rendering', () => {
     const html = renderToStaticMarkup(<ResultsView data={results()} />)
     expect(html).toMatch(/<svg[^>]*role="img"[^>]*aria-label="[^"]*interval/)
     expect(textOf(html)).toMatch(/estimate [+-]1\.00 pp, interval -1\.00 pp to \+3\.00 pp, includes zero/)
+  })
+})
+
+test.describe('API fields the console now relies on', () => {
+  test('the interval level and adjustment come from the response, not from each comparison', () => {
+    const base = results()
+    const c = comparison({ alphaPerComparison: 0.001, confidenceLevel: 0.999 }) // deprecated per-comparison values must be ignored
+    const text = textOf(renderToStaticMarkup(<ResultsView data={results({ metrics: [{ ...base.metrics[0], comparisons: [c] }] })} />))
+    expect(text).toContain('95% interval, absolute')
+    expect(text).not.toContain('99.9%')
+  })
+
+  test('"insufficient data" is said once per metric, not once per comparison', () => {
+    const base = results()
+    const mk = (id: string) => comparison({ variationId: id, status: 'insufficient_data', statusReasons: ['EXPOSURES_BELOW_100'], pValue: null, adjustedPValue: null, differenceInterval: { low: null, high: null }, relativeLiftInterval: { low: null, high: null } })
+    const data = results({
+      comparisonCount: 2, alphaPerComparison: 0.025, confidenceLevel: 0.975,
+      metrics: [{ ...base.metrics[0], status: 'insufficient_data', statusReasons: ['EXPOSURES_BELOW_100'], comparisons: [mk('a'), mk('b')] }],
+    })
+    const html = renderToStaticMarkup(<ResultsView data={data} />)
+    expect(html.match(/data-testid="metric-status"/g)?.length).toBe(1)
+    // (each em dash keeps its own screen-reader explanation; the visible sentence appears once)
+    expect(textOf(html).match(/Insufficient data: /g)?.length).toBe(1)
+    expect(html.match(/data-testid="missing-reasons"/g)).toBeNull()
+    expect(metricStatusText('ok', undefined)).toBeNull()
+    expect(metricStatusText('unavailable', ['SINGLE_VARIATION'])).toMatch(/Nothing can be compared/)
+    expect(metricStatusText('insufficient_data', ['EXPOSURES_BELOW_100', 'CONVERSIONS_BELOW_25'])).toContain('fewer than 25 conversions in total')
+  })
+
+  test('the caveat is worded by code, with the API text as the fallback for a code the page does not know', () => {
+    expect(peekingText('FIXED_SAMPLE_SIZE', 'ignored')).toMatch(/fixed in advance/)
+    expect(peekingText('SOMETHING_NEW', 'The API says this.')).toBe('The API says this.')
+    expect(peekingText('SOMETHING_NEW', 'broken NaN')).toMatch(/fixed in advance/) // a fallback that would show a non-value is replaced
+    expect(peekingText(undefined, undefined)).toMatch(/fixed in advance/)
+  })
+
+  test('new warnings are described in words', () => {
+    const [unverified] = sortedWarnings([{ code: 'EXPOSURES_UNVERIFIED', severity: 'warning', message: '', detail: { exposures: 12 } }])
+    expect(unverified.title).toBe('12 exposures could not be verified')
+    expect(unverified.action).toMatch(/exposure token/)
+    const [clock] = sortedWarnings([{ code: 'CLIENT_CLOCK_ADJUSTED', severity: 'info', message: '', detail: { events: 1 } }])
+    expect(clock.title).toBe('1 event had a client clock far off')
+  })
+
+  test('the picker offers only the kinds the data supports', () => {
+    const html = renderToStaticMarkup(
+      <MetricPicker selected={[]} primaryLabel="buy · conversion" onChange={() => {}} options={[{ eventName: 'page_view', defaultKind: 'conversion', kinds: ['conversion', 'count'], hint: '10 events' }]} />,
+    )
+    // before an event is chosen all kinds are shown; the per-event restriction is applied once one is chosen
+    expect(textOf(html)).toContain('page_view')
   })
 })

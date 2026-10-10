@@ -117,6 +117,27 @@ export function missingReason(c: ResultsComparison, field: string): string | nul
   return null
 }
 
+/** The fixed-sample-size caveat, worded here (so it can be translated) and keyed by the API's stable code. */
+const PEEKING: Record<string, string> = {
+  FIXED_SAMPLE_SIZE:
+    'These p-values and intervals are valid only for a sample size fixed in advance. Looking at results repeatedly while the experiment runs and stopping when a difference appears makes false alarms far more common than 5%. No sequential correction is applied.',
+}
+
+/** The caveat for a code, or the API's own default text for a code this page does not know. */
+export function peekingText(code: string | null | undefined, fallback: string | null | undefined): string {
+  if (code && PEEKING[code]) return PEEKING[code]
+  const text = safeText(fallback ?? '')
+  return text && text !== DASH ? text : PEEKING.FIXED_SAMPLE_SIZE
+}
+
+/** One sentence for a metric whose status is not ok (said once for the metric, not per comparison). */
+export function metricStatusText(status: string, reasons: string[] | undefined): string | null {
+  if (status === 'ok') return null
+  const why = (reasons ?? []).map(reasonText).join('; and ')
+  if (status === 'insufficient_data') return `Insufficient data: ${why || reasonText('INSUFFICIENT_DATA')}. Only the raw numbers are shown, with no verdict.`
+  return `Nothing can be compared yet${why ? `: ${why}` : ''}.`
+}
+
 // ---- statuses -------------------------------------------------------------
 
 export type StatusKey = 'significant' | 'not_significant' | 'insufficient' | 'not_reliable' | 'unavailable'
@@ -179,6 +200,8 @@ const ORDER = [
   'EVENTS_WITHOUT_EXPOSURE',
   'EVENTS_BEFORE_EXPOSURE',
   'EVENTS_OUTSIDE_WINDOW',
+  'CLIENT_CLOCK_ADJUSTED',
+  'EXPOSURES_UNVERIFIED',
   'EXPERIMENT_RESTARTED',
   'SHORT_RUN',
   'SINGLE_VARIATION',
@@ -258,6 +281,22 @@ export function warningInfo(w: ResultsWarning): WarningInfo {
         ...base, tone: 'note', title: `${fmtCount(n)} event${n === 1 ? '' : 's'} left out: outside the run`,
         what: 'These events are dated before the experiment started or after it stopped.',
         action: 'Nothing, unless you expected them to count; check client clocks if there are many.',
+      }
+    }
+    case 'EXPOSURES_UNVERIFIED': {
+      const n = asNumber(d.exposures)
+      return {
+        ...base, tone: 'caution', title: `${fmtCount(n)} exposure${n === 1 ? '' : 's'} could not be verified`,
+        what: 'These exposures arrived without a valid exposure token, so nothing shows that Helios actually served the variation they report. They are included in the numbers.',
+        action: 'Update your SDK to pass the exposure token from the evaluation, then check this count falls to zero.',
+      }
+    }
+    case 'CLIENT_CLOCK_ADJUSTED': {
+      const n = asNumber(d.events)
+      return {
+        ...base, tone: 'note', title: `${fmtCount(n)} event${n === 1 ? '' : 's'} had a client clock far off`,
+        what: 'These events carried a timestamp well outside the run, so the time they reached the server was used to bound them. They are counted.',
+        action: 'Usually nothing; many of them suggest devices with wrong clocks or events replayed long after they happened.',
       }
     }
     case 'EXPERIMENT_RESTARTED':

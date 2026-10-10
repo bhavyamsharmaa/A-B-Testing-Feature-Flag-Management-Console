@@ -1,4 +1,4 @@
-import { fmtCount, fmtDate, metricLabel, safeText } from '../../lib/resultsFormat'
+import { fmtCount, fmtDate, metricLabel, metricStatusText, peekingText } from '../../lib/resultsFormat'
 import type { ExperimentResults } from '../../types'
 import { ComparisonBlock } from './ComparisonBlock'
 import { MethodDetails } from './MethodDetails'
@@ -39,7 +39,7 @@ export function ResultsView({ data }: { data: ExperimentResults }) {
         </dl>
         <p className="mt-3 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-zinc-100" data-testid="peeking-note">
           <span aria-hidden="true">ⓘ </span>
-          {safeText(data.peekingNote)}
+          {peekingText(data.peekingNoteCode, data.peekingNote)}
         </p>
         {running && (
           <p className="mt-2 text-xs text-zinc-300">
@@ -80,13 +80,33 @@ export function ResultsView({ data }: { data: ExperimentResults }) {
             aria-describedby={unreliable ? `unreliable-${i}` : undefined}
           >
             <VariationsTable metric={m} />
+            {metricStatusText(m.status, m.statusReasons) && (
+              <p
+                role="status"
+                data-testid="metric-status"
+                data-metric-status={m.status}
+                className="rounded-lg border border-dashed border-amber-400/50 bg-amber-400/10 px-3 py-2 text-sm text-amber-50"
+              >
+                <span aria-hidden="true">◌ </span>
+                {metricStatusText(m.status, m.statusReasons)}
+              </p>
+            )}
             {m.comparisons.length === 0 ? (
               <p className="rounded-lg border border-dashed border-white/15 px-4 py-4 text-sm text-zinc-300">
                 There is nothing to compare: the flag needs at least two variations.
               </p>
             ) : (
               m.comparisons.map((c) => (
-                <ComparisonBlock key={c.variationId} comparison={c} kind={m.metric.kind} family={m.comparisons.length} running={running} trustworthy={data.trustworthy} />
+                <ComparisonBlock
+                  key={c.variationId}
+                  comparison={c}
+                  kind={m.metric.kind}
+                  family={data.comparisonCount}
+                  confidenceLevel={data.confidenceLevel}
+                  alphaPerComparison={data.alphaPerComparison}
+                  running={running}
+                  trustworthy={data.trustworthy}
+                />
               ))
             )}
           </div>
