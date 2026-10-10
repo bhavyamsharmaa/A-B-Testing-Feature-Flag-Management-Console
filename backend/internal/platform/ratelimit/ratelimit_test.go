@@ -203,3 +203,24 @@ func TestMiddlewareAnswers429WithRetryAfter(t *testing.T) {
 		t.Errorf("another user was limited: %d", rec.Code)
 	}
 }
+
+func TestTakeNIsAllOrNothing(t *testing.T) {
+	l, c := newTest(map[string]Rule{ClassSDKTrackEvents: {PerSecond: 10, Burst: 100}})
+	if ok, _ := l.TakeN(ClassSDKTrackEvents, "k", 60); !ok {
+		t.Fatal("60 of 100 refused")
+	}
+	if ok, wait := l.TakeN(ClassSDKTrackEvents, "k", 60); ok || wait != 2*time.Second {
+		t.Fatalf("60 more with 40 left: ok=%v wait=%v, want refused for 2s", ok, wait)
+	}
+	// the refused request spent nothing
+	if ok, _ := l.TakeN(ClassSDKTrackEvents, "k", 40); !ok {
+		t.Fatal("a refused TakeN consumed tokens")
+	}
+	c.advance(2 * time.Second)
+	if ok, _ := l.TakeN(ClassSDKTrackEvents, "k", 20); !ok {
+		t.Fatal("tokens did not refill")
+	}
+	if ok, _ := l.TakeN(ClassSDKTrackEvents, "other", 100); !ok {
+		t.Fatal("keys share a bucket")
+	}
+}

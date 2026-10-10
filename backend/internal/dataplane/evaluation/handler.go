@@ -57,7 +57,7 @@ func Handler(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		configs, err := loadConfigs(r, pool, scope, req.FlagKeys)
+		configs, experiments, err := loadConfigs(r, pool, scope, req.FlagKeys)
 		if err != nil {
 			// SDKs treat any non-200 as "serve fallback", so a DB outage
 			// degrades to fallbacks rather than breaking the caller.
@@ -74,6 +74,12 @@ func Handler(pool *pgxpool.Pool) http.HandlerFunc {
 			if res.VariationID != "" {
 				id := res.VariationID
 				out.VariationID = &id
+				// A variation was served: if the flag is in a running
+				// experiment, tell the client which one so it can report the
+				// exposure. Assignment is the flag's own (nothing is re-bucketed).
+				if exp, ok := experiments[key]; ok {
+					out.ExperimentID = &exp
+				}
 			}
 			results = append(results, out)
 		}
@@ -86,36 +92,47 @@ func Handler(pool *pgxpool.Pool) http.HandlerFunc {
 // join a flag and an environment of one workspace), kept as defence in depth:
 // were the data ever inconsistent, a key still could not read another
 // workspace's flag.
-func loadConfigs(r *http.Request, pool *pgxpool.Pool, scope apikey.Scope, keys []string) (map[string]*FlagConfig, error) {
+//
+// The second result maps flag key to the id of its RUNNING experiment in this
+// environment (at most one: the one_running_per_flag_env index).
+func loadConfigs(r *http.Request, pool *pgxpool.Pool, scope apikey.Scope, keys []string) (map[string]*FlagConfig, map[string]string, error) {
 	rows, err := pool.Query(r.Context(), `
 		SELECT f.key, f.variations, fc.enabled, fc.targeting_rules,
-		       COALESCE(fc.rollout, '{}'::jsonb), fc.salt, fc.fallthrough_variation_id
+		       COALESCE(fc.rollout, '{}'::jsonb), fc.salt, fc.fallthrough_variation_id,
+		       (SELECT x.id::text FROM experiments x
+		         WHERE x.flag_id = f.id AND x.environment_id = fc.environment_id
+		           AND x.workspace_id = f.workspace_id AND x.status = 'running')
 		FROM flags f
 		JOIN flag_configs fc ON fc.flag_id = f.id
 		WHERE fc.environment_id = $1::uuid AND f.workspace_id = $3::uuid AND f.key = ANY($2::text[])`,
 		scope.EnvironmentID, keys, scope.WorkspaceID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
 	configs := make(map[string]*FlagConfig, len(keys))
+	experiments := map[string]string{}
 	for rows.Next() {
 		var fc FlagConfig
 		var variations, rules, rollout string
-		if err := rows.Scan(&fc.Key, &variations, &fc.Enabled, &rules, &rollout, &fc.Salt, &fc.FallthroughVariationID); err != nil {
-			return nil, err
+		var experimentID *string
+		if err := rows.Scan(&fc.Key, &variations, &fc.Enabled, &rules, &rollout, &fc.Salt, &fc.FallthroughVariationID, &experimentID); err != nil {
+			return nil, nil, err
+		}
+		if experimentID != nil {
+			experiments[fc.Key] = *experimentID
 		}
 		if err := json.Unmarshal([]byte(variations), &fc.Variations); err != nil {
-			return nil, fmt.Errorf("flag %s variations: %w", fc.Key, err)
+			return nil, nil, fmt.Errorf("flag %s variations: %w", fc.Key, err)
 		}
 		if err := json.Unmarshal([]byte(rules), &fc.TargetingRules); err != nil {
-			return nil, fmt.Errorf("flag %s targeting rules: %w", fc.Key, err)
+			return nil, nil, fmt.Errorf("flag %s targeting rules: %w", fc.Key, err)
 		}
 		if err := json.Unmarshal([]byte(rollout), &fc.Rollout); err != nil {
-			return nil, fmt.Errorf("flag %s rollout: %w", fc.Key, err)
+			return nil, nil, fmt.Errorf("flag %s rollout: %w", fc.Key, err)
 		}
 		configs[fc.Key] = &fc
 	}
-	return configs, rows.Err()
+	return configs, experiments, rows.Err()
 }

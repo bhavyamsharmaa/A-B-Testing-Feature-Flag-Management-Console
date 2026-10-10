@@ -29,6 +29,7 @@ var tenantTables = map[string]bool{
 	"workspace_members":      true,
 	"workspace_invites":      true,
 	"api_keys":               true,
+	"events":                 true, // 0008
 }
 
 var insertRE = regexp.MustCompile(`(?is)INSERT\s+INTO\s+([a-z_][a-z0-9_]*)\s*(\(([^)]*)\))?`)
@@ -182,7 +183,9 @@ func TestRoutesAreOnlyMountedThroughTheRegistry(t *testing.T) {
 func TestLogCallsAreNotGivenCredentials(t *testing.T) {
 	root := filepath.Join("..", "..")
 	fset := token.NewFileSet()
-	suspicious := []string{"token", "plaintext", "secret", "password", "passwd", "authorization", "bearer", "apikey", "sdkkey", "jwt", "cookie", "keyhash", "databaseurl"}
+	suspicious := []string{"token", "plaintext", "secret", "password", "passwd", "authorization", "bearer", "apikey", "sdkkey", "jwt", "cookie", "keyhash", "databaseurl",
+		// Event content is customer data (subject keys are opaque but may be personal): never logged.
+		"subjectkey", "properties", "props", "payload"}
 	logFuncs := map[string]bool{"Printf": true, "Print": true, "Println": true, "Fatal": true, "Fatalf": true, "Fatalln": true, "Panic": true, "Panicf": true}
 	checked := 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -245,11 +248,12 @@ func TestLogCallsAreNotGivenCredentials(t *testing.T) {
 	}
 }
 
-// Tables nothing uses any more (user_environment_roles: roles moved to the
-// workspace; events: ingestion was never built) and the empty segments package
-// have no tenant checks of their own. They must stay unreachable: any new use
+// A table nothing uses any more (user_environment_roles: roles moved to the
+// workspace) and the empty segments package have no tenant checks of their
+// own. (events used to be listed here until /track gave it a tenancy review:
+// workspace_id, composite foreign keys, key-derived scope, route test.) They must stay unreachable: any new use
 // is a change that needs a tenancy review, so it must fail here first.
-var deadTableRE = regexp.MustCompile(`(?is)\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+(user_environment_roles|events)\b`)
+var deadTableRE = regexp.MustCompile(`(?is)\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+(user_environment_roles)\b`)
 
 func TestDeadTablesAndSegmentsAreUnreachable(t *testing.T) {
 	root := filepath.Join("..", "..")

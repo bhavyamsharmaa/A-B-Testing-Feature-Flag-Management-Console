@@ -1,0 +1,198 @@
+package track
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"helios/backend/internal/platform/apikey"
+	"helios/backend/internal/platform/httpx"
+	"helios/backend/internal/platform/ratelimit"
+)
+
+type request struct {
+	Events []json.RawMessage `json:"events"`
+}
+
+// Per-event statuses.
+const (
+	StatusAccepted  = "accepted"
+	StatusDuplicate = "duplicate"
+	StatusRejected  = "rejected"
+)
+
+// Result is the outcome of one event, in request order.
+type Result struct {
+	Index   int    `json:"index"`
+	ID      string `json:"id,omitempty"`
+	Status  string `json:"status"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// Deps are the handler's collaborators.
+type Deps struct {
+	Writer      Writer
+	Experiments ExperimentLookup
+	// Limiter caps events per minute per key; nil means no cap.
+	Limiter *ratelimit.Limiter
+	// Now is the clock; nil means time.Now.
+	Now func() time.Time
+}
+
+// Handler serves POST /track. It must run behind apikey's middleware: the
+// workspace and environment are taken from the key's scope and from nothing
+// else.
+//
+// A body that cannot be parsed, is too large, or has too many events fails as
+// a whole. Anything wrong with a single event is reported for that event only
+// and the rest of the batch is stored.
+func Handler(d Deps) http.HandlerFunc {
+	now := d.Now
+	if now == nil {
+		now = time.Now
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		sc, ok := apikey.ScopeFrom(r.Context())
+		if !ok {
+			httpx.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "SDK key required")
+			return
+		}
+		var req request
+		if err := httpx.DecodeJSONLimit(w, r, &req, MaxBodyBytes); err != nil {
+			if httpx.TooLarge(err) {
+				httpx.WriteError(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE",
+					fmt.Sprintf("the request body is at most %d KB", MaxBodyBytes>>10))
+				return
+			}
+			// The decoder's message can quote the body; send a fixed text.
+			httpx.BadRequest(w, `the body must be {"events":[...]} with known fields only`)
+			return
+		}
+		if n := len(req.Events); n < 1 || n > MaxBatch {
+			httpx.WriteError(w, http.StatusBadRequest, "BATCH_SIZE", fmt.Sprintf("send 1-%d events per request", MaxBatch))
+			return
+		}
+		if d.Limiter != nil {
+			if ok, wait := d.Limiter.TakeN(ratelimit.ClassSDKTrackEvents, sc.Prefix, len(req.Events)); !ok {
+				ratelimit.Reject(w, wait)
+				return
+			}
+		}
+
+		results := make([]Result, len(req.Events))
+		valid := make([]Event, 0, len(req.Events))
+		at := make([]int, 0, len(req.Events)) // valid[i] was request event at[i]
+		seen := map[string]bool{}
+		clock := now()
+		for i, raw := range req.Events {
+			results[i] = Result{Index: i}
+			ev, err := parse(raw, clock)
+			if err != nil {
+				var inv invalid
+				msg := "invalid event"
+				if errors.As(err, &inv) {
+					msg = inv.msg
+				}
+				results[i].Status, results[i].Code, results[i].Message = StatusRejected, CodeInvalidEvent, msg
+				continue
+			}
+			results[i].ID = ev.ID
+			if seen[ev.ID] { // the same id twice in one batch: the first one counts
+				results[i].Status = StatusDuplicate
+				continue
+			}
+			seen[ev.ID] = true
+			valid = append(valid, ev)
+			at = append(at, i)
+		}
+
+		// Experiments are looked up inside the key's own workspace and
+		// environment, so another tenant's experiment is indistinguishable
+		// from one that does not exist.
+		var expIDs []string
+		for _, ev := range valid {
+			if ev.ExperimentID != "" {
+				expIDs = append(expIDs, ev.ExperimentID)
+			}
+		}
+		known := map[string]Experiment{}
+		if len(expIDs) > 0 {
+			var err error
+			if known, err = d.Experiments.Lookup(r.Context(), sc, expIDs); err != nil {
+				unavailable(w, "lookup", err)
+				return
+			}
+		}
+		store := make([]Event, 0, len(valid))
+		storeAt := make([]int, 0, len(valid))
+		for j, ev := range valid {
+			i := at[j]
+			if ev.ExperimentID != "" {
+				exp, found := known[ev.ExperimentID]
+				switch {
+				case !found:
+					reject(&results[i], CodeExperimentNotFound, "no such experiment in this environment")
+					continue
+				case !exp.Running:
+					reject(&results[i], CodeExperimentNotRun, "the experiment is not running")
+					continue
+				case ev.Name == ExposureEvent && !exp.Variations[ev.VariationID]:
+					reject(&results[i], CodeInvalidVariation, "variationId is not a variation of the experiment's flag")
+					continue
+				}
+			}
+			store = append(store, ev)
+			storeAt = append(storeAt, i)
+		}
+
+		if len(store) > 0 {
+			inserted, err := d.Writer.Insert(r.Context(), sc, store)
+			if err != nil {
+				unavailable(w, "insert", err)
+				return
+			}
+			for k, ev := range store {
+				if inserted[ev.ID] {
+					results[storeAt[k]].Status = StatusAccepted
+				} else {
+					results[storeAt[k]].Status = StatusDuplicate
+				}
+			}
+		}
+
+		var accepted, duplicates, rejected int
+		for _, res := range results {
+			switch res.Status {
+			case StatusAccepted:
+				accepted++
+			case StatusDuplicate:
+				duplicates++
+			default:
+				rejected++
+			}
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"results": results, "accepted": accepted, "duplicates": duplicates, "rejected": rejected,
+		})
+	}
+}
+
+func reject(r *Result, code, msg string) { r.Status, r.Code, r.Message = StatusRejected, code, msg }
+
+// unavailable answers 503 and logs only where it failed and the Postgres error
+// code: never the error text, which could carry a value from the batch.
+func unavailable(w http.ResponseWriter, step string, err error) {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		log.Printf("track: %s failed: sqlstate %s constraint %q", step, pg.Code, pg.ConstraintName)
+	} else {
+		log.Printf("track: %s failed: %T", step, err)
+	}
+	httpx.WriteError(w, http.StatusServiceUnavailable, "TRACK_UNAVAILABLE", "events could not be stored; retry with the same ids")
+}

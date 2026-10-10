@@ -43,6 +43,10 @@ const (
 	ClassSDKKey    = "sdk_key"        // /evaluate and /sdk/stream, per SDK key
 	ClassSDKBad    = "sdk_invalid"    // failed SDK key verifications, per client IP
 	ClassStream    = "stream_open"    // opening /sdk/stream, per SDK key
+	// POST /track, per SDK key: one bucket for requests, one counting events
+	// (a request spends one token per event in its batch).
+	ClassSDKTrack       = "sdk_track"
+	ClassSDKTrackEvents = "sdk_track_events"
 )
 
 // DefaultRules are deliberately generous: normal use of the console and of
@@ -59,6 +63,11 @@ func DefaultRules() map[string]Rule {
 		ClassSDKKey:    {PerSecond: 100, Burst: 500},
 		ClassSDKBad:    {PerSecond: 0.5, Burst: 30},
 		ClassStream:    {PerSecond: 0.5, Burst: 20},
+		// 50 batches/s with a burst of 200; 100 events/s sustained (6000 a
+		// minute) with a burst of 1000. Normal SDKs batch and flush every
+		// few seconds and are nowhere near this.
+		ClassSDKTrack:       {PerSecond: 50, Burst: 200},
+		ClassSDKTrackEvents: {PerSecond: 100, Burst: 1000},
 	}
 }
 
@@ -191,14 +200,20 @@ func (l *Limiter) sweep(now time.Time) {
 	}
 }
 
-func retryAfter(b *bucket, r Rule) time.Duration {
-	need := 1 - b.tokens
+func retryAfter(b *bucket, r Rule) time.Duration { return retryAfterFor(b, r, 1) }
+
+func retryAfterFor(b *bucket, r Rule, tokens float64) time.Duration {
+	need := tokens - b.tokens
 	return time.Duration(math.Ceil(need/r.PerSecond*1000)) * time.Millisecond
 }
 
 // Take spends one token of the (class, key) bucket. When there is none it
 // returns false and how long until there is.
-func (l *Limiter) Take(class, key string) (bool, time.Duration) {
+func (l *Limiter) Take(class, key string) (bool, time.Duration) { return l.TakeN(class, key, 1) }
+
+// TakeN spends n tokens at once, all or nothing. A bucket can never hold more
+// than its burst, so a request for more than that is refused for good.
+func (l *Limiter) TakeN(class, key string, n int) (bool, time.Duration) {
 	if l.cfg.Disabled {
 		return true, 0
 	}
@@ -208,11 +223,12 @@ func (l *Limiter) Take(class, key string) (bool, time.Duration) {
 	defer l.mu.Unlock()
 	b := l.get(class, key, r, now)
 	l.refill(b, r, now)
-	if b.tokens >= 1 {
-		b.tokens--
+	need := float64(n)
+	if b.tokens >= need {
+		b.tokens -= need
 		return true, 0
 	}
-	return false, retryAfter(b, r)
+	return false, retryAfterFor(b, r, need)
 }
 
 // Peek is Take without spending: is there a token right now?

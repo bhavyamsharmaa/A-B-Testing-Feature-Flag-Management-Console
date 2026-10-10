@@ -25,6 +25,7 @@ import (
 	"helios/backend/internal/controlplane/workspaces"
 	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/dataplane/stream"
+	"helios/backend/internal/dataplane/track"
 	"helios/backend/internal/platform/apikey"
 	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/events"
@@ -227,14 +228,21 @@ func New(d Deps) *Router {
 		wrapped, names := controlPlane(guard.RequireWorkspace(min, h), extras)
 		rt.add(pattern, ScopeWorkspace, min, names, wrapped)
 	}
-	// sdk: per-IP throttling of uncached key verifications (in the verifier),
-	// then a per-key limit once the key is known.
-	sdk := func(pattern string, h http.Handler, classes ...string) {
+	// sdkAlso: per-IP throttling of uncached key verifications (in the
+	// verifier), then a per-key limit once the key is known. inHandler names
+	// limits the handler applies itself, declared so the registry lists them.
+	sdkAlso := func(pattern string, h http.Handler, inHandler []string, classes ...string) {
 		inner := h
 		for i := len(classes) - 1; i >= 0; i-- {
 			inner = byKey(lim, classes[i])(inner)
 		}
-		rt.add(pattern, ScopeSDK, "", append([]string{ratelimit.ClassSDKBad}, classes...), sdkKeys.Middleware(inner))
+		names := append([]string{ratelimit.ClassSDKBad}, classes...)
+		rt.add(pattern, ScopeSDK, "", append(names, inHandler...), sdkKeys.Middleware(inner))
+	}
+
+	// sdk is sdkAlso for routes whose limits are all per-key classes.
+	sdk := func(pattern string, h http.Handler, classes ...string) {
+		sdkAlso(pattern, h, nil, classes...)
 	}
 
 	public("GET /healthz", health.Handler(d.Pool))
@@ -275,6 +283,8 @@ func New(d Deps) *Router {
 	env("POST /environments/{envId}/experiments", rbac.Min(rbac.Editor), ex.Create)
 	env("POST /environments/{envId}/experiments/{key}/start", rbac.Min(rbac.Editor), ex.Start)
 	env("POST /environments/{envId}/experiments/{key}/stop", rbac.Min(rbac.Approver), ex.Stop)
+	// Live counts of the data arriving (not results): any role reads.
+	env("GET /environments/{envId}/experiments/{key}/event-counts", rbac.Min(rbac.Viewer), ex.EventCounts)
 
 	// SDK keys are admin-only: they grant read access to the environment.
 	env("GET /environments/{envId}/sdk-keys", rbac.Min(rbac.Admin), keys.List)
@@ -282,6 +292,12 @@ func New(d Deps) *Router {
 	env("DELETE /environments/{envId}/sdk-keys/{keyId}", rbac.Min(rbac.Admin), keys.Revoke)
 
 	sdk("POST /evaluate", evaluation.Handler(d.Pool), ratelimit.ClassSDKKey)
+	// Event ingestion: the same SDK-key authentication (and revocation) as
+	// /evaluate, with buckets of its own: batches per key here, events per key
+	// inside the handler (it needs the batch size).
+	store := track.NewPgStore(d.Pool)
+	sdkAlso("POST /track", track.Handler(track.Deps{Writer: store, Experiments: store, Limiter: lim}),
+		[]string{ratelimit.ClassSDKTrackEvents}, ratelimit.ClassSDKTrack)
 	sdk("GET /sdk/stream", stream.Handler(d.Subscriber, sdkKeys, recheck, lim), ratelimit.ClassSDKKey, ratelimit.ClassStream)
 
 	return rt

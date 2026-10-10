@@ -37,7 +37,13 @@ const maxBodyBytes = 1 << 20
 // DecodeJSON decodes a request body strictly: unknown fields, trailing data,
 // and bodies over 1 MiB are all rejected.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	return DecodeJSONLimit(w, r, dst, maxBodyBytes)
+}
+
+// DecodeJSONLimit is DecodeJSON with a caller-chosen body cap. A body over the
+// cap fails with an error for which TooLarge is true.
+func DecodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, max int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, max)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
@@ -52,4 +58,10 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 // BadRequest writes a 400 INVALID_REQUEST with the given detail.
 func BadRequest(w http.ResponseWriter, message string) {
 	WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", message)
+}
+
+// TooLarge reports whether err came from a body over its size cap.
+func TooLarge(err error) bool {
+	var big *http.MaxBytesError
+	return errors.As(err, &big)
 }
