@@ -703,8 +703,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [exposures, exposureTotal, events, lastEventAt]
+                required: [exposures, exposureTotal, events, lastEventAt, eventNames]
                 properties:
+                  eventNames:
+                    type: array
+                    description: "Event names (other than $exposure) that exist for the experiment, most frequent first, at most 50: what a results metric can be chosen from"
+                    items:
+                      type: object
+                      required: [name, count]
+                      properties:
+                        name: { type: string }
+                        count: { type: integer }
                   exposures:
                     type: array
                     items:

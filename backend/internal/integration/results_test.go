@@ -285,3 +285,30 @@ func TestResultsJSONHasNoNonFiniteNumbers(t *testing.T) {
 	_ = strings.TrimSpace
 	_ = context.Background
 }
+
+// The event-counts endpoint lists the event names that exist for the
+// experiment (what the results page offers as metrics), most frequent first,
+// without the exposure event.
+func TestEventCountsListsEventNames(t *testing.T) {
+	x := newTenants(t)
+	h := x.h
+	exp := x.runningExperiment()
+	x.seed(exp, "u1", "$exposure", "on", "1 second", nil)
+	x.seed(exp, "u1", "purchase", "", "2 seconds", nil)
+	x.seed(exp, "u1", "page_view", "", "2 seconds", nil)
+	x.seed(exp, "u1", "page_view", "", "3 seconds", nil)
+	path := "/environments/" + x.devA + "/experiments/" + expKey + "/event-counts"
+	got := decode[struct {
+		EventNames []struct {
+			Name  string
+			Count int
+		}
+		ExposureTotal int
+		Events        int
+	}](t, h.expect(200, x.a, "GET", path, nil))
+	if got.ExposureTotal != 1 || got.Events != 3 || len(got.EventNames) != 2 ||
+		got.EventNames[0].Name != "page_view" || got.EventNames[0].Count != 2 || got.EventNames[1].Name != "purchase" {
+		t.Errorf("%+v", got)
+	}
+	h.expect(404, x.b, "GET", "/environments/"+x.devA+"/experiments/"+expKey+"/event-counts", nil)
+}

@@ -12,6 +12,11 @@ import (
 	"helios/backend/internal/platform/httpx"
 )
 
+type eventNameCount struct {
+	Name  string `json:"name"`
+	Count int64  `json:"count"`
+}
+
 type exposureCount struct {
 	VariationID string `json:"variationId"`
 	Count       int64  `json:"count"`
@@ -88,7 +93,33 @@ func (h *Handlers) EventCounts(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternal(w, r, err)
 		return
 	}
+	// The event names that exist for this experiment (what a results metric can
+	// be chosen from), most frequent first, capped. Uses idx_events_results.
+	names := []eventNameCount{}
+	nameRows, err := h.pool.Query(r.Context(), `
+		SELECT event_name, count(*) FROM events
+		WHERE workspace_id = $1::uuid AND experiment_id = $2::uuid AND event_name <> $3
+		GROUP BY event_name ORDER BY count(*) DESC, event_name LIMIT 50`,
+		access.Env.WorkspaceID, expID, ExposureEvent)
+	if err != nil {
+		httpx.WriteInternal(w, r, err)
+		return
+	}
+	defer nameRows.Close()
+	for nameRows.Next() {
+		var n eventNameCount
+		if err := nameRows.Scan(&n.Name, &n.Count); err != nil {
+			httpx.WriteInternal(w, r, err)
+			return
+		}
+		names = append(names, n)
+	}
+	if err := nameRows.Err(); err != nil {
+		httpx.WriteInternal(w, r, err)
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"eventNames":    names,
 		"exposures":     exposures,
 		"exposureTotal": exposureTotal,
 		"events":        events,
