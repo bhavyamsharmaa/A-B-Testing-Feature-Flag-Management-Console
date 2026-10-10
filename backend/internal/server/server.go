@@ -21,6 +21,7 @@ import (
 	"helios/backend/internal/controlplane/experiments"
 	"helios/backend/internal/controlplane/flags"
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/controlplane/results"
 	"helios/backend/internal/controlplane/sdkkeys"
 	"helios/backend/internal/controlplane/workspaces"
 	"helios/backend/internal/dataplane/evaluation"
@@ -169,6 +170,7 @@ func New(d Deps) *Router {
 	fl := flags.NewHandlers(d.Pool, d.Publisher)
 	al := auditlog.NewHandlers(d.Pool)
 	ex := experiments.NewHandlers(d.Pool)
+	res := results.NewHandlers(d.Pool)
 	sdkKeys := apikey.NewVerifier(d.Pool, d.SDKKeyCacheTTL)
 	keys := sdkkeys.NewHandlers(d.Pool, sdkKeys, d.Publisher)
 	ctx := d.Context
@@ -285,6 +287,8 @@ func New(d Deps) *Router {
 	env("POST /environments/{envId}/experiments/{key}/stop", rbac.Min(rbac.Approver), ex.Stop)
 	// Live counts of the data arriving (not results): any role reads.
 	env("GET /environments/{envId}/experiments/{key}/event-counts", rbac.Min(rbac.Viewer), ex.EventCounts)
+	// Results: any role reads; per-user limit because it is the costliest read.
+	env("GET /environments/{envId}/experiments/{key}/results", rbac.Min(rbac.Viewer), res.Get, perUser(ratelimit.ClassResults))
 
 	// SDK keys are admin-only: they grant read access to the environment.
 	env("GET /environments/{envId}/sdk-keys", rbac.Min(rbac.Admin), keys.List)

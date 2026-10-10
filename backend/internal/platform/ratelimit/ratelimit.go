@@ -45,7 +45,9 @@ const (
 	ClassStream    = "stream_open"    // opening /sdk/stream, per SDK key
 	// POST /track, per SDK key: one bucket for requests, one counting events
 	// (a request spends one token per event in its batch).
-	ClassSDKTrack       = "sdk_track"
+	ClassSDKTrack = "sdk_track"
+	// GET .../experiments/{key}/results, per user: the most expensive read.
+	ClassResults        = "results"
 	ClassSDKTrackEvents = "sdk_track_events"
 )
 
@@ -66,7 +68,9 @@ func DefaultRules() map[string]Rule {
 		// 50 batches/s with a burst of 200; 100 events/s sustained (6000 a
 		// minute) with a burst of 1000. Normal SDKs batch and flush every
 		// few seconds and are nowhere near this.
-		ClassSDKTrack:       {PerSecond: 50, Burst: 200},
+		ClassSDKTrack: {PerSecond: 50, Burst: 200},
+		// A dashboard polling every 2-5 seconds fits easily; a loop does not.
+		ClassResults:        {PerSecond: 1, Burst: 20},
 		ClassSDKTrackEvents: {PerSecond: 100, Burst: 1000},
 	}
 }
