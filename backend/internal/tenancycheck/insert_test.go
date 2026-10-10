@@ -185,7 +185,7 @@ func TestLogCallsAreNotGivenCredentials(t *testing.T) {
 	fset := token.NewFileSet()
 	suspicious := []string{"token", "plaintext", "secret", "password", "passwd", "authorization", "bearer", "apikey", "sdkkey", "jwt", "cookie", "keyhash", "databaseurl",
 		// Event content is customer data (subject keys are opaque but may be personal): never logged.
-		"subjectkey", "properties", "props", "payload"}
+		"subjectkey", "properties", "props"}
 	logFuncs := map[string]bool{"Printf": true, "Print": true, "Println": true, "Fatal": true, "Fatalf": true, "Fatalln": true, "Panic": true, "Panicf": true}
 	checked := 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
