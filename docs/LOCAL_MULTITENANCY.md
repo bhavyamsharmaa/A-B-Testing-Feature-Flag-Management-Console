@@ -63,7 +63,7 @@ cd frontend && npx playwright install chromium && npm run e2e   # needs the stac
 ```
 
 `internal/integration` mounts the real routes on a fresh database per test (migrations
-0001-0006), refuses a non-local server, and checks that user B gets 404 on every one
+0001-0008), refuses a non-local server, and checks that user B gets 404 on every one
 of user A's flags, experiments, SDK keys, audit log, members and invites, with none of
 A's data in any response B receives.
 
@@ -84,7 +84,7 @@ HELIOS_TEST_REDIS_URL='redis://127.0.0.1:56379/0' go test ./internal/integration
 | `SUPABASE_ANON_KEY` | unset | The project's **public** key; lets the backend ask Supabase whether an email is confirmed |
 | `INVITES_BY_ID` | `true` | `false`: only the one-time invite link works; the console's Accept banner disappears |
 | `RATE_LIMIT_DISABLED` | `false` | `true` switches every limit off |
-| `RATE_LIMITS` | built-in | Overrides, `class=perSecond/burst,...`; classes: `ip user me workspace invite accept sdk_key_create sdk_key sdk_invalid stream_open` |
+| `RATE_LIMITS` | built-in | Overrides, `class=perSecond/burst,...`; classes: `ip user me workspace invite accept sdk_key_create sdk_key sdk_invalid stream_open sdk_track sdk_track_events` |
 | `TRUSTED_PROXY_HOPS` | `0` (`1` when `RENDER=true`) | Reverse proxies in front of the API appending to `X-Forwarded-For` |
 | `STREAMS_PER_KEY` | `100` | Concurrent `/sdk/stream` connections per SDK key |
 

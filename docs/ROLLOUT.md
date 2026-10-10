@@ -6,6 +6,16 @@
 
 Goal: existing users and SDK integrations see no breakage, and every step can be undone.
 
+## Migration 0008 is NOT part of this release
+
+`0008_event_ingestion.sql` (experiment event ingestion: `POST /track`) lives on
+`feature/experiments-tracking`, **not** on this release. It must be applied
+**after** the multi-tenancy release is complete (0004, 0006, 0007 applied, the
+new backend live and verified, and 0005 applied at G6b), because it needs
+`workspace_id` on `experiments`. The multi-tenancy backend never reads or writes
+`events`, so nothing in this plan depends on it. It has its own checks
+(`backend/db/verify_0008.sql`) and its own lock analysis in the file's header.
+
 ## What ships
 
 | Piece | Production today | After |

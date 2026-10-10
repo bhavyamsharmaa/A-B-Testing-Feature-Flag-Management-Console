@@ -568,8 +568,8 @@ paths:
         "404": { description: ENVIRONMENT_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   # --- Experiments -------------------------------------------------------
-  # Planned, not yet paths: POST /track (SDK-key authenticated event
-  # ingestion, including the reserved "$exposure" event) and
+  # Data collection: POST /track (SDK-key event ingestion, including the
+  # reserved "$exposure" event) and .../event-counts. Not yet paths:
   # GET /environments/{envId}/experiments/{key}/results.
 
   /environments/{envId}/experiments:
@@ -684,6 +684,111 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/ExperimentNotFound" }
         "409": { description: INVALID_TRANSITION (not running), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{envId}/experiments/{key}/event-counts:
+    parameters:
+      - { $ref: "#/components/parameters/EnvPath" }
+      - { name: key, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [control-plane]
+      summary: How much data has arrived for an experiment (any role)
+      description: >-
+        Raw counts so a user can see data arriving: exposures per variation
+        (every variation of the flag is listed, zero included) and the number
+        of other events. These are not results: no rates, no significance.
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [exposures, exposureTotal, events, lastEventAt]
+                properties:
+                  exposures:
+                    type: array
+                    items:
+                      type: object
+                      required: [variationId, count]
+                      properties:
+                        variationId: { type: string }
+                        count: { type: integer }
+                  exposureTotal: { type: integer }
+                  events: { type: integer, description: "Events other than $exposure" }
+                  lastEventAt: { type: [string, "null"], format: date-time }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: ENVIRONMENT_NOT_FOUND or EXPERIMENT_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /track:
+    post:
+      tags: [data-plane]
+      summary: Record up to 100 events (exposures and conversions) for experiments
+      description: >-
+        Authenticated by SDK key, like /evaluate; the key decides the
+        workspace and environment, and nothing in the body can name a tenant
+        (unknown fields are rejected). An unreadable, oversized (over 256 KB)
+        or over-long (over 100 events) body fails as a whole; anything wrong
+        with one event is reported for that event only and the rest is stored.
+        Sending the same event id again is safe: it is reported as a duplicate
+        and stored once. An `$exposure` (name `$exposure`, with experimentId
+        and variationId) is stored at most once per subject and experiment;
+        the first one wins. Events for experiments that are not running are
+        rejected. Limits per key: batches per second and events per minute;
+        429 RATE_LIMITED with Retry-After. Events are kept 90 days.
+      security: [{ sdkKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [events]
+              properties:
+                events:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [id, name, subjectKey]
+                    properties:
+                      id: { type: string, description: "Client-chosen, unique per event; the retry key. 1-128 of letters, digits, _ . : -" }
+                      name: { type: string, description: "Metric event name, or $exposure. Other names starting with $ are reserved." }
+                      subjectKey: { type: string, maxLength: 256 }
+                      value: { type: number, description: Finite }
+                      experimentId: { type: string, format: uuid, description: "From the experimentId of an /evaluate result" }
+                      variationId: { type: string, description: "Only on $exposure: the variationId that was served" }
+                      timestamp: { type: string, format: date-time, description: "When it happened; default now. Not more than 5 minutes ahead or 90 days back." }
+                      properties: { type: object, description: "At most 2048 bytes serialized" }
+      responses:
+        "200":
+          description: Per-event results, in request order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results, accepted, duplicates, rejected]
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required: [index, status]
+                      properties:
+                        index: { type: integer }
+                        id: { type: string }
+                        status: { type: string, enum: [accepted, duplicate, rejected] }
+                        code: { type: string, enum: [INVALID_EVENT, EXPERIMENT_NOT_FOUND, EXPERIMENT_NOT_RUNNING, INVALID_VARIATION] }
+                        message: { type: string }
+                  accepted: { type: integer }
+                  duplicates: { type: integer }
+                  rejected: { type: integer }
+        "400": { description: "INVALID_REQUEST (unreadable body) or BATCH_SIZE", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { description: REQUEST_TOO_LARGE, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: RATE_LIMITED; honour Retry-After, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { description: "TRACK_UNAVAILABLE: nothing was stored; retry with the same ids", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /evaluate:
     post:
@@ -1117,4 +1222,9 @@ components:
         reason:
           type: string
           enum: [TARGETING_MATCH, ROLLOUT, FALLTHROUGH, FLAG_DISABLED, FLAG_NOT_FOUND, TYPE_MISMATCH]
-        experimentId: { type: [string, "null"] }
+        experimentId:
+          type: [string, "null"]
+          description: >-
+            The flag's RUNNING experiment in this environment, when a variation
+            was served; otherwise null. Report an $exposure for it via /track.
+            The variation is the flag's own: an experiment does not re-bucket.

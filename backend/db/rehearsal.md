@@ -154,3 +154,21 @@ project or schema, then:
 
 Delete the rehearsal Supabase project, the `../helios-old` worktree
 (`git worktree remove ../helios-old`), and `backend/backups/*.dump`.
+
+## Rehearsing 0008 (event ingestion) — AFTER the multi-tenancy release
+
+0008 is a separate, later change (see `docs/ROLLOUT.md`): do not fold it into the
+0004-0007 rehearsal. On the rehearsal database (never production), once 0001-0007
+are in place and the new backend runs against it:
+
+```bash
+psql "$REHEARSAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0008_event_ingestion.sql
+psql "$REHEARSAL_DATABASE_URL" -f backend/db/verify_0008.sql      # every row PASS
+```
+
+Then deploy the backend that contains `/track`, send a batch with a rehearsal SDK
+key, and re-run `verify_0008.sql`. Lock impact: `events` has never been written
+before `/track`, so the `ALTER TABLE`s hold their lock on an empty table for
+milliseconds; the migration refuses to run if `events` is not empty. The rollback
+(in the file) drops `events` and discards ingested data, so take a backup first
+(`backend/scripts/backup_db.sh`) if anything has been ingested.
