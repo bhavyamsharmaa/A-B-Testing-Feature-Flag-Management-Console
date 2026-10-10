@@ -115,24 +115,10 @@ func exposureCounts(ctx context.Context, q querier, workspaceID, expID string) (
 	return out, rows.Err()
 }
 
-// armSums are the per-variation sufficient statistics of one event name.
-type armSums struct {
-	Subjects   int64   // exposed subjects
-	Converters int64   // subjects with >= 1 matching event
-	Events     int64   // sum of n
-	SumN2      float64 // sum of n^2   (count metric: second moment)
-	SumV       float64 // sum of s     (value metric: per-subject sum of values)
-	SumV2      float64 // sum of s^2
-}
-
-// metricSums aggregates one event name over the exposed subjects, per variation.
-// Each subject contributes n (their matching events) and s (the sum of those
-// events' values), counting only events at or after the subject's own exposure
-// and inside [start, end]. The aggregation is a join of the experiment's
-// exposures to its events on (workspace, experiment, subject), which is the
-// shape idx_events_subject serves.
-func metricSums(ctx context.Context, q querier, workspaceID, expID, eventName string, start, end time.Time) (map[string]armSums, error) {
-	rows, err := q.Query(ctx, `
+// MetricSumsSQL is the per-variation aggregation of one event name; exported
+// so its plan can be inspected (EXPLAIN) by tests and tooling. Arguments:
+// workspace, experiment, event name, window start, window end, exposure event.
+const MetricSumsSQL = `
 		WITH exposed AS (
 			SELECT subject_key, variation_id, occurred_at AS exposed_at
 			FROM events
@@ -153,7 +139,26 @@ func metricSums(ctx context.Context, q querier, workspaceID, expID, eventName st
 		       COALESCE(sum(n::float8 * n), 0),
 		       COALESCE(sum(s), 0)::float8,
 		       COALESCE(sum(s * s), 0)::float8
-		FROM per_subject GROUP BY variation_id`,
+		FROM per_subject GROUP BY variation_id`
+
+// armSums are the per-variation sufficient statistics of one event name.
+type armSums struct {
+	Subjects   int64   // exposed subjects
+	Converters int64   // subjects with >= 1 matching event
+	Events     int64   // sum of n
+	SumN2      float64 // sum of n^2   (count metric: second moment)
+	SumV       float64 // sum of s     (value metric: per-subject sum of values)
+	SumV2      float64 // sum of s^2
+}
+
+// metricSums aggregates one event name over the exposed subjects, per variation.
+// Each subject contributes n (their matching events) and s (the sum of those
+// events' values), counting only events at or after the subject's own exposure
+// and inside [start, end]. The aggregation is a join of the experiment's
+// exposures to its events on (workspace, experiment, subject), which is the
+// shape idx_events_subject serves.
+func metricSums(ctx context.Context, q querier, workspaceID, expID, eventName string, start, end time.Time) (map[string]armSums, error) {
+	rows, err := q.Query(ctx, MetricSumsSQL,
 		workspaceID, expID, eventName, start, end, ExposureEvent)
 	if err != nil {
 		return nil, err
