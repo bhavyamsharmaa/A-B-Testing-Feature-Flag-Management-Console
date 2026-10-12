@@ -172,3 +172,36 @@ before `/track`, so the `ALTER TABLE`s hold their lock on an empty table for
 milliseconds; the migration refuses to run if `events` is not empty. The rollback
 (in the file) drops `events` and discards ingested data, so take a backup first
 (`backend/scripts/backup_db.sh`) if anything has been ingested.
+
+## Rehearsing 0010 (segments) — AFTER the multi-tenancy and experiments releases
+
+0010 is a separate, later change (see `docs/ROLLOUT.md`, release 3). It adds two new, empty
+tables (`segments`, `segment_members`) and changes nothing that already exists, so the
+rehearsal is short. On the rehearsal database (never production), once 0001-0009 are in
+place:
+
+```bash
+psql "$REHEARSAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0010_segments.sql
+psql "$REHEARSAL_DATABASE_URL" -f backend/db/verify_0010.sql      # every row PASS
+```
+
+Then run the segments backend against it and check, with a rehearsal SDK key:
+
+1. Create a segment with a few members and a rule, reference it from a flag rule
+   (`inSegment`), and `/evaluate` as a member, as a rule match and as a stranger.
+2. Edit the members: the next `/evaluate` changes, and the audit log shows a
+   `segment.update` row with counts, not the member list.
+3. Delete the segment while the flag still uses it: refused (409) without
+   `?confirm=true`; confirmed, the rule then matches nobody.
+4. `verify_0010.sql` again (read-only).
+
+Negative rehearsals: `ALTER TABLE segment_members DISABLE ROW LEVEL SECURITY` or dropping the
+composite foreign key must turn the matching `verify_0010.sql` row to FAIL (put them back
+afterwards, on the throwaway copy only).
+
+**Lock impact:** both tables are new, so nothing is rewritten or scanned. The only lock on an
+existing table is the one each foreign key needs on its target while it is created —
+SHARE ROW EXCLUSIVE on `workspaces` (and `auth.users`) for milliseconds, which briefly blocks
+writes to those tables (workspace create/rename), not reads. **Rollback:** deploy a backend
+without segments first, then the commented `DROP TABLE` block in the migration (it discards
+every segment; back up first with `backend/scripts/backup_db.sh`).
