@@ -185,8 +185,11 @@ func TestMemberLookupUsesTheIndex(t *testing.T) {
 		plan.WriteString(line + "\n")
 	}
 	rows.Close()
-	if !strings.Contains(plan.String(), "segment_members_pkey") || strings.Contains(plan.String(), "Seq Scan on segment_members") {
-		t.Errorf("the membership probe is not an index lookup:\n%s", plan.String())
+	// The subject key itself must be part of the index condition: a probe that
+	// only used the workspace and segment columns would read every member.
+	if !strings.Contains(plan.String(), "segment_members_pkey") || strings.Contains(plan.String(), "Seq Scan") ||
+		!strings.Contains(plan.String(), "(workspace_id = s.workspace_id) AND (segment_id = s.id) AND (subject_key = ") {
+		t.Errorf("the membership probe is not a lookup of (workspace, segment, subject) in the primary key:\n%s", plan.String())
 	}
 
 	x.ruleFlag("in-big", inSeg("big"))
