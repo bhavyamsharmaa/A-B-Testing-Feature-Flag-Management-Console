@@ -29,6 +29,19 @@ const (
 	MaxMembers = 20
 	// MaxOwnedWorkspaces is per user, not per workspace.
 	MaxOwnedWorkspaces = 5
+	// MaxSegments is per workspace.
+	MaxSegments = 20
+	// MaxSegmentMembers is the number of explicit member subject keys one
+	// segment may hold. Saving a segment is O(members); evaluating one is not
+	// (an indexed lookup of the one subject), so this limit is about save time
+	// and request size (10,000 keys of up to 256 bytes fit well under the
+	// 4 MiB segment request cap), not about /evaluate latency.
+	MaxSegmentMembers = 10000
+	// MaxSegmentRuleBytes is the largest JSON encoding of a segment's attribute
+	// rules, and MaxSegmentRuleClauses the most clauses in them. The database
+	// carries the same bounds as a CHECK (16384 bytes, 20 clauses) as a backstop.
+	MaxSegmentRuleBytes   = 8192
+	MaxSegmentRuleClauses = 20
 )
 
 // Exceeded says which limit a request would have broken. Per is what the
@@ -95,6 +108,42 @@ func CheckSDKKey(ctx context.Context, tx pgx.Tx, workspaceID string) error {
 		return err
 	}
 	return check("active SDK keys", have, MaxActiveSDKKeys)
+}
+
+// CheckSegment returns Exceeded when the workspace already has MaxSegments
+// segments. Call it first in the transaction that inserts the segment.
+func CheckSegment(ctx context.Context, tx pgx.Tx, workspaceID string) error {
+	if err := lockWorkspace(ctx, tx, workspaceID); err != nil {
+		return err
+	}
+	var have int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM segments WHERE workspace_id = $1::uuid`, workspaceID).Scan(&have); err != nil {
+		return err
+	}
+	return check("segments", have, MaxSegments)
+}
+
+// CheckSegmentMembers returns Exceeded when a segment would hold more than
+// MaxSegmentMembers explicit members. It is pure: the caller has already
+// worked out the number the segment would end up with (and holds the segment's
+// row lock, so that number cannot change underneath it).
+func CheckSegmentMembers(total int) error {
+	if total > MaxSegmentMembers {
+		return Exceeded{Resource: "explicit members", Limit: MaxSegmentMembers, Per: "segment"}
+	}
+	return nil
+}
+
+// CheckSegmentRules returns Exceeded when a segment's rule definition is too
+// large: encodedBytes of JSON, or clauses of them.
+func CheckSegmentRules(encodedBytes, clauses int) error {
+	if clauses > MaxSegmentRuleClauses {
+		return Exceeded{Resource: "rule clauses", Limit: MaxSegmentRuleClauses, Per: "segment"}
+	}
+	if encodedBytes > MaxSegmentRuleBytes {
+		return Exceeded{Resource: "bytes of rule definition", Limit: MaxSegmentRuleBytes, Per: "segment"}
+	}
+	return nil
 }
 
 // CheckMember returns Exceeded when members plus open invites already reach
