@@ -23,6 +23,7 @@ import (
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/controlplane/results"
 	"helios/backend/internal/controlplane/sdkkeys"
+	"helios/backend/internal/controlplane/segments"
 	"helios/backend/internal/controlplane/workspaces"
 	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/dataplane/stream"
@@ -175,6 +176,7 @@ func New(d Deps) *Router {
 	ws := workspaces.NewHandlers(workspaces.NewService(d.Pool), d.Email, d.InvitesByID)
 	fl := flags.NewHandlers(d.Pool, d.Publisher)
 	al := auditlog.NewHandlers(d.Pool)
+	sg := segments.NewHandlers(d.Pool, d.Publisher)
 	ex := experiments.NewHandlers(d.Pool)
 	res := results.NewHandlers(d.Pool)
 	sdkKeys := apikey.NewVerifier(d.Pool, d.SDKKeyCacheTTL)
@@ -281,6 +283,15 @@ func New(d Deps) *Router {
 	// kill costs a disabled feature, a blocked one during an incident costs
 	// prolonged user harm (PRD US-06).
 	env("POST /environments/{envId}/flags/{key}/kill", rbac.Min(rbac.Editor), fl.Kill)
+
+	// Segments are workspace-wide (every environment uses the same ones):
+	// any member reads, editors and above write.
+	workspace("GET /workspaces/{wsId}/segments", rbac.WorkspaceViewer, sg.List)
+	workspace("GET /workspaces/{wsId}/segments/{segKey}", rbac.WorkspaceViewer, sg.Get)
+	workspace("GET /workspaces/{wsId}/segments/{segKey}/usage", rbac.WorkspaceViewer, sg.Usage)
+	workspace("POST /workspaces/{wsId}/segments", rbac.WorkspaceEditor, sg.Create)
+	workspace("PATCH /workspaces/{wsId}/segments/{segKey}", rbac.WorkspaceEditor, sg.Update)
+	workspace("DELETE /workspaces/{wsId}/segments/{segKey}", rbac.WorkspaceEditor, sg.Delete)
 
 	// Same requirement as listing flags: any role in {envId}.
 	env("GET /environments/{envId}/audit-logs", rbac.Min(rbac.Viewer), al.List)

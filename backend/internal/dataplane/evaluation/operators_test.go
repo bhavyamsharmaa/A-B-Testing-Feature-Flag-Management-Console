@@ -27,8 +27,8 @@ func check(t *testing.T, cases []opCase) {
 }
 
 func cl(op string, value any) Clause { return Clause{Attribute: "a", Operator: op, Value: value} }
-func neg(c Clause) Clause           { c.Negate = true; return c }
-func at(v any) map[string]any       { return map[string]any{"a": v} }
+func neg(c Clause) Clause            { c.Negate = true; return c }
+func at(v any) map[string]any        { return map[string]any{"a": v} }
 
 func TestStringOperators(t *testing.T) {
 	check(t, []opCase{
@@ -128,7 +128,7 @@ func TestSemverOperators(t *testing.T) {
 		{"gt", cl(OpSemverGreaterThan, "1.2.3"), at("1.2.4"), true},
 		{"lte equal", cl(OpSemverLessOrEqual, "1.2.3"), at("1.2.3"), true},
 		{"negated lt is gte for valid versions", neg(cl(OpSemverLessThan, "1.2.3")), at("1.2.3"), true},
-		{"very long numeric prerelease still orders", cl(OpSemverLessThan, "1.0.0-"+strings.Repeat("9", 30)), at("1.0.0-"+strings.Repeat("9", 29)), true},
+		{"very long numeric prerelease still orders", cl(OpSemverLessThan, "1.0.0-"+strings.Repeat("9", 30)), at("1.0.0-" + strings.Repeat("9", 29)), true},
 	})
 	// Invalid semver is a non-match, plain or negated, never an error.
 	for _, bad := range []string{"", "1", "1.2", "1.2.3.4", "v1.2.3", "V1.2.3", "01.2.3", "1.02.3", "1.2.03", "1.2.3-", "1.2.3-01", "1.2.3-a..b", "1.2.3+", "1.2.3+a..b",

@@ -73,7 +73,14 @@ func Handler(pool *pgxpool.Pool, tokens *exposuretoken.Keyring) http.HandlerFunc
 			return
 		}
 
-		ctx := Context{SubjectKey: req.Context.SubjectKey, Attributes: req.Context.Attributes}
+		segments, err := loadSegments(r, pool, scope, configs, req.Context.SubjectKey)
+		if err != nil {
+			log.Printf("evaluate: load segments: %v", err)
+			httpx.WriteError(w, http.StatusServiceUnavailable, "EVALUATION_UNAVAILABLE", "flag data unavailable")
+			return
+		}
+
+		ctx := Context{SubjectKey: req.Context.SubjectKey, Attributes: req.Context.Attributes, Segments: segments}
 		results := make([]evaluationResult, 0, len(req.FlagKeys))
 		for _, key := range req.FlagKeys {
 			res := Evaluate(configs[key], ctx)
@@ -149,4 +156,56 @@ func loadConfigs(r *http.Request, pool *pgxpool.Pool, scope apikey.Scope, keys [
 		configs[fc.Key] = &fc
 	}
 	return configs, experiments, rows.Err()
+}
+
+// loadSegments loads the segments the requested flags' rules reference, for
+// THIS subject: one query returns each segment's attribute rules and whether
+// the subject is an explicit member, the latter by a probe of the members
+// table's primary key (workspace, segment, subject), so the cost does not grow
+// with the number of members. No member list is ever read.
+//
+// A request whose flags reference no segment runs no query and gets a nil map,
+// so evaluation (and its cost) is what it was before segments existed. A
+// segment that has been deleted is simply absent, and a segment whose stored
+// rules cannot be read is skipped (logged): both then match nobody.
+func loadSegments(r *http.Request, pool *pgxpool.Pool, scope apikey.Scope, configs map[string]*FlagConfig, subject string) (map[string]Segment, error) {
+	var keys []string
+	seen := map[string]bool{}
+	for _, fc := range configs {
+		for _, key := range SegmentRefs(fc.TargetingRules) {
+			if !seen[key] {
+				seen[key] = true
+				keys = append(keys, key)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	rows, err := pool.Query(r.Context(), `
+		SELECT s.key, s.rules::text,
+		       EXISTS (SELECT 1 FROM segment_members m
+		               WHERE m.workspace_id = s.workspace_id AND m.segment_id = s.id AND m.subject_key = $3)
+		FROM segments s
+		WHERE s.workspace_id = $1::uuid AND s.key = ANY($2::text[])`,
+		scope.WorkspaceID, keys, subject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	segments := make(map[string]Segment, len(keys))
+	for rows.Next() {
+		var key, rules string
+		var member bool
+		if err := rows.Scan(&key, &rules, &member); err != nil {
+			return nil, err
+		}
+		seg := Segment{Key: key, Members: SubjectMember{Subject: subject, In: member}}
+		if err := json.Unmarshal([]byte(rules), &seg.Rules); err != nil {
+			log.Printf("evaluate: segment %s rules unreadable, treating it as absent: %v", key, err)
+			continue
+		}
+		segments[key] = seg
+	}
+	return segments, rows.Err()
 }

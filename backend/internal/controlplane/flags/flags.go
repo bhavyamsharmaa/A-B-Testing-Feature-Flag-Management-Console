@@ -283,11 +283,21 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Segments the new rules reference are locked FOR SHARE before this flag's
+	// own config row (segments first, flag configurations second; see package
+	// segments), so a segment cannot be deleted between the existence check
+	// and the save.
+	segmentRefs := ruleSegmentRefs(req.TargetingRules)
+
 	var view flagView
 	err := pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		knownSegments, err := lockSegments(ctx, tx, access.Env.WorkspaceID, segmentRefs)
+		if err != nil {
+			return err
+		}
 		var configID, variationsText, rulesText, rolloutText string
 		var before configSnapshot
-		err := tx.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			SELECT fc.id::text, f.variations::text, fc.enabled, fc.targeting_rules::text,
 			       COALESCE(fc.rollout::text, 'null'), fc.fallthrough_variation_id
 			FROM flag_configs fc
@@ -318,6 +328,9 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		if req.TargetingRules != nil {
 			rules, err := parseRules(req.TargetingRules, ids)
 			if err != nil {
+				return validationError{err}
+			}
+			if err := checkSegmentsExist(rules, knownSegments); err != nil {
 				return validationError{err}
 			}
 			if after.TargetingRules, err = json.Marshal(rules); err != nil {
