@@ -158,6 +158,17 @@ func loadConfigs(r *http.Request, pool *pgxpool.Pool, scope apikey.Scope, keys [
 	return configs, experiments, rows.Err()
 }
 
+// SegmentsQuery is the one statement /evaluate runs to load the segments a
+// request needs: $1 workspace, $2 segment keys, $3 the request's subject. It is
+// exported so a test can ask Postgres for its plan and prove the membership
+// probe is an index lookup.
+const SegmentsQuery = `
+	SELECT s.key, s.rules::text,
+	       EXISTS (SELECT 1 FROM segment_members m
+	               WHERE m.workspace_id = s.workspace_id AND m.segment_id = s.id AND m.subject_key = $3)
+	FROM segments s
+	WHERE s.workspace_id = $1::uuid AND s.key = ANY($2::text[])`
+
 // loadSegments loads the segments the requested flags' rules reference, for
 // THIS subject: one query returns each segment's attribute rules and whether
 // the subject is an explicit member, the latter by a probe of the members
@@ -182,13 +193,7 @@ func loadSegments(r *http.Request, pool *pgxpool.Pool, scope apikey.Scope, confi
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	rows, err := pool.Query(r.Context(), `
-		SELECT s.key, s.rules::text,
-		       EXISTS (SELECT 1 FROM segment_members m
-		               WHERE m.workspace_id = s.workspace_id AND m.segment_id = s.id AND m.subject_key = $3)
-		FROM segments s
-		WHERE s.workspace_id = $1::uuid AND s.key = ANY($2::text[])`,
-		scope.WorkspaceID, keys, subject)
+	rows, err := pool.Query(r.Context(), SegmentsQuery, scope.WorkspaceID, keys, subject)
 	if err != nil {
 		return nil, err
 	}

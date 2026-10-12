@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"helios/backend/internal/controlplane/quota"
+	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/platform/redisx"
 	"helios/backend/internal/server"
 )
@@ -173,10 +174,7 @@ func TestMemberLookupUsesTheIndex(t *testing.T) {
 		members[i] = fmt.Sprintf("user-%05d", i)
 	}
 	h.expect(201, x.a, "POST", segPath(x.wsA.ID), segReq("big", members))
-	rows, err := h.pool.Query(context.Background(), `
-		EXPLAIN SELECT s.key, EXISTS (SELECT 1 FROM segment_members m
-		               WHERE m.workspace_id = s.workspace_id AND m.segment_id = s.id AND m.subject_key = 'user-09999')
-		FROM segments s WHERE s.workspace_id = $1::uuid AND s.key = ANY(ARRAY['big'])`, x.wsA.ID)
+	rows, err := h.pool.Query(context.Background(), "EXPLAIN "+evaluation.SegmentsQuery, x.wsA.ID, []string{"big"}, "user-09999")
 	if err != nil {
 		t.Fatal(err)
 	}
