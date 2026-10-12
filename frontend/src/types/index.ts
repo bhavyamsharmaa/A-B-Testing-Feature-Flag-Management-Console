@@ -79,6 +79,8 @@ export interface Clause {
   attribute: string
   operator: string
   value?: unknown
+  /** Inverts the operator, but never makes a missing attribute or a wrong type match. */
+  negate?: boolean
 }
 
 /** Serves `variationId` when every clause matches (they are ANDed). Rules run top to bottom. */
@@ -255,4 +257,27 @@ export interface ExperimentResults {
   peekingNoteCode: string
   peekingNote: string
   method: string[]
+}
+
+/** A reusable audience: explicit members OR (all of) its attribute rules. Workspace-wide. */
+export interface SegmentSummary {
+  key: string
+  name: string
+  description: string
+  /** ANDed; empty means "explicit members only". */
+  rules: Clause[]
+  memberCount: number
+  version: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** A single segment read: the list omits `members`. */
+export interface Segment extends SegmentSummary {
+  members: string[]
+}
+
+export interface SegmentUsage {
+  segmentKey: string
+  flags: { flagKey: string; flagName: string; environments: { key: string; enabled: boolean }[] }[]
 }

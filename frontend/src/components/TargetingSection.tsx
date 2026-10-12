@@ -14,7 +14,9 @@ import {
   type RuleErrors,
   type ServerRuleError,
 } from '../lib/targeting'
+import { useSegments } from '../lib/useSegments'
 import { SLOW_HINT, useSlowHint } from '../lib/useSlowHint'
+import { useWorkspace } from '../workspace/WorkspaceProvider'
 import type { Flag } from '../types'
 import { ConfirmDialog } from './ConfirmDialog'
 import { TargetingEditor } from './TargetingEditor'
@@ -52,11 +54,14 @@ export function TargetingSection({ flag, env, prod, canEdit, disabledReason, oth
   const [confirming, setConfirming] = useState(false)
   const [dialogError, setDialogError] = useState<string | null>(null)
   const slow = useSlowHint(saving)
+  const { active } = useWorkspace()
+  const { segments, error: segmentsError } = useSegments(active?.id ?? null)
+  const segmentKeys = useMemo(() => (segments ? new Set(segments.map((s) => s.key)) : null), [segments])
 
   const payload = useMemo(() => toPayload(draft), [draft])
   const dirty = canon(payload) !== savedKey
   const variationIds = useMemo(() => new Set(flag.variations.map((v) => v.id)), [flag.variations])
-  const errors: RuleErrors[] = useMemo(() => validate(draft, variationIds), [draft, variationIds])
+  const errors: RuleErrors[] = useMemo(() => validate(draft, variationIds, segmentKeys), [draft, variationIds, segmentKeys])
 
   // When the saved rules change underneath us (the drawer's fresh read), follow
   // them, but never discard edits in progress.
@@ -157,12 +162,16 @@ export function TargetingSection({ flag, env, prod, canEdit, disabledReason, oth
           errors={showErrors ? errors : null}
           serverError={serverError}
           disabled={disabled}
+          segments={segments}
+          segmentsError={segmentsError}
           onChange={edit}
         />
 
         <p className="text-xs leading-relaxed text-zinc-500">
           A user missing an attribute does not match that clause. Rules run before the rollout percentage. Attribute names
-          are exact, case-sensitive keys, and values must match in type (the text "5" is not the number 5).
+          are exact, case-sensitive keys, and values must match in type (the text "5" is not the number 5). A
+          clause marked NOT is still false when the attribute is missing or the wrong type. A segment that has been deleted
+          matches nobody, whether the clause says "in" or "not in".
         </p>
 
         {!canEdit && <p className="text-xs text-zinc-500">{disabledReason}.</p>}

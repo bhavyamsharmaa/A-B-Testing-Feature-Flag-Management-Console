@@ -5,11 +5,13 @@ interface Props {
   onClose: () => void
   /** While busy the dialog can't be dismissed. */
   busy?: boolean
+  /** A roomier frame for forms with lists (the segment editor). */
+  wide?: boolean
   children: ReactNode
 }
 
 /** The shared dialog frame: backdrop, Escape and outside-click to close, labelled for screen readers. */
-export function Modal({ title, onClose, busy = false, children }: Props) {
+export function Modal({ title, onClose, busy = false, wide = false, children }: Props) {
   const titleId = useId()
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -30,7 +32,7 @@ export function Modal({ title, onClose, busy = false, children }: Props) {
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="w-full max-w-md animate-fade-up rounded-2xl border border-white/10 bg-surface p-6"
+        className={`max-h-[92vh] w-full animate-fade-up overflow-y-auto rounded-2xl border border-white/10 bg-surface p-6 ${wide ? 'max-w-3xl' : 'max-w-md'}`}
       >
         <h2 id={titleId} className="text-lg font-semibold">
           {title}

@@ -1,11 +1,16 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
+  MAX_REGEX_BYTES,
   OPERATORS,
   VALUE_TYPES,
+  canNegate,
   changeOperator,
+  isSegmentOperator,
   newClause,
   newRule,
   usesValueType,
+  valueKind,
   type DraftClause,
   type DraftRule,
   type Operator,
@@ -13,11 +18,11 @@ import {
   type ServerRuleError,
   type ValueType,
 } from '../lib/targeting'
-import type { Variation } from '../types'
+import type { SegmentSummary, Variation } from '../types'
 
-const field =
+export const field =
   'rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 text-sm outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-50'
-const iconBtn =
+export const iconBtn =
   'rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-300 transition hover:border-accent/60 hover:text-white disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:border-white/10 disabled:hover:text-zinc-300'
 
 interface Props {
@@ -27,6 +32,10 @@ interface Props {
   errors: RuleErrors[] | null
   serverError: ServerRuleError | null
   disabled: boolean
+  /** The workspace's segments for the segment picker; null while they load or when they failed to. */
+  segments: SegmentSummary[] | null
+  /** Why `segments` is null, when it failed. */
+  segmentsError?: string | null
   onChange: (rules: DraftRule[]) => void
 }
 
@@ -35,7 +44,7 @@ const variationLabel = (v: Variation) => {
   return `${v.id} (${value.length > 24 ? `${value.slice(0, 24)}…` : value})`
 }
 
-export function TargetingEditor({ rules, variations, errors, serverError, disabled, onChange }: Props) {
+export function TargetingEditor({ rules, variations, errors, serverError, disabled, segments, segmentsError, onChange }: Props) {
   const setRule = (i: number, patch: Partial<DraftRule>) =>
     onChange(rules.map((r, k) => (k === i ? { ...r, ...patch } : r)))
   const setClause = (i: number, j: number, next: DraftClause) =>
@@ -105,6 +114,8 @@ export function TargetingEditor({ rules, variations, errors, serverError, disabl
                       clause={clause}
                       disabled={disabled}
                       canRemove={rule.clauses.length > 1}
+                      segments={segments}
+                      segmentsError={segmentsError ?? null}
                       error={err?.clauses[j] ?? null}
                       serverText={server && server.clause === j ? server.text : null}
                       onChange={(next) => setClause(i, j, next)}
@@ -167,29 +178,52 @@ interface ClauseProps {
   clause: DraftClause
   disabled: boolean
   canRemove: boolean
+  /** Segments to pick from; null = not available. Without it (segment rules) the segment operators are not offered. */
+  segments: SegmentSummary[] | null
+  segmentsError?: string | null
+  /** Segment rules cannot reference segments, so they never offer the segment operators. */
+  noSegmentOperators?: boolean
   error: string | null
   serverText: string | null
   onChange: (next: DraftClause) => void
   onRemove: () => void
 }
 
-function ClauseRow({ clause, disabled, canRemove, error, serverText, onChange, onRemove }: ClauseProps) {
+const GROUPS = ['Compare', 'Text', 'Number', 'Version', 'Date', 'Audience'] as const
+
+export function ClauseRow({ clause, disabled, canRemove, segments, segmentsError, noSegmentOperators, error, serverText, onChange, onRemove }: ClauseProps) {
   const set = (patch: Partial<DraftClause>) => onChange({ ...clause, ...patch })
   const op = clause.operator
+  const kind = valueKind(op)
+  const segmentOp = isSegmentOperator(op)
 
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap items-start gap-2">
-        <input
-          className={`${field} w-32 font-mono`}
-          placeholder="attribute"
-          aria-label="Attribute name"
-          spellCheck={false}
-          autoComplete="off"
-          disabled={disabled}
-          value={clause.attribute}
-          onChange={(e) => set({ attribute: e.target.value })}
-        />
+        {!segmentOp && (
+          <input
+            className={`${field} w-32 font-mono`}
+            placeholder="attribute"
+            aria-label="Attribute name"
+            spellCheck={false}
+            autoComplete="off"
+            disabled={disabled}
+            value={clause.attribute}
+            onChange={(e) => set({ attribute: e.target.value })}
+          />
+        )}
+        {canNegate(op) && (
+          <button
+            type="button"
+            aria-pressed={clause.negate}
+            disabled={disabled}
+            onClick={() => set({ negate: !clause.negate })}
+            title={clause.negate ? 'Negated: matches when the operator does not' : 'Click to negate this operator'}
+            className={`${iconBtn} self-start py-1.5 font-semibold tracking-wider ${clause.negate ? '!border-accent !bg-accent/20 !text-white' : ''}`}
+          >
+            {clause.negate ? '✓ NOT' : 'NOT'}
+          </button>
+        )}
         <select
           className={field}
           aria-label="Operator"
@@ -197,10 +231,14 @@ function ClauseRow({ clause, disabled, canRemove, error, serverText, onChange, o
           value={op}
           onChange={(e) => onChange(changeOperator(clause, e.target.value as Operator))}
         >
-          {OPERATORS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
+          {GROUPS.filter((g) => !(g === 'Audience' && noSegmentOperators)).map((g) => (
+            <optgroup key={g} label={g}>
+              {OPERATORS.filter((o) => o.group === g).map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
 
@@ -221,7 +259,7 @@ function ClauseRow({ clause, disabled, canRemove, error, serverText, onChange, o
           </select>
         )}
 
-        <ValueInput clause={clause} disabled={disabled} onChange={onChange} />
+        <ValueInput clause={clause} disabled={disabled} segments={segments} segmentsError={segmentsError ?? null} onChange={onChange} />
 
         <button
           className={iconBtn}
@@ -233,6 +271,7 @@ function ClauseRow({ clause, disabled, canRemove, error, serverText, onChange, o
           ✕
         </button>
       </div>
+      {hint(kind) && <p className="text-[11px] text-zinc-500">{hint(kind)}</p>}
       {error && <p className="text-xs text-red-400">{error}</p>}
       {serverText && (
         <p role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-xs text-red-300">
@@ -243,45 +282,143 @@ function ClauseRow({ clause, disabled, canRemove, error, serverText, onChange, o
   )
 }
 
-function ValueInput({ clause, disabled, onChange }: { clause: DraftClause; disabled: boolean; onChange: (c: DraftClause) => void }) {
+function hint(kind: ReturnType<typeof valueKind>): string | null {
+  switch (kind) {
+    case 'semver':
+      return 'A version like 1.4.0 or 2.0.0-rc.1. Attributes that are not valid versions never match.'
+    case 'date':
+      return 'RFC 3339, like 2024-05-01T00:00:00Z. Attributes that are not RFC 3339 timestamps never match.'
+    case 'regex':
+      return `Go (RE2) syntax, no lookahead or backreferences; matches anywhere unless anchored with ^ and $. Up to ${MAX_REGEX_BYTES} bytes; attribute values over 2,048 bytes never match.`
+    default:
+      return null
+  }
+}
+
+function ValueInput({
+  clause,
+  disabled,
+  segments,
+  segmentsError,
+  onChange,
+}: {
+  clause: DraftClause
+  disabled: boolean
+  segments: SegmentSummary[] | null
+  segmentsError: string | null
+  onChange: (c: DraftClause) => void
+}) {
   const op = clause.operator
+  const kind = valueKind(op)
   const set = (patch: Partial<DraftClause>) => onChange({ ...clause, ...patch })
 
-  if (op === 'exists') return <span className="self-center text-xs text-zinc-500">no value needed</span>
-  if (op === 'in') {
-    return <ChipsInput items={clause.items} disabled={disabled} onChange={(items) => set({ items })} />
+  switch (kind) {
+    case 'none':
+      return <span className="self-center text-xs text-zinc-500">no value needed</span>
+    case 'list':
+      return <ChipsInput items={clause.items} disabled={disabled} onChange={(items) => set({ items })} />
+    case 'segment':
+      return <SegmentPicker value={clause.text} disabled={disabled} segments={segments} error={segmentsError} onChange={(text) => set({ text })} />
+    case 'number':
+      return (
+        <input
+          className={`${field} w-28 font-mono`}
+          type="number"
+          step="any"
+          placeholder="0"
+          aria-label="Number value"
+          disabled={disabled}
+          value={clause.text}
+          onChange={(e) => set({ text: e.target.value })}
+        />
+      )
+    case 'scalar':
+      if (clause.valueType === 'number') {
+        return (
+          <input
+            className={`${field} w-28 font-mono`}
+            type="number"
+            step="any"
+            placeholder="0"
+            aria-label="Number value"
+            disabled={disabled}
+            value={clause.text}
+            onChange={(e) => set({ text: e.target.value })}
+          />
+        )
+      }
+      if (clause.valueType === 'boolean') {
+        return (
+          <select className={field} aria-label="Boolean value" disabled={disabled} value={clause.text || 'true'} onChange={(e) => set({ text: e.target.value })}>
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+        )
+      }
+      return (
+        <input className={`${field} w-36`} placeholder="value" aria-label="Text value" disabled={disabled} value={clause.text} onChange={(e) => set({ text: e.target.value })} />
+      )
+    default: {
+      const label = { text: 'Text value', semver: 'Version', date: 'Timestamp', regex: 'Regular expression' }[kind]
+      const placeholder = { text: 'value', semver: '1.4.0', date: '2024-05-01T00:00:00Z', regex: '^pro-.*$' }[kind]
+      return (
+        <input
+          className={`${field} ${kind === 'text' ? 'w-36' : 'w-56 font-mono'}`}
+          placeholder={placeholder}
+          aria-label={label}
+          spellCheck={false}
+          autoComplete="off"
+          disabled={disabled}
+          value={clause.text}
+          onChange={(e) => set({ text: e.target.value })}
+        />
+      )
+    }
   }
-  if (op === 'greaterThan' || clause.valueType === 'number') {
+}
+
+/** Picks one of the workspace's segments. A key that no longer exists stays visible (and is flagged) instead of silently changing. */
+function SegmentPicker({
+  value,
+  disabled,
+  segments,
+  error,
+  onChange,
+}: {
+  value: string
+  disabled: boolean
+  segments: SegmentSummary[] | null
+  error: string | null
+  onChange: (key: string) => void
+}) {
+  if (segments === null) {
     return (
-      <input
-        className={`${field} w-28 font-mono`}
-        type="number"
-        step="any"
-        placeholder="0"
-        aria-label="Number value"
-        disabled={disabled}
-        value={clause.text}
-        onChange={(e) => set({ text: e.target.value })}
-      />
+      <span className="self-center text-xs text-zinc-500" role={error ? 'alert' : 'status'}>
+        {error ? `Segments could not be loaded: ${error}` : 'Loading segments…'}
+      </span>
     )
   }
-  if (clause.valueType === 'boolean') {
-    return (
-      <select className={field} aria-label="Boolean value" disabled={disabled} value={clause.text || 'true'} onChange={(e) => set({ text: e.target.value })}>
-        <option value="true">true</option>
-        <option value="false">false</option>
-      </select>
-    )
-  }
+  const known = segments.some((s) => s.key === value)
   return (
-    <input
-      className={`${field} w-36`}
-      placeholder="value"
-      aria-label="Text value"
-      disabled={disabled}
-      value={clause.text}
-      onChange={(e) => set({ text: e.target.value })}
-    />
+    <div className="flex flex-wrap items-center gap-2">
+      <select className={`${field} min-w-[180px]`} aria-label="Segment" disabled={disabled} value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">Choose a segment…</option>
+        {value !== '' && !known && <option value={value}>{value} (does not exist)</option>}
+        {segments.map((s) => (
+          <option key={s.key} value={s.key}>
+            {s.name} ({s.key})
+          </option>
+        ))}
+      </select>
+      {value !== '' && !known && (
+        <span className="text-xs text-amber-300">This segment no longer exists, so this rule matches nobody. Pick another or delete the rule.</span>
+      )}
+      {segments.length === 0 && (
+        <span className="text-xs text-zinc-500">
+          No segments yet. <Link to="/console/segments" className="text-accent underline">Create one</Link>.
+        </span>
+      )}
+    </div>
   )
 }
 
