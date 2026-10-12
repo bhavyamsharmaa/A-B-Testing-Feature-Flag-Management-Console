@@ -135,19 +135,19 @@ func TestClauseOperators(t *testing.T) {
 		c    Clause
 		want bool
 	}{
-		{Clause{"country", OpEquals, "IN"}, true},
-		{Clause{"country", OpEquals, "US"}, false},
-		{Clause{"age", OpEquals, "30"}, false}, // type mismatch is false, not coerced
-		{Clause{"country", OpIn, []any{"US", "IN"}}, true},
-		{Clause{"country", OpIn, "IN"}, false},
-		{Clause{"email", OpContains, "@helios.dev"}, true},
-		{Clause{"tags", OpContains, "beta"}, true},
-		{Clause{"tags", OpContains, "admin"}, false},
-		{Clause{"age", OpGreaterThan, float64(18)}, true},
-		{Clause{"age", OpGreaterThan, float64(30)}, false},
-		{Clause{"meta", OpEquals, map[string]any{"x": 1}}, false}, // must not panic
-		{Clause{"email", OpExists, nil}, true},
-		{Clause{"email", "startsWith", "a"}, false},
+		{Clause{Attribute: "country", Operator: OpEquals, Value: "IN"}, true},
+		{Clause{Attribute: "country", Operator: OpEquals, Value: "US"}, false},
+		{Clause{Attribute: "age", Operator: OpEquals, Value: "30"}, false}, // type mismatch is false, not coerced
+		{Clause{Attribute: "country", Operator: OpIn, Value: []any{"US", "IN"}}, true},
+		{Clause{Attribute: "country", Operator: OpIn, Value: "IN"}, false},
+		{Clause{Attribute: "email", Operator: OpContains, Value: "@helios.dev"}, true},
+		{Clause{Attribute: "tags", Operator: OpContains, Value: "beta"}, true},
+		{Clause{Attribute: "tags", Operator: OpContains, Value: "admin"}, false},
+		{Clause{Attribute: "age", Operator: OpGreaterThan, Value: float64(18)}, true},
+		{Clause{Attribute: "age", Operator: OpGreaterThan, Value: float64(30)}, false},
+		{Clause{Attribute: "meta", Operator: OpEquals, Value: map[string]any{"x": 1}}, false}, // must not panic
+		{Clause{Attribute: "email", Operator: OpExists, Value: nil}, true},
+		{Clause{Attribute: "email", Operator: "frobnicate", Value: "a"}, false},
 	}
 	for _, tc := range cases {
 		if got := tc.c.Matches(attrs); got != tc.want {

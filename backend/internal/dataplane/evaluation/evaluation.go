@@ -35,6 +35,10 @@ type FlagConfig struct {
 type Context struct {
 	SubjectKey string
 	Attributes map[string]any
+	// Segments holds the segments the flag's rules reference, by key. A key
+	// that is absent (a deleted segment) matches nobody, under inSegment and
+	// notInSegment alike. Nil for flags that reference none.
+	Segments map[string]Segment
 }
 
 // Result carries no value when no variation applies (not found, disabled,
@@ -57,7 +61,7 @@ func Evaluate(fc *FlagConfig, ctx Context) Result {
 	}
 
 	for _, rule := range fc.TargetingRules {
-		if rule.Matches(ctx.Attributes) {
+		if rule.MatchesIn(ctx) {
 			return fc.serve(rule.VariationID, ReasonTargetingMatch)
 		}
 	}
