@@ -28,12 +28,15 @@ export function ConsoleHeader({ email, onSignOut }: { email: string; onSignOut: 
           </button>
         </div>
       </header>
-      <nav aria-label="Console sections" className="mt-6 flex gap-1">
+      <nav aria-label="Console sections" className="mt-6 flex flex-wrap gap-1">
         <NavLink to="/console" end className={tab}>
           Flags
         </NavLink>
         <NavLink to="/console/experiments" className={tab}>
           Experiments
+        </NavLink>
+        <NavLink to="/console/segments" className={tab}>
+          Segments
         </NavLink>
         <NavLink to="/console/audit" className={tab}>
           Audit log

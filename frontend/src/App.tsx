@@ -11,6 +11,7 @@ import ExperimentPage from './pages/ExperimentPage'
 import ExperimentsPage from './pages/ExperimentsPage'
 import InvitePage from './pages/InvitePage'
 import LoginPage from './pages/LoginPage'
+import SegmentsPage from './pages/SegmentsPage'
 import SettingsPage from './pages/SettingsPage'
 import { WorkspaceProvider, useWorkspace } from './workspace/WorkspaceProvider'
 
@@ -48,6 +49,7 @@ export default function App() {
               <Route path="/console/experiments" element={<ExperimentsPage />} />
               <Route path="/console/experiments/:key" element={<ExperimentPage tab="data" />} />
               <Route path="/console/experiments/:key/results" element={<ExperimentPage tab="results" />} />
+              <Route path="/console/segments" element={<SegmentsPage />} />
               <Route path="/console/audit" element={<AuditPage />} />
               <Route path="/console/settings" element={<SettingsPage />} />
             </Route>
