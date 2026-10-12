@@ -1,4 +1,4 @@
-# Production rollout: two releases (DRAFT)
+# Production rollout: two releases, and a third after them (DRAFT)
 
 > **Status: draft written during gate G0.** The rollout plan this was meant to
 > mirror did not exist in the repo, so this is reconstructed from the gate list
@@ -16,6 +16,11 @@ Goal: existing users and SDK integrations see no breakage, and every step can be
 
 Nothing in release 1 reads or writes anything release 2 adds, and release 2 needs
 release 1's schema (it uses `workspace_id`). That is what makes the split safe.
+
+**A third release comes after both: segments and the broader targeting operators**
+(`feature/segments`, section "Release 3" below). It is not part of either release above,
+needs only release 1's schema, and must not be started until release 2 (if it is shipping)
+is finished or deliberately skipped. It adds one migration, 0010.
 
 ## Stack status
 
@@ -42,7 +47,7 @@ The history is strictly linear (each branch contains the one before it; checked 
 `git merge-base --is-ancestor`). A bundle of all local branches is kept in
 `~/helios-backups/` (outside the repository).
 
-## Migrations 0004-0009
+## Migrations 0004-0010
 
 All files are in `backend/db/migrations/`; verify scripts in `backend/db/`. Every
 migration runs in its own transaction (no `psql -1`). Lock notes come from each file's
@@ -57,6 +62,8 @@ restored copy gives the real numbers.
 | 0005 drop defaults | 1 | **later, own gate G6b**, after the new backend has been live and observed | removes the transitional defaults | `DROP DEFAULT` is catalog-only; brief exclusive locks | commented block re-adds the defaults (needed to put old code back) | `verify_0005.sql` |
 | 0008 event ingestion | 2 | after release 1 is complete (needs 0004/0005 columns) | `events` gets `workspace_id`, `event_id`, `properties`, `occurred_at`; composite FKs; exposure and event-id uniqueness; indexes | `events` has never been written before `/track`: empty table, lock held for milliseconds; **the file refuses to run if `events` has rows** | commented block: drops `events` (discards ingested data) | `verify_0008.sql` |
 | 0009 exposure verification | 2 | after 0008 | nullable `events.exposure_verified`, a CHECK (added NOT VALID, then validated), a partial index | `ADD COLUMN` nullable without default is catalog-only; validation takes `SHARE UPDATE EXCLUSIVE` (writes continue); on a large `events` table build the index first with `CREATE INDEX CONCURRENTLY` | commented block: drop index, constraint, column (deploy a backend without exposure verification first) | `verify_0009.sql` |
+
+| 0010 segments | **3** | after releases 1 and 2 are finished | two NEW tables, `segments` and `segment_members` (`workspace_id` on both, composite FK, RLS on, indexes lead with `workspace_id`); no existing table changes | none on existing data: new empty tables. The foreign keys take `SHARE ROW EXCLUSIVE` on `workspaces` and `auth.users` for milliseconds while created (blocks writes to those two tables, not reads) | commented block: `DROP TABLE` both (deploy a backend without segments first; discards segments) | `verify_0010.sql` |
 
 `verify_0005.sql` is expected to FAIL until 0005 is applied.
 
@@ -86,6 +93,10 @@ Names only for secrets. "Recommended" is for production on day one of that relea
 | `HELIOS_EVENT_RETENTION_DAYS` | new, read only by the `purgeevents` command, not the API | `90` |
 
 Vercel (console), release 2: no new variables. Supabase auth settings: not changed by either release.
+
+**Release 3 (segments):** no new variables in the backend or the console. Limits are
+constants in `quota` (20 segments per workspace, 10,000 explicit members per segment,
+20 rule clauses / 8,192 bytes per segment); changing them is a code change.
 
 ## Release 1 - detail
 
@@ -221,16 +232,62 @@ scoping, the every-route test and the tenant checks all assume release 1's guard
 * Schedule `cmd/purgeevents` (a Cloud Run Job or any scheduler, see `docs/EVENTS.md`)
   before real traffic; retention 90 days. Default rate limits stay.
 
+## Release 3 - segments and more targeting operators
+
+Do not start until release 2 is complete (or has been consciously skipped, in which case
+re-check the dependency below) and observed.
+
+**What it adds:** reusable audience segments (explicit members and/or attribute rules)
+that a flag's targeting rule can reference with `inSegment` / `notInSegment`; the
+operators `startsWith`, `endsWith`, `lessThan`, `lessThanOrEqual`, `greaterThanOrEqual`,
+semver and date comparisons, `matchesRegex` (Go RE2, length-capped), and a `negate`
+flag on any clause; six workspace routes (`/workspaces/{wsId}/segments...`); the
+Segments page and a segment picker in the targeting editor. See `docs/SEGMENTS.md`.
+
+**Schema:** one migration, 0010 - two new tables, nothing else touched. Because nothing
+existing changes, the previous backend keeps running against the migrated database
+(it never reads the tables). The reverse is not true: do not save flag rules with the new
+operators or segment clauses and then put an older backend back — it treats an operator it
+does not know as "no match", so those rules would quietly stop matching.
+
+**Evaluation is unchanged for flags that use none of it:** `internal/dataplane/evaluation`
+has a golden file (`testdata/legacy_golden.txt`, ~7,700 results recorded from the code
+before this release) that must stay byte-identical. `/evaluate` runs one extra query only
+when a requested flag's rules name a segment.
+
+**Sequence (each step on "go", with a report; never chained):**
+
+1. **S0 Preflight** (read-only): the checks under "After each merge" on the merged branch.
+2. **S1 Backup** (`backend/scripts/backup_db.sh`, via `PGSERVICE` only) and restore into a throwaway database.
+3. **S2 Rehearsal** on the restored copy: 0010, `verify_0010.sql`, the segments backend and
+   console against it, the Playwright suite. Steps in `backend/db/rehearsal.md` ("Rehearsing 0010").
+4. **S3 Migrate:** 0010, `verify_0010.sql`. The running backend is unaffected.
+5. **S4 Deploy** backend and console together. Smoke: create a segment with two members,
+   reference it from a rule of a test flag in dev, `/evaluate` as a member and as a stranger
+   with a dev SDK key, edit the members and see the answer change, delete the segment (the usage
+   warning must name the flag), confirm the audit log shows `segment.create`, `segment.update`,
+   `segment.force_delete` without a member list.
+6. **S5 Observe**, including the p95 of `/evaluate` for flags that use a segment (one extra indexed query).
+
+**Rollback:** redeploy the previous backend and console. Segments already created stay in the
+database, unused. Remove flag rules that use segment clauses or the new operators first
+(they would stop matching under the old evaluator). Undoing 0010 itself is the commented
+`DROP TABLE` block in the file, after a backup.
+
+**Dependency on the earlier releases:** `segments.workspace_id` references `workspaces` (0004);
+the every-route test, the tenant checks and the workspace guard of release 1 are assumed. It
+does not need 0008 or 0009, so it could ship without release 2, but this plan keeps the order.
+
 ## Merge order and keeping the stack consistent
 
 The branches form one line: `main` <- `feature/workspaces-ui` <- `-tracking` <- `-results`
-<- `-results-ui` <- `-hardening`. Merge in that order, one at a time.
+<- `-results-ui` <- `-hardening` <- `feature/ci` <- `feature/segments` (release 3). Merge in that order, one at a time.
 
 1. **Release 1:** merge `feature/workspaces-ui` into `main` with a **merge commit or fast-forward, not a squash**. (Local `main`'s two extra commits are already inside that branch.)
 2. Deploy and finish release 1 (G0-G7). Any fixes made to release 1 during the gates go on `feature/workspaces-ui`/`main` first.
 3. **Release 2:** bring the stack onto the new `main`. If release 1 was merged without squashing and nothing changed since the stack was cut, the stack already sits on it: merge `feature/experiments-hardening` into `main` (it contains the three branches below it), or merge each branch in order for smaller reviews. If release 1 changed after the stack was cut (fixes, a squash merge), move each branch in order, bottom first:
    `git rebase --onto main <old base> feature/experiments-tracking`, then rebase `-results` onto the new `-tracking`, `-results-ui` onto `-results`, `-hardening` onto `-results-ui` (or merge the lower branch into each, if the branches were shared). Never rebase a branch that has been pushed and reviewed without telling the reviewer.
-4. Expected conflict hot spots: `api/openapi.yaml`, `backend/internal/server/server.go`, `backend/internal/platform/ratelimit/ratelimit.go`, `backend/internal/integration/harness_test.go` (its migration-count check: 7 on release 1, 9 on release 2), `docs/ROLLOUT.md`, `docs/LOCAL_MULTITENANCY.md`. Resolve by keeping both sides' additions; never resolve a migration file by editing 0004-0007.
+4. Expected conflict hot spots: `api/openapi.yaml`, `backend/internal/server/server.go`, `backend/internal/platform/ratelimit/ratelimit.go`, `backend/internal/integration/harness_test.go` (its migration-count check: 7 on release 1, 9 on release 2, 10 on release 3), `docs/ROLLOUT.md`, `docs/LOCAL_MULTITENANCY.md`. Resolve by keeping both sides' additions; never resolve a migration file by editing 0004-0007.
 5. **Never commit re-rendered screenshots** (`docs/screenshots/*.png` change on every Playwright run): `git checkout -- docs/screenshots` before committing.
 
 **After each merge, re-run:** `cd backend && go vet ./... && HELIOS_TEST_DATABASE_URL=... HELIOS_TEST_REDIS_URL=... go test -count=1 ./...` (local throwaway Postgres and Redis only); `cd frontend && npx tsc --noEmit && npm run build`; start the local stack and run `npx playwright test` (all specs); apply the migrations in order to a fresh local database and run each `verify_*.sql`; check `git status` is clean apart from screenshots.

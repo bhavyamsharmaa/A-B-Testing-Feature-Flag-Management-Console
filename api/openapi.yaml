@@ -317,6 +317,137 @@ paths:
         "404": { description: INVITE_NOT_FOUND (invalid, used or revoked), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "410": { description: INVITE_EXPIRED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
+  /workspaces/{wsId}/segments:
+    parameters: [{ $ref: "#/components/parameters/WsPath" }]
+    get:
+      tags: [control-plane]
+      summary: List the workspace's segments (any member)
+      description: >-
+        Segments are workspace-wide: every environment evaluates the same ones.
+        The list omits each segment's members (see the single read).
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Segments by key
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [segments]
+                properties:
+                  segments:
+                    type: array
+                    items: { $ref: "#/components/schemas/SegmentSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+    post:
+      tags: [control-plane]
+      summary: Create a segment (editor+)
+      description: >-
+        A subject is in the segment if it is an explicit member OR matches ALL
+        of `rules` (rules are ANDed, like the clauses of a flag rule). Rules use
+        the flag-rule operators except inSegment and notInSegment: a segment
+        cannot reference another segment (400). Limits: 20 segments per
+        workspace, 10,000 explicit members per segment (repeats are ignored),
+        20 rule clauses and 8,192 bytes of rule definition (409
+        QUOTA_EXCEEDED). Member keys are exact, 1-256 characters, with no
+        control characters. The body may be up to 4 MiB (413 beyond).
+        Audited as segment.create.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SegmentCreateRequest" }
+      responses:
+        "201":
+          description: Created
+          content: { application/json: { schema: { $ref: "#/components/schemas/Segment" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+        "409": { description: "SEGMENT_KEY_EXISTS or QUOTA_EXCEEDED", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "413": { description: BODY_TOO_LARGE, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/segments/{segKey}:
+    parameters:
+      - $ref: "#/components/parameters/WsPath"
+      - $ref: "#/components/parameters/SegmentKeyPath"
+    get:
+      tags: [control-plane]
+      summary: Read a segment with its members (any member)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: The segment, members sorted
+          content: { application/json: { schema: { $ref: "#/components/schemas/Segment" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/SegmentNotFound" }
+    patch:
+      tags: [control-plane]
+      summary: Change a segment (editor+)
+      description: >-
+        Absent fields are left alone. `members`, when present, REPLACES the
+        whole explicit member list. `expectedVersion` makes the update fail
+        with 409 STALE_SEGMENT if someone else saved first. A change to the
+        rules or the members bumps the version of every flag configuration that
+        uses the segment, and tells the SDK streams of the affected
+        environments (event `segment_updated`); a rename does neither. An
+        update that changes nothing changes nothing (no version bump). Audited
+        as segment.update with counts and a short sample of keys, never the
+        whole member list.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SegmentUpdateRequest" }
+      responses:
+        "200":
+          description: The segment after the change
+          content: { application/json: { schema: { $ref: "#/components/schemas/Segment" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/SegmentNotFound" }
+        "409": { description: "STALE_SEGMENT or QUOTA_EXCEEDED", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "413": { description: BODY_TOO_LARGE, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    delete:
+      tags: [control-plane]
+      summary: Delete a segment (editor+)
+      description: >-
+        Refused with 409 SEGMENT_IN_USE (naming the flags) while any flag rule
+        references the segment, unless `?confirm=true`. A confirmed delete of an
+        in-use segment is audited as segment.force_delete (critical); the rules
+        that named it stay stored and then match nobody (inSegment and
+        notInSegment alike), and the affected flag configurations' versions are
+        bumped. A flag rule cannot be saved with a segment that does not exist.
+      security: [{ supabaseJWT: [] }]
+      parameters:
+        - { name: confirm, in: query, required: false, schema: { type: boolean } }
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/SegmentNotFound" }
+        "409": { description: SEGMENT_IN_USE, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/segments/{segKey}/usage:
+    parameters:
+      - $ref: "#/components/parameters/WsPath"
+      - $ref: "#/components/parameters/SegmentKeyPath"
+    get:
+      tags: [control-plane]
+      summary: Which flags use a segment (any member)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: The flags whose rules reference the segment, with the environments
+          content: { application/json: { schema: { $ref: "#/components/schemas/SegmentUsage" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/SegmentNotFound" }
+
   /environments/{envId}/sdk-keys:
     parameters: [{ $ref: "#/components/parameters/EnvPath" }]
     get:
@@ -945,6 +1076,12 @@ components:
         The workspace's UUID. Only honoured for members: anyone else gets 404
         WORKSPACE_NOT_FOUND.
       schema: { type: string, format: uuid }
+    SegmentKeyPath:
+      name: segKey
+      in: path
+      required: true
+      description: The segment's key, unique within its workspace.
+      schema: { type: string, example: beta-testers }
     FlagKeyPath:
       name: key
       in: path
@@ -971,6 +1108,9 @@ components:
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     WorkspaceNotFound:
       description: WORKSPACE_NOT_FOUND (unknown, or the caller isn't a member)
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    SegmentNotFound:
+      description: WORKSPACE_NOT_FOUND (unknown, or the caller isn't a member) or SEGMENT_NOT_FOUND
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     FlagNotFound:
       description: FLAG_NOT_FOUND or ENVIRONMENT_NOT_FOUND
@@ -1106,16 +1246,138 @@ components:
 
     Clause:
       type: object
-      required: [attribute, operator]
+      required: [operator]
       description: >-
-        A missing or null context attribute makes every operator false
-        (US-02 AC-2).
+        One test on a context attribute (or, for inSegment / notInSegment, on
+        the subject). A missing or null context attribute makes every operator
+        false (US-02 AC-2). So does a value of the wrong type for the operator
+        (a number where text is needed, an invalid version or date, a regex
+        input over 2,048 bytes) — never an error, and also when `negate` is
+        set: negation inverts the answer only where the operator could be
+        evaluated.
       properties:
-        attribute: { type: string }
+        attribute:
+          type: string
+          description: Required for every operator except inSegment and notInSegment, which must leave it empty.
         operator:
           type: string
-          enum: [equals, in, contains, greaterThan, exists]
-        value: { description: "Scalar for equals/contains, non-empty array for in, number for greaterThan; ignored for exists" }
+          enum:
+            - equals
+            - in
+            - contains
+            - greaterThan
+            - exists
+            - startsWith
+            - endsWith
+            - lessThan
+            - lessThanOrEqual
+            - greaterThanOrEqual
+            - semverEquals
+            - semverLessThan
+            - semverLessThanOrEqual
+            - semverGreaterThan
+            - semverGreaterThanOrEqual
+            - dateBefore
+            - dateAfter
+            - dateEquals
+            - matchesRegex
+            - inSegment
+            - notInSegment
+        value:
+          description: >-
+            equals/contains: string, number or boolean. in: non-empty array.
+            greaterThan, greaterThanOrEqual, lessThan, lessThanOrEqual: number.
+            startsWith/endsWith: non-empty string (case-sensitive).
+            semver*: a valid semantic version (MAJOR.MINOR.PATCH, optional
+            -prerelease and +build; no "v" prefix); build metadata is ignored.
+            date*: an RFC 3339 timestamp such as 2024-05-01T00:00:00Z.
+            matchesRegex: a Go (RE2) regular expression of at most 256 bytes,
+            matched anywhere in the value unless anchored; linear time, never
+            backtracking, and invalid patterns are rejected on save.
+            inSegment/notInSegment: the key of an existing segment (a saved
+            rule cannot name one that does not exist; if it is deleted later,
+            the clause matches nobody, under either operator). Ignored for exists.
+        negate:
+          type: boolean
+          description: >-
+            Invert the operator. Not allowed with exists (a missing attribute
+            never matches) or the segment operators (use the opposite operator).
+
+    SegmentRules:
+      type: array
+      maxItems: 20
+      description: >-
+        ANDed. Same clauses as a flag rule, except inSegment and notInSegment
+        (segments cannot reference segments). At most 20 clauses and 8,192 bytes.
+      items: { $ref: "#/components/schemas/Clause" }
+
+    SegmentSummary:
+      type: object
+      required: [key, name, description, rules, memberCount, version, createdAt, updatedAt]
+      properties:
+        key: { type: string }
+        name: { type: string, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
+        rules: { $ref: "#/components/schemas/SegmentRules" }
+        memberCount: { type: integer, maximum: 10000 }
+        version: { type: integer, format: int64, description: Raised on every change }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Segment:
+      allOf:
+        - $ref: "#/components/schemas/SegmentSummary"
+        - type: object
+          required: [members]
+          properties:
+            members:
+              type: array
+              description: Explicit member subject keys, sorted
+              items: { type: string, minLength: 1, maxLength: 256 }
+
+    SegmentCreateRequest:
+      type: object
+      required: [key, name]
+      additionalProperties: false
+      properties:
+        key: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$" }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
+        rules: { $ref: "#/components/schemas/SegmentRules" }
+        members: { type: array, maxItems: 10000, items: { type: string, minLength: 1, maxLength: 256 } }
+
+    SegmentUpdateRequest:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
+        rules: { type: [array, "null"], description: "null or [] removes the rules", items: { $ref: "#/components/schemas/Clause" } }
+        members: { type: array, maxItems: 10000, description: Replaces the whole member list, items: { type: string, minLength: 1, maxLength: 256 } }
+        expectedVersion: { type: integer, format: int64 }
+
+    SegmentUsage:
+      type: object
+      required: [segmentKey, flags]
+      properties:
+        segmentKey: { type: string }
+        flags:
+          type: array
+          items:
+            type: object
+            required: [flagKey, flagName, environments]
+            properties:
+              flagKey: { type: string }
+              flagName: { type: string }
+              environments:
+                type: array
+                items:
+                  type: object
+                  required: [key, enabled]
+                  properties:
+                    key: { type: string }
+                    enabled: { type: boolean }
 
     TargetingRule:
       type: object

@@ -15,7 +15,7 @@ PGBIN=/opt/homebrew/opt/postgresql@16/bin
 $PGBIN/initdb -D /tmp/helios-pg -U helios --auth=trust -E UTF8
 $PGBIN/pg_ctl -D /tmp/helios-pg -o "-p 55432 -c unix_socket_directories= -c listen_addresses=127.0.0.1" -l /tmp/helios-pg.log start
 $PGBIN/createdb -h 127.0.0.1 -p 55432 -U helios helios_dev
-for f in backend/db/migrations/000*.sql; do
+for f in backend/db/migrations/0*.sql; do
   $PGBIN/psql -h 127.0.0.1 -p 55432 -U helios -d helios_dev -v ON_ERROR_STOP=1 -q -f "$f"
 done
 ```
@@ -63,7 +63,7 @@ cd frontend && npx playwright install chromium && npm run e2e   # needs the stac
 ```
 
 `internal/integration` mounts the real routes on a fresh database per test (migrations
-0001-0008), refuses a non-local server, and checks that user B gets 404 on every one
+0001-0010), refuses a non-local server, and checks that user B gets 404 on every one
 of user A's flags, experiments, SDK keys, audit log, members and invites, with none of
 A's data in any response B receives.
 
