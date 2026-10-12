@@ -15,6 +15,8 @@ import (
 	"helios/backend/internal/server"
 )
 
+const secretSegment = "acme-secret-segment"
+
 var placeholderRE = regexp.MustCompile(`\{([A-Za-z]+)\}`)
 
 // Every route registered on the real router is exercised here, taken from the
@@ -55,14 +57,18 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 	h.expect(200, ghost, "GET", "/environments/"+x.devA+"/flags", nil) // a member, for now
 	h.expect(204, x.a, "DELETE", "/workspaces/"+x.wsA.ID+"/members/"+ghost.id, nil)
 
-	forbidden := []string{secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, x.devA, x.wsA.Name, "alice key", keyID, inviteID, x.expID(), "someone@example.com", x.sdkKeyA[:12]}
+	// A's segment, which routes take by key; its key, name and member are as secret as the flag.
+	h.expect(201, x.a, "POST", "/workspaces/"+x.wsA.ID+"/segments", map[string]any{
+		"key": secretSegment, "name": "Acme secret audience", "members": []string{"acme-secret-member"}})
+
+	forbidden := []string{secretSegment, "Acme secret audience", "acme-secret-member", secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, x.devA, x.wsA.Name, "alice key", keyID, inviteID, x.expID(), "someone@example.com", x.sdkKeyA[:12]}
 	fill := func(path string) string {
 		key := secretFlag
 		if strings.Contains(path, "/experiments/") {
 			key = "acme-secret-exp"
 		}
 		return strings.NewReplacer("{envId}", x.devA, "{wsId}", x.wsA.ID, "{userId}", x.a.id,
-			"{inviteId}", inviteID, "{keyId}", keyID, "{key}", key).Replace(path)
+			"{inviteId}", inviteID, "{keyId}", keyID, "{segKey}", secretSegment, "{key}", key).Replace(path)
 	}
 	assertNoLeak := func(label string, body []byte) {
 		t.Helper()
@@ -90,7 +96,7 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 				if rt.Scope != server.ScopeWorkspace {
 					t.Errorf("%s: has {wsId} but is registered as %q", label, rt.Scope)
 				}
-			case "key", "userId", "inviteId", "keyId":
+			case "key", "userId", "inviteId", "keyId", "segKey":
 				if rt.Scope != server.ScopeEnv && rt.Scope != server.ScopeWorkspace {
 					t.Errorf("%s: {%s} on a route that is not environment- or workspace-scoped", label, m[1])
 				}

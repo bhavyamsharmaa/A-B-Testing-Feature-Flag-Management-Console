@@ -5,7 +5,6 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -30,6 +29,8 @@ var tenantTables = map[string]bool{
 	"workspace_invites":      true,
 	"api_keys":               true,
 	"events":                 true, // 0008
+	"segments":               true, // 0010
+	"segment_members":        true, // 0010
 }
 
 var insertRE = regexp.MustCompile(`(?is)INSERT\s+INTO\s+([a-z_][a-z0-9_]*)\s*(\(([^)]*)\))?`)
@@ -249,13 +250,17 @@ func TestLogCallsAreNotGivenCredentials(t *testing.T) {
 }
 
 // A table nothing uses any more (user_environment_roles: roles moved to the
-// workspace) and the empty segments package have no tenant checks of their
-// own. (events used to be listed here until /track gave it a tenancy review:
-// workspace_id, composite foreign keys, key-derived scope, route test.) They must stay unreachable: any new use
-// is a change that needs a tenancy review, so it must fail here first.
+// workspace) has no tenant checks of its own. (events used to be listed here
+// until /track gave it a tenancy review: workspace_id, composite foreign keys,
+// key-derived scope, route test. The segments package was listed too, as an
+// empty stub, until segments got theirs: migration 0010 puts workspace_id and
+// composite foreign keys on both tables, every route is in the registry and the
+// every-route test, and integration/segments_test.go proves the cross-tenant
+// cases.) It must stay unreachable: any new use is a change that needs a
+// tenancy review, so it must fail here first.
 var deadTableRE = regexp.MustCompile(`(?is)\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+(user_environment_roles)\b`)
 
-func TestDeadTablesAndSegmentsAreUnreachable(t *testing.T) {
+func TestDeadTablesAreUnreachable(t *testing.T) {
 	root := filepath.Join("..", "..")
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -268,11 +273,6 @@ func TestDeadTablesAndSegmentsAreUnreachable(t *testing.T) {
 		file, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			return err
-		}
-		for _, imp := range file.Imports {
-			if strings.Contains(imp.Path.Value, "controlplane/segments") && !strings.Contains(filepath.ToSlash(path), "controlplane/segments/") {
-				t.Errorf("%s imports the empty segments package", path)
-			}
 		}
 		ast.Inspect(file, func(n ast.Node) bool {
 			lit, ok := n.(*ast.BasicLit)
@@ -290,19 +290,5 @@ func TestDeadTablesAndSegmentsAreUnreachable(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-
-	// Transitively, from every binary: nothing links the segments package in.
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go tool not available")
-	}
-	cmd := exec.Command("go", "list", "-deps", "./cmd/api", "./cmd/mkkey", "./cmd/devauth")
-	cmd.Dir = root
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list: %v", err)
-	}
-	if strings.Contains(string(out), "controlplane/segments") {
-		t.Error("a binary links in the segments package, which has no routes or tenant checks")
 	}
 }
