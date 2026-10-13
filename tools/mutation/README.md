@@ -20,3 +20,8 @@ It refuses to run if a file it edits has uncommitted changes, and restores each 
 test run crashes. A mutation that only stops the code compiling is reported as `BROKEN`, not counted.
 Add an entry to `mutations.py` whenever you add a protection that deserves proof. The exit status is
 non-zero if anything survived.
+
+**Equivalent mutants.** One idea was dropped because it cannot be observed: removing the
+`f.workspace_id = fc.workspace_id` condition from the rollback-check query changes nothing, since the
+composite foreign keys already make a flag configuration and its flag belong to one workspace. The
+first full run reported it as SURVIVED; it is defence in depth, not a gap in the tests.
