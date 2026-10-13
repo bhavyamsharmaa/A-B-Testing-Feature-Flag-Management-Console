@@ -47,3 +47,6 @@ go.work.sum
 
 # Production database dumps (rollout G1); never commit
 backend/backups/
+
+# Python bytecode from tools/
+__pycache__/
