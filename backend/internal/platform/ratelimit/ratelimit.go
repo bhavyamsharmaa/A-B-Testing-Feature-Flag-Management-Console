@@ -47,7 +47,10 @@ const (
 	// (a request spends one token per event in its batch).
 	ClassSDKTrack = "sdk_track"
 	// GET .../experiments/{key}/results, per user: the most expensive read.
-	ClassResults        = "results"
+	ClassResults = "results"
+	// POST, PATCH and DELETE on segments, per user: a member-list replace
+	// reads, diffs and rewrites up to 10,000 rows from a body of up to 4 MiB.
+	ClassSegmentWrite   = "segment_write"
 	ClassSDKTrackEvents = "sdk_track_events"
 )
 
@@ -70,7 +73,11 @@ func DefaultRules() map[string]Rule {
 		// few seconds and are nowhere near this.
 		ClassSDKTrack: {PerSecond: 50, Burst: 200},
 		// A dashboard polling every 2-5 seconds fits easily; a loop does not.
-		ClassResults:        {PerSecond: 1, Burst: 20},
+		ClassResults: {PerSecond: 1, Burst: 20},
+		// Editing a segment is a person at a keyboard: a save every few seconds
+		// is busy. 30 writes at once, then one a second, never trips that; a
+		// script replaying 10,000-member bodies does.
+		ClassSegmentWrite:   {PerSecond: 1, Burst: 30},
 		ClassSDKTrackEvents: {PerSecond: 100, Burst: 1000},
 	}
 }

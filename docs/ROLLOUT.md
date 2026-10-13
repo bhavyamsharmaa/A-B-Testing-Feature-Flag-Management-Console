@@ -94,7 +94,9 @@ Names only for secrets. "Recommended" is for production on day one of that relea
 
 Vercel (console), release 2: no new variables. Supabase auth settings: not changed by either release.
 
-**Release 3 (segments):** no new variables in the backend or the console. Limits are
+**Release 3 (segments):** no new variables in the backend or the console; one new rate-limit
+class, `segment_write` (per user, POST/PATCH/DELETE on segments; default 1/s with a burst of 30,
+override with `RATE_LIMITS="segment_write=perSecond/burst"`; reads keep the general limit). Limits are
 constants in `quota` (20 segments per workspace, 10,000 explicit members per segment,
 20 rule clauses / 8,192 bytes per segment); changing them is a code change.
 

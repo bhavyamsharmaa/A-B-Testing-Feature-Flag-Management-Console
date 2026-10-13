@@ -109,6 +109,13 @@ description, rules, member count, version, and for members only **how many were 
 plus the first 10 keys of each** — never the whole list (a test checks that a 400-member segment
 leaves an audit row under 4 KB and that no key beyond the sample appears).
 
+**Rate limit.** Segment writes (create, update, delete) have their own per-user bucket,
+`segment_write`, because a member-list replace reads, diffs and rewrites up to 10,000 rows from a
+body of up to 4 MiB. Default: a burst of 30, then 1 per second, which a person editing never
+reaches (the general per-user limit is 30/s, burst 300, and still applies). Beyond it: `429
+RATE_LIMITED` with `Retry-After`. Reads are not in this bucket. Tune with
+`RATE_LIMITS="segment_write=perSecond/burst"`, like the other classes.
+
 Lock order, everywhere: segment rows first, flag configurations second (see the `segments`
 package comment). A flag save that names segments takes them `FOR SHARE` so a segment cannot be
 deleted between the existence check and the save; segment create takes the workspace row (the

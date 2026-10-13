@@ -224,3 +224,17 @@ func TestTakeNIsAllOrNothing(t *testing.T) {
 		t.Fatal("keys share a bucket")
 	}
 }
+
+func TestSegmentWriteClass(t *testing.T) {
+	d, ok := DefaultRules()[ClassSegmentWrite]
+	if !ok || d.Burst < 30 || d.PerSecond < DefaultRules()[ClassResults].PerSecond {
+		t.Errorf("default %+v: normal editing (a save every few seconds) must never hit it", d)
+	}
+	if user := DefaultRules()[ClassUser]; d.PerSecond >= user.PerSecond || d.Burst >= user.Burst {
+		t.Errorf("segment writes %+v must be tighter than the general per-user limit %+v", d, user)
+	}
+	cfg, err := ParseConfig("", "segment_write=0.5/5", "", "")
+	if err != nil || cfg.Rules[ClassSegmentWrite] != (Rule{PerSecond: 0.5, Burst: 5}) {
+		t.Errorf("RATE_LIMITS override: %+v %v", cfg.Rules, err)
+	}
+}

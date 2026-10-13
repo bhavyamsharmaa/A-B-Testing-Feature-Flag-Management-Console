@@ -285,13 +285,14 @@ func New(d Deps) *Router {
 	env("POST /environments/{envId}/flags/{key}/kill", rbac.Min(rbac.Editor), fl.Kill)
 
 	// Segments are workspace-wide (every environment uses the same ones):
-	// any member reads, editors and above write.
+	// any member reads (default limits), editors and above write, behind a
+	// tighter per-user limit of their own (the writes are the expensive part).
 	workspace("GET /workspaces/{wsId}/segments", rbac.WorkspaceViewer, sg.List)
 	workspace("GET /workspaces/{wsId}/segments/{segKey}", rbac.WorkspaceViewer, sg.Get)
 	workspace("GET /workspaces/{wsId}/segments/{segKey}/usage", rbac.WorkspaceViewer, sg.Usage)
-	workspace("POST /workspaces/{wsId}/segments", rbac.WorkspaceEditor, sg.Create)
-	workspace("PATCH /workspaces/{wsId}/segments/{segKey}", rbac.WorkspaceEditor, sg.Update)
-	workspace("DELETE /workspaces/{wsId}/segments/{segKey}", rbac.WorkspaceEditor, sg.Delete)
+	workspace("POST /workspaces/{wsId}/segments", rbac.WorkspaceEditor, sg.Create, perUser(ratelimit.ClassSegmentWrite))
+	workspace("PATCH /workspaces/{wsId}/segments/{segKey}", rbac.WorkspaceEditor, sg.Update, perUser(ratelimit.ClassSegmentWrite))
+	workspace("DELETE /workspaces/{wsId}/segments/{segKey}", rbac.WorkspaceEditor, sg.Delete, perUser(ratelimit.ClassSegmentWrite))
 
 	// Same requirement as listing flags: any role in {envId}.
 	env("GET /environments/{envId}/audit-logs", rbac.Min(rbac.Viewer), al.List)

@@ -13,11 +13,23 @@ import (
 
 	"helios/backend/internal/controlplane/quota"
 	"helios/backend/internal/dataplane/evaluation"
+	"helios/backend/internal/platform/ratelimit"
 	"helios/backend/internal/platform/redisx"
 	"helios/backend/internal/server"
 )
 
 // ---- helpers ------------------------------------------------------------
+
+// newSegTenants is newTenants with the segment-write limit raised out of the
+// way: these tests make dozens of writes in a row on purpose. The limit itself
+// is tested in TestSegmentWritesAreRateLimited.
+func newSegTenants(t *testing.T) *tenants {
+	return newTenantsWith(t, func(d *server.Deps) {
+		d.Limiter = ratelimit.New(ratelimit.Config{Rules: map[string]ratelimit.Rule{
+			ratelimit.ClassSegmentWrite: {PerSecond: 1000, Burst: 1000},
+		}, StreamsPerKey: 100})
+	})
+}
 
 func segPath(ws string, rest ...string) string {
 	return "/workspaces/" + ws + "/segments" + strings.Join(rest, "")
@@ -118,7 +130,7 @@ func flagVersion(t *testing.T, x *tenants, env, flag string) int64 {
 // ---- evaluation ----------------------------------------------------------
 
 func TestSegmentEvaluationEndToEnd(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	h := x.h
 	ws := x.wsA.ID
 	h.expect(201, x.a, "POST", segPath(ws), segReq("beta", []string{"vip-1", "vip-2"},
@@ -167,7 +179,7 @@ func TestSegmentEvaluationEndToEnd(t *testing.T) {
 // The members lookup is one probe of the members table's primary key, never a
 // scan, whatever the segment's size.
 func TestMemberLookupUsesTheIndex(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	h := x.h
 	members := make([]string, quota.MaxSegmentMembers)
 	for i := range members {
@@ -207,7 +219,7 @@ func TestMemberLookupUsesTheIndex(t *testing.T) {
 // ---- propagation and audit ---------------------------------------------------
 
 func TestSegmentChangesPropagateAndAreAudited(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	h := x.h
 	ws := x.wsA.ID
 	members := make([]string, 400)
@@ -316,7 +328,7 @@ func TestSegmentChangesPropagateAndAreAudited(t *testing.T) {
 // ---- validation -------------------------------------------------------------
 
 func TestSegmentValidation(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	h := x.h
 	ws := x.wsA.ID
 	post := func(want int, body any) []byte { return h.expect(want, x.a, "POST", segPath(ws), body) }
@@ -418,7 +430,7 @@ func TestSegmentValidation(t *testing.T) {
 }
 
 func TestFlagRulesCannotReferenceUnknownSegmentsOrUseBadOperators(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	h := x.h
 	h.expect(201, x.a, "POST", "/environments/"+x.devA+"/flags", boolFlag("f"))
 	patch := func(want int, rules ...map[string]any) []byte {
@@ -451,7 +463,7 @@ func TestFlagRulesCannotReferenceUnknownSegmentsOrUseBadOperators(t *testing.T) 
 }
 
 func TestNewOperatorsEvaluateThroughTheAPI(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	x.ruleFlag("ops",
 		map[string]any{"attribute": "email", "operator": "endsWith", "value": "@helios.dev"},
 		map[string]any{"attribute": "app", "operator": "semverGreaterThanOrEqual", "value": "2.0.0"},
@@ -484,7 +496,7 @@ func TestNewOperatorsEvaluateThroughTheAPI(t *testing.T) {
 // ---- delete, usage, stale references ------------------------------------------------
 
 func TestDeleteSegment(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	h := x.h
 	ws := x.wsA.ID
 	h.expect(201, x.a, "POST", segPath(ws), segReq("beta", []string{"vip"}))
@@ -566,7 +578,7 @@ func TestDeleteSegment(t *testing.T) {
 // ---- tenants, roles, quotas -----------------------------------------------------------
 
 func TestSegmentsAreTenantScoped(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	h := x.h
 	wsA, wsB := x.wsA.ID, x.wsB.ID
 	h.expect(201, x.a, "POST", segPath(wsA), segReq("beta", []string{"u1", "acme-only-member"}, clause("plan", "equals", "acme-secret-plan")))
@@ -633,7 +645,7 @@ func TestSegmentsAreTenantScoped(t *testing.T) {
 }
 
 func TestSegmentRoles(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	h := x.h
 	ws := x.wsA.ID
 	h.expect(201, x.a, "POST", segPath(ws), segReq("beta", []string{"u1"}))
@@ -662,7 +674,7 @@ func TestSegmentRoles(t *testing.T) {
 }
 
 func TestSegmentCountQuota(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	h := x.h
 	ws := x.wsA.ID
 	for i := 0; i < quota.MaxSegments; i++ {
@@ -680,7 +692,7 @@ func TestSegmentCountQuota(t *testing.T) {
 
 // Parallel creates cannot overshoot the quota (the workspace row lock serialises them).
 func TestSegmentCountQuotaHoldsUnderConcurrency(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	h := x.h
 	ws := x.wsA.ID
 	for i := 0; i < quota.MaxSegments-2; i++ {
@@ -715,7 +727,7 @@ func TestSegmentCountQuotaHoldsUnderConcurrency(t *testing.T) {
 // once and with the database slowed down so the windows are wide: nothing
 // deadlocks (a deadlock would surface as a 500) and nothing is left dangling.
 func TestSegmentFlagAndDeleteRaceWithoutDeadlock(t *testing.T) {
-	x := newTenants(t)
+	x := newSegTenants(t)
 	h := x.h
 	ws := x.wsA.ID
 	h.expect(201, x.a, "POST", segPath(ws), segReq("racy", []string{"a"}))
@@ -804,4 +816,29 @@ func TestRealRedisCarriesSegmentEvents(t *testing.T) {
 	if other := sB.next(400 * time.Millisecond); other != "" {
 		t.Errorf("B's stream heard A's segment change: %q", other)
 	}
+}
+
+// Segment writes have a tighter per-user bucket of their own; reads keep the
+// default. A rejected write is 429 RATE_LIMITED with Retry-After, and another
+// user (or a read) is not affected.
+func TestSegmentWritesAreRateLimited(t *testing.T) {
+	h := limitedHarness(t, 0, map[string]ratelimit.Rule{ratelimit.ClassSegmentWrite: tiny(3)})
+	x := &tenants{h: h, a: h.newUser("alice"), b: h.newUser("bob")}
+	x.wsA, x.wsB = h.me(x.a).Workspaces[0], h.me(x.b).Workspaces[0]
+	ws := x.wsA.ID
+
+	h.expect(201, x.a, "POST", segPath(ws), segReq("one", []string{"a"}))
+	h.expect(200, x.a, "PATCH", segPath(ws, "/one"), map[string]any{"members": []string{"a", "b"}})
+	h.expect(204, x.a, "DELETE", segPath(ws, "/one"), nil)
+	// the fourth write in a row is refused, whichever write it is
+	h.expect429(x.a, "POST", segPath(ws), segReq("two", nil))
+	h.expect429(x.a, "PATCH", segPath(ws, "/one"), map[string]any{"name": "x"})
+	h.expect429(x.a, "DELETE", segPath(ws, "/one"), nil)
+	if h.count(`SELECT count(*) FROM segments WHERE workspace_id = $1::uuid`, ws) != 0 {
+		t.Error("a refused write changed something")
+	}
+	// reads still work for the same user, and the bucket is per user
+	h.expect(200, x.a, "GET", segPath(ws), nil)
+	h.expect(200, x.a, "GET", "/environments/"+envID(t, x.wsA, "dev")+"/flags", nil)
+	h.expect(201, x.b, "POST", segPath(x.wsB.ID), segReq("bobs", nil))
 }

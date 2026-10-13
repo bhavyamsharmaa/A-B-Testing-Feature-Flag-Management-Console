@@ -352,7 +352,9 @@ paths:
         20 rule clauses and 8,192 bytes of rule definition (409
         QUOTA_EXCEEDED). Member keys are exact, 1-256 characters, with no
         control characters. The body may be up to 4 MiB (413 beyond).
-        Audited as segment.create.
+        Audited as segment.create. Segment writes (this route, PATCH and
+        DELETE) share a per-user rate limit tighter than the general one (burst
+        30, then 1 per second by default): 429 RATE_LIMITED with Retry-After.
       security: [{ supabaseJWT: [] }]
       requestBody:
         required: true
