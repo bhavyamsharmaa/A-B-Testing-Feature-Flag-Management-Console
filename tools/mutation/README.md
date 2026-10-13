@@ -5,8 +5,9 @@ tests that should notice, and expects a failure (then puts the file back). Resul
 full run are in [RESULTS.md](RESULTS.md).
 
 **Run it:** `python3 tools/mutation/run.py all --results tools/mutation/RESULTS.md`
-(Python 3, no packages). Takes about 15-20 minutes in all: `backend` ~6 minutes, `frontend`
-~1 minute, `ui` ~2 minutes (more on a slow machine). `--only <word>` runs just matching entries.
+(Python 3, no packages). The full run of 55 mutations took about 2.5 minutes on a laptop with warm
+Go and Playwright caches (a cold first run takes longer, since each backend mutation recompiles).
+`--only <word>` runs just matching entries.
 
 Needs, all on this machine (anything else is refused):
 
