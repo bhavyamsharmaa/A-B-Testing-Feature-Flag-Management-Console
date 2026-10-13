@@ -107,7 +107,7 @@ export default function AuditPage() {
                 )}
 
                 {hasGlobal && (
-                  <p className="text-xs text-zinc-500">Entries marked 'All environments' apply to every environment.</p>
+                  <p className="text-xs text-zinc-500">Entries marked 'Workspace-level' belong to the whole workspace (a new flag, a segment), not to one environment. Each is a single entry; it is listed in every environment's log, and your filters apply to it like to any other.</p>
                 )}
               </>
             )}

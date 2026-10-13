@@ -120,7 +120,7 @@ export interface AuditEntry {
   severity: 'info' | 'critical'
   diffBefore: unknown
   diffAfter: unknown
-  /** "global" = not tied to one environment (e.g. flag.create); shown in every environment's log. */
+  /** "global" = a workspace-level change, not tied to one environment (flag.create, segment.*); one entry, listed in every environment's log. */
   scope: 'environment' | 'global'
 }
 

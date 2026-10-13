@@ -53,10 +53,11 @@ export function AuditTable({ entries }: { entries: AuditEntry[] }) {
                       <span className={kill ? 'font-semibold text-red-200' : 'text-zinc-100'}>{actionLabel(e.action)}</span>
                       {e.scope === 'global' && (
                         <span
-                          title="Not tied to one environment; shown in every environment's log"
+                          title="A workspace-level change: it belongs to the whole workspace, not to one environment. It is one entry, listed in each environment's log."
+                          data-testid="workspace-level"
                           className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-medium text-accent"
                         >
-                          All environments
+                          Workspace-level
                         </span>
                       )}
                     </div>

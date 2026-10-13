@@ -386,6 +386,14 @@ func TestSegmentValidation(t *testing.T) {
 	if b := h.expect(409, x.a, "PATCH", segPath(ws, "/ok"), map[string]any{"members": tooMany}); errCode(t, b) != "QUOTA_EXCEEDED" {
 		t.Errorf("too many members at update: %s", b)
 	}
+	// exactly the maximum is accepted by an update too, and one more is not
+	h.expect(200, x.a, "PATCH", segPath(ws, "/ok"), map[string]any{"members": tooMany[:quota.MaxSegmentMembers]})
+	if got := x.getSeg(x.a, ws, "ok").MemberCount; got != quota.MaxSegmentMembers {
+		t.Errorf("a save at the maximum: %d members", got)
+	}
+	if b := h.expect(409, x.a, "PATCH", segPath(ws, "/ok"), map[string]any{"members": tooMany}); errCode(t, b) != "QUOTA_EXCEEDED" || x.getSeg(x.a, ws, "ok").MemberCount != quota.MaxSegmentMembers {
+		t.Errorf("one over the maximum: %s", b)
+	}
 	// Duplicates do not count twice.
 	dups := make([]string, 0, 3*quota.MaxSegmentMembers)
 	for i := 0; i < 3; i++ {
@@ -841,4 +849,74 @@ func TestSegmentWritesAreRateLimited(t *testing.T) {
 	h.expect(200, x.a, "GET", segPath(ws), nil)
 	h.expect(200, x.a, "GET", "/environments/"+envID(t, x.wsA, "dev")+"/flags", nil)
 	h.expect(201, x.b, "POST", segPath(x.wsB.ID), segReq("bobs", nil))
+}
+
+// Segment changes are workspace-level: one audit row each, listed once in every
+// environment's log (never twice in one), found by the filters that should
+// find it, and environment-specific rows stay in their own environment.
+func TestWorkspaceLevelAuditRowsAreListedOnce(t *testing.T) {
+	x := newSegTenants(t)
+	h := x.h
+	ws := x.wsA.ID
+	staging := envID(t, x.wsA, "staging")
+	h.expect(201, x.a, "POST", segPath(ws), segReq("beta", []string{"u1"}))
+	x.ruleFlag("gated", inSeg("beta")) // flag.create (workspace-level) and flag.update in dev (environment-specific)
+	h.expect(200, x.a, "PATCH", segPath(ws, "/beta"), map[string]any{"members": []string{"u1", "u2"}})
+
+	type row struct {
+		ID                        int64
+		Action, ResourceID, Scope string
+	}
+	list := func(env, query string) []row {
+		return decode[struct{ Entries []row }](t, h.expect(200, x.a, "GET", "/environments/"+env+"/audit-logs"+query, nil)).Entries
+	}
+	count := func(rows []row, action, resource string) (n int) {
+		for _, r := range rows {
+			if r.Action == action && (resource == "" || r.ResourceID == resource) {
+				n++
+			}
+		}
+		return
+	}
+	for _, env := range []string{x.devA, staging} {
+		rows := list(env, "")
+		seen := map[int64]bool{}
+		for _, r := range rows {
+			if seen[r.ID] {
+				t.Errorf("entry %d is listed twice in one environment's log", r.ID)
+			}
+			seen[r.ID] = true
+		}
+		if count(rows, "segment.create", "beta") != 1 || count(rows, "segment.update", "beta") != 1 {
+			t.Errorf("env %s: segment rows create=%d update=%d, want one each", env, count(rows, "segment.create", "beta"), count(rows, "segment.update", "beta"))
+		}
+		for _, r := range rows {
+			if r.Action == "segment.create" && r.Scope != "global" {
+				t.Errorf("segment.create has scope %q, want global (workspace-level)", r.Scope)
+			}
+		}
+		// the filters that should include it do
+		if count(list(env, "?action=segment.update"), "segment.update", "beta") != 1 ||
+			count(list(env, "?resourceId=beta"), "segment.create", "beta") != 1 ||
+			count(list(env, "?severity=info"), "segment.create", "beta") != 1 {
+			t.Errorf("env %s: a filter dropped the workspace-level row", env)
+		}
+		if n := len(list(env, "?action=segment.update&resourceId=nope")); n != 0 {
+			t.Errorf("a filter that does not match returned %d rows", n)
+		}
+	}
+	// environment-specific rows are unaffected: the dev flag.update is in dev only
+	if count(list(x.devA, ""), "flag.update", "gated") != 1 || count(list(staging, ""), "flag.update", "gated") != 0 {
+		t.Error("flag.update in dev must appear in dev's log and not in staging's")
+	}
+	for _, r := range list(x.devA, "?action=flag.update") {
+		if r.Scope != "environment" {
+			t.Errorf("flag.update scope %q, want environment", r.Scope)
+		}
+	}
+	// and another workspace sees none of it
+	bRows := decode[struct{ Entries []row }](t, h.expect(200, x.b, "GET", "/environments/"+x.devB+"/audit-logs", nil)).Entries
+	if count(bRows, "segment.create", "") != 0 {
+		t.Error("B's log shows A's segment changes")
+	}
 }

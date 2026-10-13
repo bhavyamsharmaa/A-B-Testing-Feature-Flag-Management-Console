@@ -5,6 +5,7 @@ test.describe.configure({ mode: 'serial' })
 
 const alice = { email: `seg-alice-${stamp}@test.dev`, password: 'password123' }
 const bob = { email: `seg-bob-${stamp}@test.dev`, password: 'password123' }
+const dave = { email: `seg-dave-${stamp}@test.dev`, password: 'password123' }
 const carol = { email: `seg-carol-${stamp}@test.dev`, password: 'password123' }
 const FLAG = 'seg-gated-banner'
 const SEGMENT = 'beta-testers'
@@ -107,24 +108,21 @@ test('segments: create, bulk members, use in a flag rule, new operators, delete 
   await expect(dialog(page).getByTestId('member-count')).toContainText('4 of 10,000 members')
   // the pasted text is still there to fix
   await expect(area).toHaveValue(/user-5/)
-  const bulk = Array.from({ length: 9_996 }, (_, i) => `bulk-${String(i).padStart(5, '0')}`)
+  // A few hundred members are enough to exercise the editor; the 10,000 limit is covered by the unit spec
+  // (mergeMembers) and by the Go tests (a save at the maximum succeeds, one over is refused).
+  const bulk = Array.from({ length: 296 }, (_, i) => `bulk-${String(i).padStart(5, '0')}`)
   await area.fill([...bulk, ...bulk.slice(0, 50), 'user-1'].join('\n')) // repeats and an existing member are ignored
   await dialog(page).getByRole('button', { name: 'Add keys' }).click()
-  await expect(dialog(page).getByTestId('member-count')).toContainText('10,000 of 10,000 members')
-  await expect(dialog(page).getByTestId('member-count')).toContainText('Limit reached')
-  await area.fill('one-more-than-allowed')
-  await dialog(page).getByRole('button', { name: 'Add keys' }).click()
-  await expect(dialog(page).getByRole('alert').filter({ hasText: 'at most 10,000' })).toContainText('Nothing was added')
-  await expect(dialog(page).getByTestId('member-count')).toContainText('10,000 of 10,000 members')
+  await expect(dialog(page).getByTestId('member-count')).toContainText('300 of 10,000 members')
   // only a screenful is drawn; the filter finds the rest
   expect(await dialog(page).getByRole('list', { name: 'Members' }).getByRole('listitem').count()).toBeLessThanOrEqual(100)
-  await dialog(page).getByLabel('Filter members').fill('bulk-04242')
+  await dialog(page).getByLabel('Filter members').fill('bulk-00242')
   await expect(dialog(page).getByRole('list', { name: 'Members' }).getByRole('listitem')).toHaveCount(1)
-  await dialog(page).getByRole('button', { name: 'Remove member bulk-04242' }).click()
-  await expect(dialog(page).getByTestId('member-count')).toContainText('9,999 of 10,000 members')
+  await dialog(page).getByRole('button', { name: 'Remove member bulk-00242' }).click()
+  await expect(dialog(page).getByTestId('member-count')).toContainText('299 of 10,000 members')
   await dialog(page).getByRole('button', { name: 'Save changes' }).click()
   await expect(dialog(page)).toHaveCount(0)
-  await expect(card).toContainText('9,999 explicit members')
+  await expect(card).toContainText('299 explicit members')
 
   // ---- Use it in a flag rule through the targeting editor ------------------------------
   await page.getByRole('link', { name: 'Flags' }).click()
@@ -149,7 +147,7 @@ test('segments: create, bulk members, use in a flag rule, new operators, delete 
   const sdkKey = await page.getByLabel('New SDK key').inputValue()
   expect((await evaluate(api, sdkKey, 'user-1')).variationId).toBe('off') // explicit member
   expect((await evaluate(api, sdkKey, 'bulk-00007')).variationId).toBe('off') // one of the bulk members
-  expect((await evaluate(api, sdkKey, 'bulk-04242')).variationId).toBe('on') // removed in the editor
+  expect((await evaluate(api, sdkKey, 'bulk-00242')).variationId).toBe('on') // removed in the editor
   expect((await evaluate(api, sdkKey, 'stranger', { plan: 'gold' })).variationId).toBe('off') // matches the segment's rule
   expect((await evaluate(api, sdkKey, 'stranger', { plan: 'free' })).variationId).toBe('on')
 
@@ -343,5 +341,48 @@ test('segments: phone width, loading error and keyboard use', async ({ browser }
   await page.unroute('**/segments')
   await page.getByRole('button', { name: 'Retry' }).click()
   await expect(page.getByTestId('segments-empty')).toBeVisible()
+  await p.context.close()
+})
+
+test('segments: a segment change is one workspace-level audit entry; environment rows stay in their environment', async ({ browser }) => {
+  const api = await pwRequest.newContext()
+  const p = await newUserPage(browser)
+  const page = p.page
+  await signUp(page, dave)
+  const t = await token(api, dave)
+  const auth = { headers: { Authorization: `Bearer ${t}` } }
+  const me = (await (await api.get(`${API}/me`, auth)).json()) as { activeWorkspaceId: string; workspaces: { id: string; environments: { id: string; key: string }[] }[] }
+  const ws = me.workspaces.find((w) => w.id === me.activeWorkspaceId)!
+  const dev = ws.environments.find((e) => e.key === 'dev')!.id
+  expect((await api.post(`${API}/workspaces/${ws.id}/segments`, { ...auth, data: { key: 'audited-seg', name: 'Audited', members: ['u1'] } })).status()).toBe(201)
+  expect((await api.post(`${API}/environments/${dev}/flags`, { ...auth, data: { key: 'audited-flag', name: 'Audited flag', variationType: 'boolean', variations: [{ id: 'on', value: true }, { id: 'off', value: false }] } })).status()).toBe(201)
+  expect((await api.patch(`${API}/environments/${dev}/flags/audited-flag`, { ...auth, data: { enabled: true } })).status()).toBe(200) // flag.update: dev only
+
+  await page.goto('/console/audit')
+  const row = (text: string) => page.getByRole('row').filter({ hasText: text })
+  // in dev: the segment entry once, labelled workspace-level; the flag.update row is plain
+  await expect(row('Segment created')).toHaveCount(1)
+  await expect(row('Segment created').getByTestId('workspace-level')).toHaveText('Workspace-level')
+  await expect(row('Flag updated')).toHaveCount(1)
+  await expect(row('Flag updated').getByTestId('workspace-level')).toHaveCount(0)
+  await expect(page.getByText("Entries marked 'Workspace-level' belong to the whole workspace")).toBeVisible()
+  await shot(page, '32-audit-workspace-level.png', { fullPage: false })
+
+  // a filter that should include it does (and one that should not, does not)
+  await page.getByLabel('Action').selectOption('segment.create')
+  await expect(page.getByRole('row').filter({ hasText: 'Segment created' })).toHaveCount(1)
+  await expect(page.getByRole('row').filter({ hasText: 'Flag updated' })).toHaveCount(0)
+  await page.getByLabel('Action').selectOption('flag.update')
+  await expect(page.getByRole('row').filter({ hasText: 'Segment created' })).toHaveCount(0)
+  await page.getByLabel('Action').selectOption('')
+
+  // in staging: still one segment entry, labelled the same; the dev-only flag.update is not there
+  await page.getByRole('tab', { name: 'staging' }).click()
+  await expect(page.getByRole('tab', { name: 'staging' })).toHaveAttribute('aria-selected', 'true')
+  await expect(row('Segment created')).toHaveCount(1)
+  await expect(row('Segment created').getByTestId('workspace-level')).toHaveCount(1)
+  await expect(row('Flag updated')).toHaveCount(0)
+
+  await api.dispose()
   await p.context.close()
 })

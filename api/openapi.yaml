@@ -656,9 +656,14 @@ paths:
         page's nextCursor as `before` to get the next page. Read-only.
 
         Returns entries recorded against {envId}, plus entries that belong to
-        no single environment, marked `scope: global`. Today that is
-        flag.create, because a flag is created in every environment at once,
-        so those entries appear in every environment's log.
+        no single environment, marked `scope: global` (the console labels them
+        "Workspace-level"). Today that is flag.create (a flag is created in
+        every environment at once) and every segment.* action (segments are
+        shared by the whole workspace). Each such entry is ONE row: it appears
+        once in each environment's log, never twice in one response, and the
+        action, resourceType, resourceId and severity filters apply to it like
+        to any other row. Environment-specific entries (flag.update, flag.kill)
+        appear only in their own environment's log.
 
         Diffs are returned exactly as recorded. Writers redact API keys
         (api_key.create stores "[REDACTED]"), but flag and member diffs
@@ -1510,7 +1515,9 @@ components:
         scope:
           type: string
           enum: [environment, global]
-          description: global = not tied to one environment (flag.create); shown in every environment's log.
+          description: >-
+            global = a workspace-level change, not tied to one environment
+            (flag.create, segment.*); one entry, listed once in every environment's log.
 
     AuditLogList:
       type: object
