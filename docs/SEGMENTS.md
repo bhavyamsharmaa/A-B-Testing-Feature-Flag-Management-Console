@@ -151,6 +151,53 @@ does not know simply does not match.
 `evaluation/testdata/legacy_golden.txt`: ~7,700 results from a corpus of configurations and
 contexts, recorded from the evaluator *before* this change, compared byte for byte.
 
+### Rolling back to a backend older than segments
+
+**Before rolling back, find the flags that use the new features and revert them.** A backend from
+before this release does not know the segment clauses (`inSegment`, `notInSegment`), the added
+operators or `negate`. It does not refuse them: it treats a clause it does not understand as
+**no match**, so the stored rule silently stops matching and those users fall through to the next
+rule or the rollout. Nothing errors and nothing is logged, so look first.
+
+List them (read-only; flag keys, environment keys and feature names only: no member keys, no rule
+values). Either run the command, which prints per workspace and can fail a script:
+
+```bash
+DATABASE_URL=... go run ./cmd/segmentusage             # list
+DATABASE_URL=... go run ./cmd/segmentusage -fail-if-any  # exit 1 if anything is listed
+```
+
+or run this query yourself (`psql`; it changes nothing):
+
+```sql
+WITH clauses AS (
+    SELECT fc.id AS config_id, c
+    FROM flag_configs fc,
+         jsonb_array_elements(fc.targeting_rules) AS r,
+         jsonb_array_elements(CASE WHEN jsonb_typeof(r -> 'clauses') = 'array' THEN r -> 'clauses' ELSE '[]'::jsonb END) AS c
+), features AS (
+    SELECT config_id, c ->> 'operator' AS feature FROM clauses
+    WHERE c ->> 'operator' NOT IN ('equals', 'in', 'contains', 'greaterThan', 'exists')
+    UNION
+    SELECT config_id, 'negate' FROM clauses WHERE c -> 'negate' = 'true'::jsonb
+)
+SELECT fc.workspace_id::text, f.key, e.key, array_agg(DISTINCT ft.feature ORDER BY ft.feature)
+FROM features ft
+JOIN flag_configs fc ON fc.id = ft.config_id
+JOIN flags f ON f.id = fc.flag_id AND f.workspace_id = fc.workspace_id
+JOIN environments e ON e.id = fc.environment_id AND e.workspace_id = fc.workspace_id
+GROUP BY fc.workspace_id, f.key, e.key
+ORDER BY fc.workspace_id, f.key, e.key
+```
+
+For each row: in the console's targeting editor remove the clause (or the rule), or replace the
+operator with an old one (`equals`, `in`, `contains`, `greaterThan`, `exists`), then save. Run the
+check again until it prints nothing, and only then redeploy the older backend. Segments themselves
+can stay in the database: an older backend never reads the tables. The check lists *flag
+configurations* (a flag in an environment), so a flag used in dev and staging shows twice. The
+operators counted as "old" are `evaluation.LegacyOperators`, and a test keeps the query in step
+with the evaluator.
+
 ## Console
 
 * **Segments** page (`/console/segments`): list with member and rule counts, create, edit,

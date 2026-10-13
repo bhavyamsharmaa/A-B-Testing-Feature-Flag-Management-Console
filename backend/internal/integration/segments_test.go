@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"helios/backend/internal/controlplane/quota"
+	"helios/backend/internal/controlplane/segments"
 	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/platform/ratelimit"
 	"helios/backend/internal/platform/redisx"
@@ -918,5 +919,98 @@ func TestWorkspaceLevelAuditRowsAreListedOnce(t *testing.T) {
 	bRows := decode[struct{ Entries []row }](t, h.expect(200, x.b, "GET", "/environments/"+x.devB+"/audit-logs", nil)).Entries
 	if count(bRows, "segment.create", "") != 0 {
 		t.Error("B's log shows A's segment changes")
+	}
+}
+
+// The rollback check lists exactly the flag configurations that use something
+// an older evaluator would not understand, and only identifiers.
+func TestUsesNewFeaturesSQL(t *testing.T) {
+	x := newSegTenants(t)
+	h := x.h
+	staging := envID(t, x.wsA, "staging")
+	h.expect(201, x.a, "POST", segPath(x.wsA.ID), segReq("acme-secret-segment", []string{"acme-secret-member"}))
+
+	valueFor := map[string]any{
+		"equals": "x", "in": []any{"x"}, "contains": "x", "greaterThan": 1, "exists": nil, "startsWith": "x", "endsWith": "x",
+		"lessThan": 1, "lessThanOrEqual": 1, "greaterThanOrEqual": 1,
+		"semverEquals": "1.0.0", "semverLessThan": "1.0.0", "semverLessThanOrEqual": "1.0.0", "semverGreaterThan": "1.0.0", "semverGreaterThanOrEqual": "1.0.0",
+		"dateBefore": "2024-01-01T00:00:00Z", "dateAfter": "2024-01-01T00:00:00Z", "dateEquals": "2024-01-01T00:00:00Z",
+		"matchesRegex": "^acme-secret-pattern", "inSegment": "acme-secret-segment", "notInSegment": "acme-secret-segment",
+	}
+	legacy := map[string]bool{}
+	for _, op := range evaluation.LegacyOperators {
+		legacy[op] = true
+	}
+	want := map[string]string{} // flag key -> features
+	for i, op := range evaluation.AllOperators {
+		c := map[string]any{"attribute": "a", "operator": op}
+		if op == "inSegment" || op == "notInSegment" {
+			c["attribute"] = ""
+		}
+		if v := valueFor[op]; v != nil {
+			c["value"] = v
+		}
+		key := fmt.Sprintf("flag-%02d-%s", i, strings.ToLower(op))
+		x.ruleFlag(key, c)
+		if !legacy[op] {
+			want[key] = op
+		}
+	}
+	// negate on a legacy operator counts; a plain legacy flag does not; one flag with two features
+	x.ruleFlag("flag-negated", map[string]any{"attribute": "a", "operator": "equals", "value": "x", "negate": true})
+	want["flag-negated"] = "negate"
+	x.ruleFlag("flag-two", map[string]any{"attribute": "a", "operator": "startsWith", "value": "x", "negate": true}, inSeg("acme-secret-segment"))
+	want["flag-two"] = "inSegment,negate,startsWith"
+	h.expect(201, x.a, "POST", "/environments/"+x.devA+"/flags", boolFlag("flag-none")) // no rules at all
+	// the same flag in a second environment is listed under both
+	h.expect(200, x.a, "PATCH", "/environments/"+staging+"/flags/flag-two", map[string]any{
+		"targetingRules": []map[string]any{{"clauses": []map[string]any{inSeg("acme-secret-segment")}, "variationId": "on"}}})
+	// another workspace
+	h.expect(201, x.b, "POST", segPath(x.wsB.ID), segReq("bobs", nil))
+	x.ruleFlagAs(x.b, x.devB, "bobs-flag", notInSeg("bobs"))
+
+	uses, err := segments.FlagsUsingNewFeatures(context.Background(), h.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, u := range uses {
+		if u.WorkspaceID == x.wsA.ID {
+			k := u.FlagKey
+			if u.Environment != "dev" {
+				k += "@" + u.Environment
+			}
+			got[k] = strings.Join(u.Features, ",")
+		}
+	}
+	want["flag-two@staging"] = "inSegment"
+	if len(got) != len(want) {
+		t.Errorf("listed %d flag configurations, want %d:\n got %v\nwant %v", len(got), len(want), got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: features %q, want %q", k, got[k], v)
+		}
+	}
+	for k := range got {
+		if _, ok := want[k]; !ok {
+			t.Errorf("%s is listed but uses nothing new", k)
+		}
+	}
+	var b2 []string
+	for _, u := range uses {
+		if u.WorkspaceID == x.wsB.ID {
+			b2 = append(b2, u.FlagKey+"@"+u.Environment+":"+strings.Join(u.Features, ","))
+		}
+	}
+	if strings.Join(b2, ";") != "bobs-flag@dev:notInSegment" {
+		t.Errorf("workspace B: %v", b2)
+	}
+	// identifiers only: no member key, rule value or segment key leaks into what is returned
+	dump := fmt.Sprint(uses)
+	for _, secret := range []string{"acme-secret-member", "acme-secret-pattern"} {
+		if strings.Contains(dump, secret) {
+			t.Errorf("the check's output contains %q", secret)
+		}
 	}
 }

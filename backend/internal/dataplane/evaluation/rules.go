@@ -35,6 +35,17 @@ const (
 	OpNotInSegment = "notInSegment"
 )
 
+// LegacyOperators are the operators that existed before segments. An evaluator
+// of that age treats every other operator as "no match" (see
+// segments.UsesNewFeaturesSQL, which lists exactly these).
+var LegacyOperators = []string{OpEquals, OpIn, OpContains, OpGreaterThan, OpExists}
+
+// AllOperators is every operator a clause may use today.
+var AllOperators = append(append([]string{}, LegacyOperators...),
+	OpStartsWith, OpEndsWith, OpLessThan, OpLessThanOrEqual, OpGreaterThanOrEqual,
+	OpSemverEquals, OpSemverLessThan, OpSemverLessOrEqual, OpSemverGreaterThan, OpSemverGreaterOrEqual,
+	OpDateBefore, OpDateAfter, OpDateEquals, OpMatchesRegex, OpInSegment, OpNotInSegment)
+
 // maxDateBytes bounds what is parsed as a date; no RFC 3339 timestamp is longer.
 const maxDateBytes = 64
 

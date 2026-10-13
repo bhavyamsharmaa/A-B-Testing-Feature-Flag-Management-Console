@@ -361,3 +361,33 @@ func TestSegmentRefs(t *testing.T) {
 		t.Errorf("SegmentRefs = %s", got)
 	}
 }
+
+// Every operator in AllOperators is accepted by Validate with a suitable value,
+// and the list has no repeats: the rollback check (segments.UsesNewFeaturesSQL)
+// and its test are built from it.
+func TestAllOperatorsAreValidatable(t *testing.T) {
+	values := map[string]any{
+		OpEquals: "x", OpIn: []any{"x"}, OpContains: "x", OpGreaterThan: float64(1), OpExists: nil,
+		OpStartsWith: "x", OpEndsWith: "x", OpLessThan: float64(1), OpLessThanOrEqual: float64(1), OpGreaterThanOrEqual: float64(1),
+		OpSemverEquals: "1.0.0", OpSemverLessThan: "1.0.0", OpSemverLessOrEqual: "1.0.0", OpSemverGreaterThan: "1.0.0", OpSemverGreaterOrEqual: "1.0.0",
+		OpDateBefore: "2024-01-01T00:00:00Z", OpDateAfter: "2024-01-01T00:00:00Z", OpDateEquals: "2024-01-01T00:00:00Z",
+		OpMatchesRegex: "^a", OpInSegment: "s", OpNotInSegment: "s",
+	}
+	seen := map[string]bool{}
+	for _, op := range AllOperators {
+		if seen[op] {
+			t.Errorf("%s listed twice", op)
+		}
+		seen[op] = true
+		attr := "a"
+		if op == OpInSegment || op == OpNotInSegment {
+			attr = ""
+		}
+		if err := (Clause{Attribute: attr, Operator: op, Value: values[op]}).Validate(FlagRuleClause); err != nil {
+			t.Errorf("%s: %v", op, err)
+		}
+	}
+	if len(AllOperators) != len(values) {
+		t.Errorf("%d operators listed, %d have test values", len(AllOperators), len(values))
+	}
+}

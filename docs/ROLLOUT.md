@@ -272,9 +272,13 @@ when a requested flag's rules name a segment.
 6. **S5 Observe**, including the p95 of `/evaluate` for flags that use a segment (one extra indexed query).
 
 **Rollback:** redeploy the previous backend and console. Segments already created stay in the
-database, unused. Remove flag rules that use segment clauses or the new operators first
-(they would stop matching under the old evaluator). Undoing 0010 itself is the commented
-`DROP TABLE` block in the file, after a backup.
+database, unused. **Before redeploying a backend older than segments, find and revert the flags
+that use the new features** — an older evaluator treats segment clauses, the added operators and
+`negate` as "no match", so those rules silently stop matching (no error, no log). List them with
+`DATABASE_URL=... go run ./cmd/segmentusage` (read-only, keys and counts only) or the SQL in
+`docs/SEGMENTS.md` ("Rolling back to a backend older than segments"); revert each in the console,
+re-run until it prints nothing, then redeploy. Undoing 0010 itself is the commented `DROP TABLE`
+block in the file, after a backup.
 
 **Dependency on the earlier releases:** `segments.workspace_id` references `workspaces` (0004);
 the every-route test, the tenant checks and the workspace guard of release 1 are assumed. It
