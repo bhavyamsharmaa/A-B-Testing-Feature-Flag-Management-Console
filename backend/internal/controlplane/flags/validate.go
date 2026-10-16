@@ -92,19 +92,6 @@ func valueMatchesType(v any, variationType string) bool {
 	return false
 }
 
-// updateRequest uses RawMessage so an absent field ("leave unchanged") can
-// be told apart from an explicit null ("clear it").
-type updateRequest struct {
-	Enabled                *bool           `json:"enabled"`
-	TargetingRules         json.RawMessage `json:"targetingRules"`
-	Rollout                json.RawMessage `json:"rollout"`
-	FallthroughVariationID *string         `json:"fallthroughVariationId"`
-}
-
-func (req updateRequest) empty() bool {
-	return req.Enabled == nil && req.TargetingRules == nil && req.Rollout == nil && req.FallthroughVariationID == nil
-}
-
 func isNull(raw json.RawMessage) bool {
 	return string(raw) == "null"
 }

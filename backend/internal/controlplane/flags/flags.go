@@ -21,7 +21,6 @@ import (
 	"helios/backend/internal/controlplane/audit"
 	"helios/backend/internal/controlplane/quota"
 	"helios/backend/internal/controlplane/rbac"
-	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/httpx"
 )
@@ -268,12 +267,14 @@ type configSnapshot struct {
 type validationError struct{ error }
 
 // Update handles PATCH /environments/{envId}/flags/{key}. Absent fields are
-// left alone; targetingRules or rollout set to null are cleared.
+// left alone; targetingRules or rollout set to null are cleared. The work is
+// ApplyConfigChange, which promotion and scheduled changes call too, so there
+// is one edit path with one set of rules.
 func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	access := rbac.AccessFrom(ctx)
 	key := r.PathValue("key")
-	var req updateRequest
+	var req Change
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		httpx.BadRequest(w, err.Error())
 		return
@@ -283,106 +284,10 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Segments the new rules reference are locked FOR SHARE before this flag's
-	// own config row (segments first, flag configurations second; see package
-	// segments), so a segment cannot be deleted between the existence check
-	// and the save.
-	segmentRefs := ruleSegmentRefs(req.TargetingRules)
-
-	var view flagView
+	var view View
 	err := pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
-		knownSegments, err := lockSegments(ctx, tx, access.Env.WorkspaceID, segmentRefs)
-		if err != nil {
-			return err
-		}
-		var configID, variationsText, rulesText, rolloutText string
-		var before configSnapshot
-		err = tx.QueryRow(ctx, `
-			SELECT fc.id::text, f.variations::text, fc.enabled, fc.targeting_rules::text,
-			       COALESCE(fc.rollout::text, 'null'), fc.fallthrough_variation_id
-			FROM flag_configs fc
-			JOIN flags f ON f.id = fc.flag_id
-			WHERE f.key = $1 AND fc.environment_id = $2::uuid AND f.workspace_id = $3::uuid
-			FOR UPDATE OF fc`,
-			key, access.Env.ID, access.Env.WorkspaceID,
-		).Scan(&configID, &variationsText, &before.Enabled, &rulesText, &rolloutText, &before.FallthroughVariationID)
-		if err != nil {
-			return err
-		}
-		before.TargetingRules = json.RawMessage(rulesText)
-		before.Rollout = json.RawMessage(rolloutText)
-
-		var variations []evaluation.Variation
-		if err := json.Unmarshal([]byte(variationsText), &variations); err != nil {
-			return err
-		}
-		ids := map[string]bool{}
-		for _, v := range variations {
-			ids[v.ID] = true
-		}
-
-		after := before
-		if req.Enabled != nil {
-			after.Enabled = *req.Enabled
-		}
-		if req.TargetingRules != nil {
-			rules, err := parseRules(req.TargetingRules, ids)
-			if err != nil {
-				return validationError{err}
-			}
-			if err := checkSegmentsExist(rules, knownSegments); err != nil {
-				return validationError{err}
-			}
-			if after.TargetingRules, err = json.Marshal(rules); err != nil {
-				return err
-			}
-		}
-		if req.Rollout != nil {
-			rollout, err := parseRollout(req.Rollout, ids)
-			if err != nil {
-				return validationError{err}
-			}
-			if after.Rollout, err = json.Marshal(rollout); err != nil { // nil map marshals to null
-				return err
-			}
-		}
-		if req.FallthroughVariationID != nil {
-			if !ids[*req.FallthroughVariationID] {
-				return validationError{errors.New("fallthroughVariationId " + *req.FallthroughVariationID + " is not a variation of this flag")}
-			}
-			after.FallthroughVariationID = *req.FallthroughVariationID
-		}
-
-		if _, err := tx.Exec(ctx, `
-			UPDATE flag_configs
-			SET enabled = $1,
-			    targeting_rules = $2::jsonb,
-			    rollout = NULLIF($3, 'null')::jsonb,
-			    fallthrough_variation_id = $4,
-			    version = version + 1,
-			    updated_at = now()
-			WHERE id = $5::uuid`,
-			after.Enabled, string(after.TargetingRules), string(after.Rollout), after.FallthroughVariationID, configID,
-		); err != nil {
-			return err
-		}
-
-		if err := audit.Write(ctx, tx, audit.Entry{
-			WorkspaceID:   access.Env.WorkspaceID,
-			ActorID:       access.User.ID,
-			ActorEmail:    access.User.Email,
-			EnvironmentID: access.Env.ID,
-			Action:        "flag.update",
-			ResourceType:  "flag",
-			ResourceID:    key,
-			Before:        before,
-			After:         after,
-		}); err != nil {
-			return err
-		}
-
-		view, err = scanFlagView(tx.QueryRow(ctx, selectFlagView+` WHERE f.key = $2 AND f.workspace_id = $3::uuid`,
-			access.Env.ID, key, access.Env.WorkspaceID), access.Env.Key)
+		var err error
+		view, err = ApplyConfigChange(ctx, tx, access.Env, key, Actor{ID: access.User.ID, Email: access.User.Email}, req, ApplyOptions{})
 		return err
 	})
 	var invalid validationError
@@ -530,53 +435,17 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 // Kill handles POST /environments/{envId}/flags/{key}/kill: disable the flag
-// in this environment immediately. Idempotent, and audited at
-// severity=critical every time, even when the flag was already off (US-08).
+// in this environment immediately. Idempotent, and audited at severity=critical
+// every time, even when the flag was already off (US-08). The work is KillFlag.
 func (h *Handlers) Kill(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	access := rbac.AccessFrom(ctx)
 	key := r.PathValue("key")
 
-	var view flagView
+	var view View
 	err := pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
-		var configID string
-		var wasEnabled bool
-		if err := tx.QueryRow(ctx, `
-			SELECT fc.id::text, fc.enabled
-			FROM flag_configs fc
-			JOIN flags f ON f.id = fc.flag_id
-			WHERE f.key = $1 AND fc.environment_id = $2::uuid AND f.workspace_id = $3::uuid
-			FOR UPDATE OF fc`,
-			key, access.Env.ID, access.Env.WorkspaceID,
-		).Scan(&configID, &wasEnabled); err != nil {
-			return err
-		}
-		if wasEnabled {
-			if _, err := tx.Exec(ctx, `
-				UPDATE flag_configs
-				SET enabled = false, version = version + 1, updated_at = now()
-				WHERE id = $1::uuid`, configID,
-			); err != nil {
-				return err
-			}
-		}
-		if err := audit.Write(ctx, tx, audit.Entry{
-			WorkspaceID:   access.Env.WorkspaceID,
-			ActorID:       access.User.ID,
-			ActorEmail:    access.User.Email,
-			EnvironmentID: access.Env.ID,
-			Action:        "flag.kill",
-			ResourceType:  "flag",
-			ResourceID:    key,
-			Severity:      audit.SeverityCritical,
-			Before:        map[string]bool{"enabled": wasEnabled},
-			After:         map[string]bool{"enabled": false},
-		}); err != nil {
-			return err
-		}
 		var err error
-		view, err = scanFlagView(tx.QueryRow(ctx, selectFlagView+` WHERE f.key = $2 AND f.workspace_id = $3::uuid`,
-			access.Env.ID, key, access.Env.WorkspaceID), access.Env.Key)
+		view, err = KillFlag(ctx, tx, access.Env, key, Actor{ID: access.User.ID, Email: access.User.Email}, "")
 		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
