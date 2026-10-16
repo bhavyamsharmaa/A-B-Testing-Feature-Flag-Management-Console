@@ -10,6 +10,7 @@ import (
 
 	"helios/backend/internal/controlplane/audit"
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/controlplane/webhooks"
 	"helios/backend/internal/dataplane/evaluation"
 )
 
@@ -160,6 +161,22 @@ func ApplyConfigChange(ctx context.Context, tx pgx.Tx, env rbac.Environment, fla
 		return View{}, err
 	}
 
+	// The webhook event, in the same transaction. A promotion is announced as promotion.applied
+	// (one event, not also flag.updated); every other edit, including a scheduled one, as flag.updated.
+	var flagName string
+	if err := tx.QueryRow(ctx, `SELECT name FROM flags WHERE key = $1 AND workspace_id = $2::uuid`, flagKey, env.WorkspaceID).Scan(&flagName); err != nil {
+		return View{}, err
+	}
+	data := webhooks.FlagUpdatedData(webhooks.FlagRef{Key: flagKey, Name: flagName}, version, version+1, configChanges(before, after), nil)
+	typ := webhooks.EventFlagUpdated
+	if opts.PromotedFrom != "" {
+		typ = webhooks.EventPromotionApplied
+		data["promotion"] = map[string]string{"sourceEnvironment": opts.PromotedFrom, "targetEnvironment": env.Key}
+	}
+	if err := emit(ctx, tx, env, typ, eventActor(ctx, actor, opts.ScheduledChangeID), data); err != nil {
+		return View{}, err
+	}
+
 	return scanFlagView(tx.QueryRow(ctx, selectFlagView+` WHERE f.key = $2 AND f.workspace_id = $3::uuid`,
 		env.ID, flagKey, env.WorkspaceID), env.Key)
 }
@@ -255,6 +272,14 @@ func KillFlag(ctx context.Context, tx pgx.Tx, env rbac.Environment, flagKey stri
 		Before:        map[string]bool{"enabled": wasEnabled},
 		After:         after,
 	}); err != nil {
+		return View{}, err
+	}
+	var flagName string
+	if err := tx.QueryRow(ctx, `SELECT name FROM flags WHERE key = $1 AND workspace_id = $2::uuid`, flagKey, env.WorkspaceID).Scan(&flagName); err != nil {
+		return View{}, err
+	}
+	if err := emit(ctx, tx, env, webhooks.EventFlagKilled, eventActor(ctx, actor, scheduledChangeID),
+		map[string]any{"flag": webhooks.FlagRef{Key: flagKey, Name: flagName}, "changes": map[string]webhooks.Change{"enabled": {Before: wasEnabled, After: false}}}); err != nil {
 		return View{}, err
 	}
 	return scanFlagView(tx.QueryRow(ctx, selectFlagView+` WHERE f.key = $2 AND f.workspace_id = $3::uuid`,

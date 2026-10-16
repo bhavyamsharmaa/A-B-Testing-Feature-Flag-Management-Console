@@ -17,6 +17,7 @@ import (
 	"helios/backend/internal/controlplane/audit"
 	"helios/backend/internal/controlplane/flags"
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/controlplane/webhooks"
 	"helios/backend/internal/platform/events"
 )
 
@@ -241,10 +242,40 @@ func (rw row) audit(ctx context.Context, tx pgx.Tx, action, severity string, ext
 		after[k] = v
 	}
 	a := rw.actor()
-	return audit.Write(ctx, tx, audit.Entry{
+	if err := audit.Write(ctx, tx, audit.Entry{
 		WorkspaceID: rw.workspaceID, ActorID: a.ID, ActorEmail: a.Email + " via schedule", EnvironmentID: rw.envID,
 		Action: action, ResourceType: "scheduled_change", ResourceID: rw.id, Severity: severity, After: after,
-	})
+	}); err != nil {
+		return err
+	}
+	return rw.emit(ctx, tx, action, extra)
+}
+
+// emit queues the webhook event for a finished scheduled change, in the same transaction: executed
+// on success, failed for a failure or a miss. Retries and cancellations are not announced. The data
+// carries ids and the result code, never the human message (it can name the creator).
+func (rw row) emit(ctx context.Context, tx pgx.Tx, action string, extra map[string]any) error {
+	typ := ""
+	switch action {
+	case "scheduled_change.succeeded":
+		typ = webhooks.EventScheduledChangeExecuted
+	case "scheduled_change.failed", "scheduled_change.missed":
+		typ = webhooks.EventScheduledChangeFailed
+	default:
+		return nil
+	}
+	actor := webhooks.Actor{Type: "user", Via: "schedule", ScheduledChangeID: rw.id}
+	if rw.createdBy != nil {
+		actor.ID = *rw.createdBy
+	}
+	code, _ := extra["resultCode"].(string)
+	return webhooks.Emit(ctx, tx, webhooks.Event{
+		Type: typ, WorkspaceID: rw.workspaceID, EnvironmentID: rw.envID, EnvironmentKey: rw.envKey, Actor: actor,
+		Data: map[string]any{
+			"flag":            map[string]string{"key": rw.flagKey},
+			"scheduledChange": map[string]any{"id": rw.id, "kind": rw.kind, "runAt": rw.runAt.UTC().Format(time.RFC3339), "attempts": rw.attempts, "resultCode": code},
+		},
+	}, time.Now())
 }
 
 func finish(ctx context.Context, tx pgx.Tx, id string, status, code, message string, now time.Time) error {

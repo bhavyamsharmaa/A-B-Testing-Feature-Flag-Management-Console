@@ -75,14 +75,26 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 	}](t, h.expect(201, x.a, "POST", "/workspaces/"+x.wsA.ID+"/api-tokens", map[string]any{"name": "acme-secret-token", "role": "viewer"}))
 	tokenID := tokRes.Token.ID
 
-	forbidden := []string{tokenID, "acme-secret-token", tokRes.Plaintext, changeID, "route-test", secretSegment, "Acme secret audience", "acme-secret-member", secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, x.devA, x.wsA.Name, "alice key", keyID, inviteID, x.expID(), "someone@example.com", x.sdkKeyA[:12]}
+	// A's webhook endpoint and one of its deliveries, which routes take by id; its URL and secret are as secret as the flag.
+	hook := decode[struct {
+		Endpoint struct{ ID string }
+		Secret   string
+	}](t, h.expect(201, x.a, "POST", "/workspaces/"+x.wsA.ID+"/webhooks", map[string]any{"url": "https://hooks.acme-secret.example/in", "eventTypes": []string{"flag.updated"}}))
+	endpointID := hook.Endpoint.ID
+	h.expect(200, x.a, "PATCH", "/environments/"+x.devA+"/flags/"+secretFlag, map[string]any{"enabled": true})
+	var deliveryID string
+	if err := h.pool.QueryRow(context.Background(), `SELECT delivery_id::text FROM outbox WHERE workspace_id = $1::uuid AND endpoint_id = $2::uuid LIMIT 1`, x.wsA.ID, endpointID).Scan(&deliveryID); err != nil {
+		t.Fatal(err)
+	}
+
+	forbidden := []string{tokenID, "acme-secret-token", tokRes.Plaintext, changeID, "route-test", secretSegment, "Acme secret audience", "acme-secret-member", secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, endpointID, deliveryID, hook.Secret, "acme-secret.example", x.devA, x.wsA.Name, "alice key", keyID, inviteID, x.expID(), "someone@example.com", x.sdkKeyA[:12]}
 	fill := func(path string) string {
 		key := secretFlag
 		if strings.Contains(path, "/experiments/") {
 			key = "acme-secret-exp"
 		}
 		return strings.NewReplacer("{envId}", x.devA, "{wsId}", x.wsA.ID, "{userId}", x.a.id,
-			"{inviteId}", inviteID, "{keyId}", keyID, "{segKey}", secretSegment, "{changeId}", changeID, "{tokenId}", tokenID, "{key}", key).Replace(path)
+			"{inviteId}", inviteID, "{keyId}", keyID, "{segKey}", secretSegment, "{changeId}", changeID, "{tokenId}", tokenID, "{endpointId}", endpointID, "{deliveryId}", deliveryID, "{key}", key).Replace(path)
 	}
 	assertNoLeak := func(label string, body []byte) {
 		t.Helper()
@@ -110,7 +122,7 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 				if rt.Scope != server.ScopeWorkspace {
 					t.Errorf("%s: has {wsId} but is registered as %q", label, rt.Scope)
 				}
-			case "key", "userId", "inviteId", "keyId", "segKey", "changeId", "tokenId":
+			case "key", "userId", "inviteId", "keyId", "segKey", "changeId", "tokenId", "endpointId", "deliveryId":
 				if rt.Scope != server.ScopeEnv && rt.Scope != server.ScopeWorkspace {
 					t.Errorf("%s: {%s} on a route that is not environment- or workspace-scoped", label, m[1])
 				}
@@ -169,10 +181,10 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 			// Machine-to-machine: no user, no tenant. With no secret configured (as here) it does not
 			// exist, whoever asks; it never answers a browser. Its own tests (scheduler_test.go) cover
 			// the secret, the rate limit and the logs.
-			if label != "POST /internal/scheduler/run" {
+			if label != "POST /internal/scheduler/run" && label != "POST /internal/outbox/run" {
 				t.Errorf("%s: an internal route this test does not know", label)
 			}
-			if st, body := h.call(x.a, rt.Method, rt.Path, map[string]any{}); st != 404 || bytes.Contains(body, []byte("scheduler")) {
+			if st, body := h.call(x.a, rt.Method, rt.Path, map[string]any{}); st != 404 || bytes.Contains(body, []byte("scheduler")) || bytes.Contains(body, []byte("outbox")) {
 				t.Errorf("%s with no secret configured: status %d body %s", label, st, body)
 			}
 

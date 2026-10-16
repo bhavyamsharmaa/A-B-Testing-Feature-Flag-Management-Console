@@ -21,6 +21,7 @@ import (
 	"helios/backend/internal/controlplane/audit"
 	"helios/backend/internal/controlplane/quota"
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/controlplane/webhooks"
 	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/httpx"
 )
@@ -192,6 +193,10 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 			ResourceID:   req.Key,
 			After:        req,
 		}); err != nil {
+			return err
+		}
+		if err := emit(ctx, tx, access.Env, webhooks.EventFlagCreated, webhooks.ActorFrom(ctx, access.User.ID, ""),
+			webhooks.FlagData(webhooks.FlagRef{Key: req.Key, Name: req.Name})); err != nil {
 			return err
 		}
 
@@ -402,6 +407,10 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 		action, severity := "flag.delete", audit.SeverityInfo
 		if force {
 			action, severity = "flag.force_delete", audit.SeverityCritical
+		}
+		if err := emit(ctx, tx, access.Env, webhooks.EventFlagDeleted, webhooks.ActorFrom(ctx, access.User.ID, ""),
+			webhooks.FlagData(webhooks.FlagRef{Key: key, Name: snapshot.Name})); err != nil {
+			return err
 		}
 		return audit.Write(ctx, tx, audit.Entry{
 			WorkspaceID:   access.Env.WorkspaceID,

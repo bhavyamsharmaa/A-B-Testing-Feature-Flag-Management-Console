@@ -14,6 +14,7 @@ import (
 
 	"helios/backend/internal/controlplane/audit"
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/controlplane/webhooks"
 	"helios/backend/internal/platform/httpx"
 )
 
@@ -423,6 +424,9 @@ func (h *Handlers) Start(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
+		if err := emitLifecycle(ctx, tx, access, webhooks.EventExperimentStarted, key, string(StatusDraft), string(StatusRunning)); err != nil {
+			return err
+		}
 		view, err = loadOne(ctx, tx, access.Env, key)
 		return err
 	})
@@ -488,6 +492,9 @@ func (h *Handlers) Stop(w http.ResponseWriter, r *http.Request) {
 			Before:        statusChange{StatusRunning},
 			After:         statusChange{StatusStopped},
 		}); err != nil {
+			return err
+		}
+		if err := emitLifecycle(ctx, tx, access, webhooks.EventExperimentStopped, key, string(StatusRunning), string(StatusStopped)); err != nil {
 			return err
 		}
 		view, err = loadOne(ctx, tx, access.Env, key)

@@ -36,16 +36,18 @@ import (
 )
 
 type harness struct {
-	mu     sync.Mutex
-	bodies [][]byte // every response body h.call has seen
-	t      *testing.T
-	srv    *httptest.Server
-	pool   *pgxpool.Pool
-	bus    *events.MemoryBus
-	routes []server.Route
-	deps   server.Deps
-	authn  func(http.Handler) http.Handler
-	dbURL  string // this test's own throwaway database
+	mu       sync.Mutex
+	bodies   [][]byte // every response body h.call has seen
+	t        *testing.T
+	srv      *httptest.Server
+	pool     *pgxpool.Pool
+	bus      *events.MemoryBus
+	routes   []server.Route
+	deps     server.Deps
+	authn    func(http.Handler) http.Handler
+	dbURL    string // this test's own throwaway database
+	resolver *stubResolver
+	mail     *memMail
 }
 
 type user struct {
@@ -129,13 +131,15 @@ func newHarnessWith(t *testing.T, adjust func(*server.Deps)) *harness {
 		Context:        t.Context(),
 		InvitesByID:    true,
 	}
+	res, mm := newStubResolver(), &memMail{}
+	deps.Delivery = testDelivery(res, mm)
 	if adjust != nil {
 		adjust(&deps)
 	}
 	router := server.New(deps)
 	srv := httptest.NewServer(router.Mux)
 	t.Cleanup(srv.Close)
-	return &harness{t: t, srv: srv, pool: pool, bus: bus, routes: router.Routes, deps: deps, authn: authn, dbURL: u.String()}
+	return &harness{t: t, srv: srv, pool: pool, bus: bus, routes: router.Routes, deps: deps, authn: authn, dbURL: u.String(), resolver: res, mail: mm}
 }
 
 // newUser inserts a user into the (stand-in) auth.users table.
