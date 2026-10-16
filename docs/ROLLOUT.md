@@ -17,6 +17,10 @@ Goal: existing users and SDK integrations see no breakage, and every step can be
 Nothing in release 1 reads or writes anything release 2 adds, and release 2 needs
 release 1's schema (it uses `workspace_id`). That is what makes the split safe.
 
+**A fourth release comes after the third: promotion between environments and scheduled changes**
+(`feature/scheduling`, section "Release 4" below). It adds one migration, 0011, and needs only
+release 1's schema.
+
 **A third release comes after both: segments and the broader targeting operators**
 (`feature/segments`, section "Release 3" below). It is not part of either release above,
 needs only release 1's schema, and must not be started until release 2 (if it is shipping)
@@ -47,7 +51,7 @@ The history is strictly linear (each branch contains the one before it; checked 
 `git merge-base --is-ancestor`). A bundle of all local branches is kept in
 `~/helios-backups/` (outside the repository).
 
-## Migrations 0004-0010
+## Migrations 0004-0011
 
 All files are in `backend/db/migrations/`; verify scripts in `backend/db/`. Every
 migration runs in its own transaction (no `psql -1`). Lock notes come from each file's
@@ -64,6 +68,8 @@ restored copy gives the real numbers.
 | 0009 exposure verification | 2 | after 0008 | nullable `events.exposure_verified`, a CHECK (added NOT VALID, then validated), a partial index | `ADD COLUMN` nullable without default is catalog-only; validation takes `SHARE UPDATE EXCLUSIVE` (writes continue); on a large `events` table build the index first with `CREATE INDEX CONCURRENTLY` | commented block: drop index, constraint, column (deploy a backend without exposure verification first) | `verify_0009.sql` |
 
 | 0010 segments | **3** | after releases 1 and 2 are finished | two NEW tables, `segments` and `segment_members` (`workspace_id` on both, composite FK, RLS on, indexes lead with `workspace_id`); no existing table changes | none on existing data: new empty tables. The foreign keys take `SHARE ROW EXCLUSIVE` on `workspaces` and `auth.users` for milliseconds while created (blocks writes to those two tables, not reads) | commented block: `DROP TABLE` both (deploy a backend without segments first; discards segments) | `verify_0010.sql` |
+
+| 0011 scheduled changes | **4** | after release 3 (or on its own after release 1: it needs only `workspaces`, `flags`, `environments`) | one NEW table, `scheduled_changes` (`workspace_id`, composite FKs, RLS on, indexes lead with `workspace_id` except the two partial claim indexes); no existing table changes | none on existing data: a new empty table. The foreign keys take `SHARE ROW EXCLUSIVE` on `workspaces`, `flags`, `environments` and `auth.users` for milliseconds while created (blocks writes to those tables, not reads) | commented block: `DROP TABLE` (deploy a backend without scheduling first; discards scheduled changes) | `verify_0011.sql` |
 
 `verify_0005.sql` is expected to FAIL until 0005 is applied.
 
@@ -93,6 +99,13 @@ Names only for secrets. "Recommended" is for production on day one of that relea
 | `HELIOS_EVENT_RETENTION_DAYS` | new, read only by the `purgeevents` command, not the API | `90` |
 
 Vercel (console), release 2: no new variables. Supabase auth settings: not changed by either release.
+
+**Release 4 (scheduling):** two optional variables on the API. `SCHEDULER_SECRET` (a **secret**, at
+least 32 characters) enables `POST /internal/scheduler/run`; unset, the endpoint does not exist (404) and
+changes are run by `cmd/scheduler` instead. `SCHEDULER_GRACE` (a duration, 1m to 24h, default 15m) is how
+late a scheduled change may still run; an invalid value stops the API at startup. Two rate-limit classes:
+`schedule_write` (per user, default burst 30 then 1/s) and `scheduler_run` (per IP, default burst 10 then
+one per 5 s), overridable through `RATE_LIMITS`. The console has no new variables.
 
 **Release 3 (segments):** no new variables in the backend or the console; one new rate-limit
 class, `segment_write` (per user, POST/PATCH/DELETE on segments; default 1/s with a burst of 30,
@@ -284,10 +297,49 @@ block in the file, after a backup.
 the every-route test, the tenant checks and the workspace guard of release 1 are assumed. It
 does not need 0008 or 0009, so it could ship without release 2, but this plan keeps the order.
 
+## Release 4 - promotion and scheduled changes
+
+Do not start until the release before it in your plan is finished (release 1 is the real dependency;
+release 3 is the order this plan uses) and observed.
+
+**What it adds:** promotion of a flag's configuration between environments (preview, then apply, through
+the ordinary edit path); scheduled changes (enable, disable, kill, patch) with a worker that is a
+function, not a process (`cmd/scheduler`, `POST /internal/scheduler/run`); the flag drawer's Schedule and
+Promote dialogs and a scheduled-changes list. See `docs/SCHEDULING.md`.
+
+**Schema:** one migration, 0011, a new empty table; nothing existing changes. The previous backend keeps
+running against the migrated database. Nothing runs scheduled changes until something calls the
+scheduler, so deploying the backend alone changes no flag at any time.
+
+**Authority and safety to confirm before enabling the scheduler in production:** a production change needs
+an approver both when scheduled and when it runs (creator's role re-read at execution); a stale change is
+marked `missed` after the grace window, never run late; a cancel racing an execution never half applies.
+
+**Sequence (each step on "go", with a report; never chained):**
+
+1. **T0 Preflight** (read-only): the checks under "After each merge" on the merged branch.
+2. **T1 Backup** (`backend/scripts/backup_db.sh`, via `PGSERVICE` only) and restore into a throwaway database.
+3. **T2 Rehearsal** on the restored copy: 0011, `verify_0011.sql`, the backend with `SCHEDULER_SECRET` set to
+   a throwaway value, the Playwright suite, and the steps in `backend/db/rehearsal.md` ("Rehearsing 0011").
+4. **T3 Migrate:** 0011, `verify_0011.sql`. The running backend is unaffected.
+5. **T4 Deploy** backend and console together **without** `SCHEDULER_SECRET` and without any scheduler job.
+   Smoke: promote a test flag dev to staging (preview shows the diff; apply; audit shows `promotedFrom`);
+   schedule an `enable` for a test flag in dev for two minutes ahead and look at the list.
+6. **T5 Run it by hand once:** `DATABASE_URL=… go run ./cmd/scheduler` after the time: the flag is enabled,
+   the audit log shows "… via schedule" and `scheduled_change.succeeded`.
+7. **T6 Turn on the schedule** (on "go"): set `SCHEDULER_SECRET` from the secret store and create the Cloud
+   Scheduler job as in `docs/SCHEDULING.md`. Watch the counts and the audit log.
+
+**Rollback:** disable the Cloud Scheduler job first (nothing runs any more; pending changes stay pending,
+and any that pass the grace window are marked `missed` when it is turned back on, not run late), then
+redeploy the previous backend and console. Pending scheduled changes are not undone by a rollback: cancel
+them in the console first if they should not happen once scheduling returns. Undoing 0011 itself is the
+commented `DROP TABLE` block in the file, after a backup.
+
 ## Merge order and keeping the stack consistent
 
 The branches form one line: `main` <- `feature/workspaces-ui` <- `-tracking` <- `-results`
-<- `-results-ui` <- `-hardening` <- `feature/ci` <- `feature/segments` (release 3). Merge in that order, one at a time.
+<- `-results-ui` <- `-hardening` <- `feature/ci` <- `feature/segments` (release 3) <- `feature/scheduling` (release 4). Merge in that order, one at a time.
 
 1. **Release 1:** merge `feature/workspaces-ui` into `main` with a **merge commit or fast-forward, not a squash**. (Local `main`'s two extra commits are already inside that branch.)
 2. Deploy and finish release 1 (G0-G7). Any fixes made to release 1 during the gates go on `feature/workspaces-ui`/`main` first.

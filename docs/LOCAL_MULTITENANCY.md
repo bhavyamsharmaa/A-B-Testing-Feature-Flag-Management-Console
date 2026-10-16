@@ -63,7 +63,7 @@ cd frontend && npx playwright install chromium && npm run e2e   # needs the stac
 ```
 
 `internal/integration` mounts the real routes on a fresh database per test (migrations
-0001-0010), refuses a non-local server, and checks that user B gets 404 on every one
+0001-0011), refuses a non-local server, and checks that user B gets 404 on every one
 of user A's flags, experiments, SDK keys, audit log, members and invites, with none of
 A's data in any response B receives.
 
@@ -84,7 +84,9 @@ HELIOS_TEST_REDIS_URL='redis://127.0.0.1:56379/0' go test ./internal/integration
 | `SUPABASE_ANON_KEY` | unset | The project's **public** key; lets the backend ask Supabase whether an email is confirmed |
 | `INVITES_BY_ID` | `true` | `false`: only the one-time invite link works; the console's Accept banner disappears |
 | `RATE_LIMIT_DISABLED` | `false` | `true` switches every limit off |
-| `RATE_LIMITS` | built-in | Overrides, `class=perSecond/burst,...`; classes: `ip user me workspace invite accept sdk_key_create sdk_key sdk_invalid stream_open sdk_track sdk_track_events results segment_write` |
+| `SCHEDULER_SECRET` | unset | A secret of at least 32 characters. Enables `POST /internal/scheduler/run` (header `X-Helios-Scheduler-Secret`); unset, the path answers 404. See `docs/SCHEDULING.md` |
+| `SCHEDULER_GRACE` | `15m` | How late a scheduled change may still run (1m-24h); later ones are marked `missed`. Also `-grace` on `cmd/scheduler` |
+| `RATE_LIMITS` | built-in | Overrides, `class=perSecond/burst,...`; classes: `ip user me workspace invite accept sdk_key_create sdk_key sdk_invalid stream_open sdk_track sdk_track_events results segment_write schedule_write scheduler_run` |
 | `TRUSTED_PROXY_HOPS` | `0` (`1` when `RENDER=true`) | Reverse proxies in front of the API appending to `X-Forwarded-For` |
 | `EXPOSURE_VERIFICATION` | `off` | `off`, `report` or `required`: what `/track` does with an `$exposure`'s token (see `docs/SDK_TRACKING.md`) |
 | `EXPOSURE_TOKEN_KEY` | dev key generated at startup | **Secret** `<id>:<secret>`; `EXPOSURE_TOKEN_KEY_PREVIOUS` for rotation; `EXPOSURE_TOKEN_MAX_AGE` (`24h`) |

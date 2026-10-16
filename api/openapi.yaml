@@ -450,6 +450,191 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/SegmentNotFound" }
 
+  /environments/{envId}/flags/{key}/promotions/preview:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - $ref: "#/components/parameters/FlagKeyPath"
+    post:
+      tags: [control-plane]
+      summary: Preview copying this flag's configuration from another environment (any role)
+      description: >-
+        {envId} is the TARGET. The server compares the flag's configuration in
+        `sourceEnvironment` (a key such as staging, or an id; only environments of
+        the same workspace resolve) with the target's and returns, per part, whether
+        it is selected, whether it differs, and both values. By default `enabled` is
+        NOT copied. Writes nothing. `problems` says why the selected parts cannot be
+        applied (a rule naming a segment that does not exist, a variation the flag
+        does not have).
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PromotionRequest" }
+      responses:
+        "200":
+          description: The diff
+          content: { application/json: { schema: { $ref: "#/components/schemas/PromotionPreview" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "ENVIRONMENT_NOT_FOUND (the target, or the source in this workspace) or FLAG_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{envId}/flags/{key}/promotions:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - $ref: "#/components/parameters/FlagKeyPath"
+    post:
+      tags: [control-plane]
+      summary: Copy the selected parts of a flag's configuration into this environment
+      description: >-
+        An ordinary edit of the target: the same role (an approver for production),
+        validation, version bump, audit entry (`flag.update`, whose "after" also
+        records `promotedFrom`) and Redis event. `expectedVersion` (the target's) and
+        `sourceVersion` come from the preview and are required: if either side
+        changed since, 409 VERSION_CONFLICT / SOURCE_CHANGED and nothing is written.
+        409 NOTHING_TO_PROMOTE when the selected parts are already identical; 400
+        when the target would refuse the result.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PromotionRequest" }
+      responses:
+        "200":
+          description: The target flag after the change
+          content: { application/json: { schema: { $ref: "#/components/schemas/Flag" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/FlagNotFound" }
+        "409": { description: "VERSION_CONFLICT, SOURCE_CHANGED or NOTHING_TO_PROMOTE", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{envId}/flags/{key}/scheduled-changes:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - $ref: "#/components/parameters/FlagKeyPath"
+    post:
+      tags: [control-plane]
+      summary: Schedule a change to this flag in this environment (editor+, and the role of the change)
+      description: >-
+        Kinds: enable, disable, kill, patch (rollout, fallthroughVariationId and/or
+        targetingRules, validated like an edit). `runAt` is an RFC 3339 timestamp
+        (stored in UTC), at least 1 minute and at most a year ahead. The role needed
+        is the one for making the change now (kill: editor; anything else in
+        production: approver), 403 FORBIDDEN otherwise, and it is checked again when
+        the change runs, against the creator's membership then. `idempotencyKey`
+        (required, per workspace) makes a retry return the existing change (200,
+        `Idempotent-Replay: true`); the same key for a different change is 409
+        IDEMPOTENCY_CONFLICT. At most 10 pending changes per flag and 100 per
+        workspace (409 QUOTA_EXCEEDED). Audited as scheduled_change.create.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScheduledChangeRequest" }
+      responses:
+        "200": { description: The same request again (idempotent replay), content: { application/json: { schema: { $ref: "#/components/schemas/ScheduledChange" } } } }
+        "201": { description: Scheduled, content: { application/json: { schema: { $ref: "#/components/schemas/ScheduledChange" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/FlagNotFound" }
+        "409": { description: "IDEMPOTENCY_CONFLICT or QUOTA_EXCEEDED", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{envId}/scheduled-changes:
+    parameters: [{ $ref: "#/components/parameters/EnvPath" }]
+    get:
+      tags: [control-plane]
+      summary: List scheduled changes in this environment (any role)
+      description: Waiting ones first (soonest first), then history (newest first); at most 200.
+      security: [{ supabaseJWT: [] }]
+      parameters:
+        - { name: flag, in: query, required: false, schema: { type: string } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, running, succeeded, failed, missed, cancelled] } }
+      responses:
+        "200":
+          description: Scheduled changes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [scheduledChanges]
+                properties:
+                  scheduledChanges:
+                    type: array
+                    items: { $ref: "#/components/schemas/ScheduledChange" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/ExperimentNotFound" }
+
+  /environments/{envId}/scheduled-changes/{changeId}:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - { name: changeId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [control-plane]
+      summary: Read one scheduled change (any role)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200": { description: The change, content: { application/json: { schema: { $ref: "#/components/schemas/ScheduledChange" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "ENVIRONMENT_NOT_FOUND or SCHEDULED_CHANGE_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /environments/{envId}/scheduled-changes/{changeId}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - { name: changeId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [control-plane]
+      summary: Cancel a pending or running scheduled change (its creator, or the role of the change)
+      description: >-
+        A change is applied completely or not at all: if it is being applied right
+        now, the cancel waits for it and is refused (409 NOT_CANCELLABLE) when it
+        succeeded. Audited as scheduled_change.cancel.
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200": { description: Cancelled, content: { application/json: { schema: { $ref: "#/components/schemas/ScheduledChange" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "ENVIRONMENT_NOT_FOUND or SCHEDULED_CHANGE_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: NOT_CANCELLABLE (already finished), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /internal/scheduler/run:
+    post:
+      tags: [system]
+      summary: Run the scheduled changes that are due (internal; for a scheduler job)
+      description: >-
+        Not part of the public API and not for browsers (no CORS). Enabled only when
+        the API has a SCHEDULER_SECRET of at least 32 characters; otherwise it
+        answers like any unknown path (404). Send the secret in
+        `X-Helios-Scheduler-Secret`; it is compared in constant time. A missing or
+        wrong secret, or any request with an Origin header, is one fixed 401 with no
+        detail. Rate limited per IP before the secret is checked. Answers with
+        counts only. Safe to call concurrently from many instances. See
+        docs/SCHEDULING.md.
+      security: [{ schedulerSecret: [] }]
+      responses:
+        "200":
+          description: Counts of what this call did
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [missed, claimed, reclaimed, succeeded, failed, retried, skipped]
+                properties:
+                  missed: { type: integer }
+                  claimed: { type: integer }
+                  reclaimed: { type: integer, description: Claimed from a worker whose lease had expired (included in claimed) }
+                  succeeded: { type: integer }
+                  failed: { type: integer }
+                  retried: { type: integer }
+                  skipped: { type: integer, description: Claimed, then cancelled or taken over before it ran }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: Disabled (no secret configured) }
+        "429": { description: RATE_LIMITED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /environments/{envId}/sdk-keys:
     parameters: [{ $ref: "#/components/parameters/EnvPath" }]
     get:
@@ -1051,6 +1236,10 @@ paths:
 
 components:
   securitySchemes:
+    schedulerSecret:
+      type: apiKey
+      in: header
+      name: X-Helios-Scheduler-Secret
     supabaseJWT:
       type: http
       scheme: bearer
@@ -1309,6 +1498,92 @@ components:
           description: >-
             Invert the operator. Not allowed with exists (a missing attribute
             never matches) or the segment operators (use the opposite operator).
+
+    PromotionRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceEnvironment]
+      properties:
+        sourceEnvironment: { type: string, description: "Key (staging) or id of an environment of the same workspace" }
+        parts:
+          type: array
+          description: Default [rules, rollout, fallthrough]; the enabled state is only copied when listed
+          items: { type: string, enum: [rules, rollout, fallthrough, enabled] }
+        expectedVersion: { type: integer, format: int64, description: "Apply only: the target's version from the preview" }
+        sourceVersion: { type: integer, format: int64, description: "Apply only: the source's version from the preview" }
+
+    PromotionPreview:
+      type: object
+      required: [flagKey, source, target, parts, defaultParts, problems, nothingToApply, canApply, expectedVersion, sourceVersion]
+      properties:
+        flagKey: { type: string }
+        source: { $ref: "#/components/schemas/PromotionSide" }
+        target: { $ref: "#/components/schemas/PromotionSide" }
+        parts:
+          type: array
+          items:
+            type: object
+            required: [part, selected, changed, source, target]
+            properties:
+              part: { type: string, enum: [rules, rollout, fallthrough, enabled] }
+              selected: { type: boolean }
+              changed: { type: boolean }
+              source: { description: The part in the source environment }
+              target: { description: The part in the target environment }
+        defaultParts: { type: array, items: { type: string } }
+        problems: { type: array, items: { type: string }, description: Why the selected parts cannot be applied }
+        nothingToApply: { type: boolean }
+        canApply: { type: boolean }
+        expectedVersion: { type: integer, format: int64 }
+        sourceVersion: { type: integer, format: int64 }
+
+    PromotionSide:
+      type: object
+      required: [environment, version, enabled]
+      properties:
+        environment: { type: string }
+        version: { type: integer, format: int64 }
+        enabled: { type: boolean }
+
+    ScheduledChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, kind, runAt]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 128 }
+        kind: { type: string, enum: [enable, disable, kill, patch] }
+        runAt: { type: string, format: date-time, description: At least 1 minute and at most 366 days ahead }
+        change:
+          type: object
+          description: For a patch only. At least one of the three.
+          additionalProperties: false
+          properties:
+            rollout: { type: [object, "null"] }
+            fallthroughVariationId: { type: string }
+            targetingRules: { type: [array, "null"], items: { $ref: "#/components/schemas/TargetingRule" } }
+
+    ScheduledChange:
+      type: object
+      required: [id, flagKey, environment, kind, change, runAt, status, idempotencyKey, baseVersion, attempts, resultCode, resultMessage, createdBy, createdAt, updatedAt, finishedAt]
+      properties:
+        id: { type: string, format: uuid }
+        flagKey: { type: string }
+        environment: { type: string }
+        kind: { type: string, enum: [enable, disable, kill, patch] }
+        change: { type: object }
+        runAt: { type: string, format: date-time }
+        status: { type: string, enum: [pending, running, succeeded, failed, missed, cancelled] }
+        idempotencyKey: { type: string }
+        baseVersion: { type: integer, format: int64, description: The flag configuration's version when scheduled }
+        attempts: { type: integer }
+        resultCode:
+          type: [string, "null"]
+          description: APPLIED, CANCELLED, MISSED, RETRYING, RETRIES_EXHAUSTED, CREATOR_REMOVED, CREATOR_NOT_AUTHORIZED, CONFLICT, INVALID_CHANGE or FLAG_NOT_FOUND
+        resultMessage: { type: [string, "null"] }
+        createdBy: { type: string, description: The creator's email }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        finishedAt: { type: [string, "null"], format: date-time }
 
     SegmentRules:
       type: array
