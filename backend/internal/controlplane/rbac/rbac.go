@@ -180,6 +180,16 @@ func (g *Guard) Require(req Requirement, next http.Handler) http.Handler {
 			return
 		}
 
+		// An API token is the creator, limited: inside its own workspace and environments
+		// (anything else is "not found", like a stranger's), and never above its own role.
+		if tok, isToken := auth.APITokenFrom(r.Context()); isToken {
+			if tok.WorkspaceID != env.WorkspaceID || !tok.AllowsEnvironment(env.ID) {
+				httpx.WriteError(w, http.StatusNotFound, "ENVIRONMENT_NOT_FOUND", "environment not found")
+				return
+			}
+			wsRole = LowerWorkspaceRole(wsRole, WorkspaceRole(tok.Role))
+		}
+
 		role := wsRole.EnvRole()
 		if need := req(env); !role.AtLeast(need) {
 			httpx.WriteError(w, http.StatusForbidden, "FORBIDDEN",
@@ -240,6 +250,20 @@ func (g *Guard) RequireWorkspace(min WorkspaceRole, next http.Handler) http.Hand
 		if err != nil {
 			httpx.WriteInternal(w, r, err)
 			return
+		}
+		if tok, isToken := auth.APITokenFrom(r.Context()); isToken {
+			if tok.WorkspaceID != wsID {
+				httpx.WriteError(w, http.StatusNotFound, "WORKSPACE_NOT_FOUND", "workspace not found")
+				return
+			}
+			// A workspace-level change (a segment, say) reaches every environment, so a token that
+			// is limited to some environments may read at this level but not change anything.
+			if tok.Restricted() && r.Method != http.MethodGet && r.Method != http.MethodHead {
+				httpx.WriteError(w, http.StatusForbidden, "FORBIDDEN",
+					"this token is limited to some environments, so it cannot make workspace-level changes")
+				return
+			}
+			role = LowerWorkspaceRole(role, WorkspaceRole(tok.Role))
 		}
 		if !role.AtLeast(min) {
 			httpx.WriteError(w, http.StatusForbidden, "FORBIDDEN",

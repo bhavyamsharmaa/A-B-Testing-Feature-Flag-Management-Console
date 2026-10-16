@@ -68,14 +68,21 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 	changeID := decode[struct{ ID string }](t, h.expect(200, x.a, "POST", "/environments/"+x.devA+"/flags/"+secretFlag+"/scheduled-changes", map[string]any{
 		"idempotencyKey": "route-test", "kind": "disable", "runAt": time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)})).ID
 
-	forbidden := []string{changeID, "route-test", secretSegment, "Acme secret audience", "acme-secret-member", secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, x.devA, x.wsA.Name, "alice key", keyID, inviteID, x.expID(), "someone@example.com", x.sdkKeyA[:12]}
+	// A's API token, which routes take by id; its name, id and plaintext are as secret as the flag.
+	tokRes := decode[struct {
+		Token     struct{ ID string }
+		Plaintext string
+	}](t, h.expect(201, x.a, "POST", "/workspaces/"+x.wsA.ID+"/api-tokens", map[string]any{"name": "acme-secret-token", "role": "viewer"}))
+	tokenID := tokRes.Token.ID
+
+	forbidden := []string{tokenID, "acme-secret-token", tokRes.Plaintext, changeID, "route-test", secretSegment, "Acme secret audience", "acme-secret-member", secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, x.devA, x.wsA.Name, "alice key", keyID, inviteID, x.expID(), "someone@example.com", x.sdkKeyA[:12]}
 	fill := func(path string) string {
 		key := secretFlag
 		if strings.Contains(path, "/experiments/") {
 			key = "acme-secret-exp"
 		}
 		return strings.NewReplacer("{envId}", x.devA, "{wsId}", x.wsA.ID, "{userId}", x.a.id,
-			"{inviteId}", inviteID, "{keyId}", keyID, "{segKey}", secretSegment, "{changeId}", changeID, "{key}", key).Replace(path)
+			"{inviteId}", inviteID, "{keyId}", keyID, "{segKey}", secretSegment, "{changeId}", changeID, "{tokenId}", tokenID, "{key}", key).Replace(path)
 	}
 	assertNoLeak := func(label string, body []byte) {
 		t.Helper()
@@ -103,7 +110,7 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 				if rt.Scope != server.ScopeWorkspace {
 					t.Errorf("%s: has {wsId} but is registered as %q", label, rt.Scope)
 				}
-			case "key", "userId", "inviteId", "keyId", "segKey", "changeId":
+			case "key", "userId", "inviteId", "keyId", "segKey", "changeId", "tokenId":
 				if rt.Scope != server.ScopeEnv && rt.Scope != server.ScopeWorkspace {
 					t.Errorf("%s: {%s} on a route that is not environment- or workspace-scoped", label, m[1])
 				}

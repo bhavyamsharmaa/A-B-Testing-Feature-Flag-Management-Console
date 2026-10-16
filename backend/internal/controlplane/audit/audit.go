@@ -9,7 +9,20 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"helios/backend/internal/platform/auth"
 )
+
+// Who acted.
+const (
+	ActorUser     = "user"
+	ActorAPIToken = "api_token"
+)
+
+// TokenActor is the actor_detail of an entry written by (or about) an API token.
+func TokenActor(tokenID, name, prefix, creatorID, creatorEmail string) map[string]string {
+	return map[string]string{"tokenId": tokenID, "name": name, "prefix": prefix, "createdById": creatorID, "createdBy": creatorEmail}
+}
 
 const (
 	SeverityInfo     = "info"
@@ -31,6 +44,12 @@ type Entry struct {
 	Severity      string
 	Before        any
 	After         any
+	// ActorType is "user" (the default) or "api_token". When a request was made
+	// with an API token, Write takes the actor from the request's context itself,
+	// so no handler can record a token's action as the person's: the entry reads
+	// as the token (name and display prefix) with the creator in ActorDetail.
+	ActorType   string
+	ActorDetail any
 }
 
 // Write inserts e using tx. Callers must use the same tx as the mutation.
@@ -46,16 +65,29 @@ func Write(ctx context.Context, tx pgx.Tx, e Entry) error {
 	if err != nil {
 		return err
 	}
+	if tok, ok := auth.APITokenFrom(ctx); ok && e.ActorType == "" {
+		e.ActorType = ActorAPIToken
+		e.ActorID = tok.ID
+		e.ActorEmail = tok.Name + " (" + tok.Prefix + ")"
+		e.ActorDetail = TokenActor(tok.ID, tok.Name, tok.Prefix, tok.CreatorID, tok.CreatorEmail)
+	}
+	if e.ActorType == "" {
+		e.ActorType = ActorUser
+	}
+	detail, err := toJSON(e.ActorDetail)
+	if err != nil {
+		return err
+	}
 	severity := e.Severity
 	if severity == "" {
 		severity = SeverityInfo
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO audit_logs
-			(workspace_id, actor_id, actor_email, environment_id, action, resource_type, resource_id, severity, diff_before, diff_after)
+			(workspace_id, actor_id, actor_email, environment_id, action, resource_type, resource_id, severity, diff_before, diff_after, actor_type, actor_detail)
 		VALUES
-			($1::uuid, NULLIF($2, '')::uuid, $3, NULLIF($4, '')::uuid, $5, $6, $7, $8, $9::jsonb, $10::jsonb)`,
-		e.WorkspaceID, e.ActorID, e.ActorEmail, e.EnvironmentID, e.Action, e.ResourceType, e.ResourceID, severity, before, after,
+			($1::uuid, NULLIF($2, '')::uuid, $3, NULLIF($4, '')::uuid, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12::jsonb)`,
+		e.WorkspaceID, e.ActorID, e.ActorEmail, e.EnvironmentID, e.Action, e.ResourceType, e.ResourceID, severity, before, after, e.ActorType, detail,
 	)
 	if err != nil {
 		return fmt.Errorf("audit: write %s: %w", e.Action, err)

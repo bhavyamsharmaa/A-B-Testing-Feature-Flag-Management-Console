@@ -27,6 +27,15 @@ func (r WorkspaceRole) AtLeast(min WorkspaceRole) bool {
 	return workspaceRank[r] >= workspaceRank[min] && workspaceRank[r] > 0
 }
 
+// LowerWorkspaceRole is the lesser of two roles: what an API token may do is the
+// lower of its own ceiling and its creator's current role.
+func LowerWorkspaceRole(a, b WorkspaceRole) WorkspaceRole {
+	if workspaceRank[b] < workspaceRank[a] || workspaceRank[a] == 0 {
+		return b
+	}
+	return a
+}
+
 // EnvRole is the access the role gives inside each environment. Owners and
 // admins can do everything flags and experiments allow, including changing
 // production (the "approver" level); editors can edit outside production and

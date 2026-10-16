@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"helios/backend/internal/controlplane/apitokens"
 	"helios/backend/internal/controlplane/auditlog"
 	"helios/backend/internal/controlplane/experiments"
 	"helios/backend/internal/controlplane/flags"
@@ -30,6 +31,7 @@ import (
 	"helios/backend/internal/dataplane/stream"
 	"helios/backend/internal/dataplane/track"
 	"helios/backend/internal/platform/apikey"
+	"helios/backend/internal/platform/apitoken"
 	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/exposuretoken"
@@ -70,6 +72,9 @@ type Deps struct {
 	Clock scheduling.Clock
 	// Scheduler tunes the scheduled-change runner (grace window, lease, ...).
 	Scheduler scheduling.Config
+	// APITokenCacheTTL bounds how long an instance trusts a verified API token it was not
+	// told was revoked (zero: apitoken.DefaultCacheTTL, 15 seconds).
+	APITokenCacheTTL time.Duration
 	// StreamRecheck is how often an open /sdk/stream asks whether its key was
 	// revoked. Zero means 10 seconds.
 	StreamRecheck time.Duration
@@ -103,6 +108,9 @@ type Route struct {
 	Path    string // e.g. /environments/{envId}/flags/{key}
 	Scope   Scope
 	MinRole rbac.WorkspaceRole // for ScopeEnv and ScopeWorkspace: the lowest role let through
+	// TokenAllowed: an API token may reach this route (see tokenaccess.go). False for
+	// every route not explicitly classified.
+	TokenAllowed bool
 	// Limits names the rate-limit classes in front of the route (none for the
 	// health probe, which must never be limited).
 	Limits []string
@@ -117,7 +125,7 @@ type Router struct {
 func (r *Router) add(pattern string, scope Scope, min rbac.WorkspaceRole, limits []string, h http.Handler) {
 	method, path, _ := strings.Cut(pattern, " ")
 	r.Mux.Handle(pattern, h)
-	r.Routes = append(r.Routes, Route{Method: method, Path: path, Scope: scope, MinRole: min, Limits: limits})
+	r.Routes = append(r.Routes, Route{Method: method, Path: path, Scope: scope, MinRole: min, Limits: limits, TokenAllowed: tokenAllowed(pattern)})
 }
 
 // limit is one extra rate limit on a route, on top of the general ones.
@@ -190,6 +198,10 @@ func New(d Deps) *Router {
 	fl := flags.NewHandlers(d.Pool, d.Publisher)
 	al := auditlog.NewHandlers(d.Pool)
 	sg := segments.NewHandlers(d.Pool, d.Publisher)
+	var clock func() time.Time
+	if d.Clock != nil {
+		clock = d.Clock
+	}
 	sc := scheduling.NewHandlers(d.Pool, d.Clock)
 	runner := scheduling.NewRunner(d.Pool, d.Publisher, d.Clock, d.Scheduler)
 	ex := experiments.NewHandlers(d.Pool)
@@ -217,7 +229,16 @@ func New(d Deps) *Router {
 	// controlPlane puts every authenticated route behind: a per-IP limit
 	// (before authentication, so it also covers token guessing), the
 	// authenticator, a per-user limit, then the route's own extra limits.
-	controlPlane := func(inner http.Handler, extras []limit) (http.Handler, []string) {
+	tokens := apitoken.NewVerifier(d.Pool, lim, d.APITokenCacheTTL, clock)
+	tokens.OnRejected = apitokens.AuditRejection(d.Pool)
+	tk := apitokens.NewHandlers(d.Pool, tokens, d.Publisher)
+	go tokens.Watch(ctx, d.Subscriber) // revocations announced by other instances
+	// authn is the authentication of a control-plane route: the user JWT, or an API
+	// token when the bearer starts with "hlt_" and the route is classified token-allowed.
+	authn := func(pattern string) func(http.Handler) http.Handler {
+		return tokens.Wrap(d.Authn, tokenAllowed(pattern))
+	}
+	controlPlane := func(pattern string, inner http.Handler, extras []limit) (http.Handler, []string) {
 		names := []string{ratelimit.ClassIP, ratelimit.ClassUser}
 		h := inner
 		for i := len(extras) - 1; i >= 0; i-- {
@@ -225,7 +246,7 @@ func New(d Deps) *Router {
 				h = lim.ByUser(extras[i].class)(h)
 			}
 		}
-		h = d.Authn(lim.ByUser(ratelimit.ClassUser)(h))
+		h = authn(pattern)(lim.ByUser(ratelimit.ClassUser)(h))
 		for i := len(extras) - 1; i >= 0; i-- {
 			if extras[i].byIP {
 				h = lim.ByIP(extras[i].class)(h)
@@ -240,17 +261,17 @@ func New(d Deps) *Router {
 	// The health probe is never rate-limited: orchestrators poll it.
 	public := func(pattern string, h http.HandlerFunc) { rt.add(pattern, ScopePublic, "", nil, h) }
 	self := func(pattern string, h http.HandlerFunc, extras ...limit) {
-		wrapped, names := controlPlane(h, extras)
+		wrapped, names := controlPlane(pattern, h, extras)
 		rt.add(pattern, ScopeSelf, "", names, wrapped)
 	}
 	// env: authenticate, resolve {envId} through the caller's workspace
 	// membership (404 when it isn't theirs), then check their role against req.
 	env := func(pattern string, req rbac.Requirement, h http.HandlerFunc, extras ...limit) {
-		wrapped, names := controlPlane(guard.Require(req, h), extras)
+		wrapped, names := controlPlane(pattern, guard.Require(req, h), extras)
 		rt.add(pattern, ScopeEnv, workspaceRoleFor(req), names, wrapped)
 	}
 	workspace := func(pattern string, min rbac.WorkspaceRole, h http.HandlerFunc, extras ...limit) {
-		wrapped, names := controlPlane(guard.RequireWorkspace(min, h), extras)
+		wrapped, names := controlPlane(pattern, guard.RequireWorkspace(min, h), extras)
 		rt.add(pattern, ScopeWorkspace, min, names, wrapped)
 	}
 	// internal: a route for machines, not people or browsers: no user, no tenant,
@@ -294,6 +315,15 @@ func New(d Deps) *Router {
 	workspace("GET /workspaces/{wsId}/invites", rbac.WorkspaceAdmin, ws.Invites)
 	workspace("POST /workspaces/{wsId}/invites", rbac.WorkspaceAdmin, ws.CreateInvite, perUser(ratelimit.ClassInvite))
 	workspace("DELETE /workspaces/{wsId}/invites/{inviteId}", rbac.WorkspaceAdmin, ws.RevokeInvite, perUser(ratelimit.ClassInvite))
+
+	// API tokens (see docs/API_TOKENS.md). Managing them is for admins and owners and is
+	// session-only: these routes are classified token-denied. A token's creator is the
+	// authority behind it, so these are the only places tokens are minted or revoked.
+	workspace("POST /workspaces/{wsId}/api-tokens", rbac.WorkspaceAdmin, tk.Create, perUser(ratelimit.ClassTokenWrite))
+	workspace("GET /workspaces/{wsId}/api-tokens", rbac.WorkspaceAdmin, tk.List)
+	workspace("DELETE /workspaces/{wsId}/api-tokens/{tokenId}", rbac.WorkspaceAdmin, tk.Revoke, perUser(ratelimit.ClassTokenWrite))
+	// The environments the caller can see: the first thing a pipeline asks for.
+	workspace("GET /workspaces/{wsId}/environments", rbac.WorkspaceViewer, tk.Environments)
 
 	env("GET /environments/{envId}/flags", rbac.Min(rbac.Viewer), fl.List)
 	env("GET /environments/{envId}/flags/{key}", rbac.Min(rbac.Viewer), fl.Get)

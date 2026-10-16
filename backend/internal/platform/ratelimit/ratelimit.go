@@ -53,6 +53,13 @@ const (
 	ClassSegmentWrite = "segment_write"
 	// POST on scheduled changes and their cancellation, per user.
 	ClassScheduleWrite = "schedule_write"
+	// Creating and revoking API tokens, per user.
+	ClassTokenWrite = "api_token_write"
+	// An API token, per token: every request that authenticated with one.
+	ClassToken = "api_token"
+	// FAILED API-token authentications, per client IP. Checked BEFORE any hashing
+	// or database work, and spent only by failures.
+	ClassTokenBad = "token_invalid"
 	// POST /internal/scheduler/run, per client IP, applied BEFORE the secret is
 	// checked so guessing it is as slow as using it.
 	ClassSchedulerRun   = "scheduler_run"
@@ -85,6 +92,13 @@ func DefaultRules() map[string]Rule {
 		ClassSegmentWrite: {PerSecond: 1, Burst: 30},
 		// Scheduling is deliberate and rare: 30 at once, then one a second.
 		ClassScheduleWrite: {PerSecond: 1, Burst: 30},
+		// A CI pipeline makes bursts of calls (a deploy touching many flags) but
+		// not hundreds a second: 20 a second, bursts of 200, per token.
+		ClassToken: {PerSecond: 20, Burst: 200},
+		// Minting tokens is rare and deliberate.
+		ClassTokenWrite: {PerSecond: 0.2, Burst: 10},
+		// Failed token attempts per IP: like failed SDK keys.
+		ClassTokenBad: {PerSecond: 0.5, Burst: 30},
 		// A scheduler job runs once a minute. 10 at once, then one every five
 		// seconds is far above that and far below a guessing loop.
 		ClassSchedulerRun:   {PerSecond: 0.2, Burst: 10},
@@ -349,7 +363,13 @@ func (l *Limiter) ByUser(class string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if user, ok := auth.FromContext(r.Context()); ok {
-				if ok, wait := l.Take(class, user.ID); !ok {
+				key := user.ID
+				if tok, isToken := auth.APITokenFrom(r.Context()); isToken {
+					// A token has its own bucket: a runaway pipeline must not
+					// throttle the person who created it.
+					key = "token:" + tok.ID
+				}
+				if ok, wait := l.Take(class, key); !ok {
 					Reject(w, wait)
 					return
 				}

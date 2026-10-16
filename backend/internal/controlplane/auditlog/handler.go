@@ -33,6 +33,10 @@ type entry struct {
 	Severity     string          `json:"severity"`
 	DiffBefore   json.RawMessage `json:"diffBefore"`
 	DiffAfter    json.RawMessage `json:"diffAfter"`
+	// ActorType is "user" or "api_token". For a token, ActorEmail reads "name (hlt_xxxxxxxx)" and
+	// ActorDetail names the token and the person who created it.
+	ActorType   string          `json:"actorType"`
+	ActorDetail json.RawMessage `json:"actorDetail"`
 	// Scope is "global" for entries that belong to no single environment
 	// (flag.create) and "environment" for everything else.
 	Scope string `json:"scope"`
@@ -63,9 +67,9 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	}
 	entries, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (entry, error) {
 		var e entry
-		var before, after string
-		err := row.Scan(&e.ID, &e.CreatedAt, &e.ActorEmail, &e.Action, &e.ResourceType, &e.ResourceID, &e.Severity, &before, &after, &e.Scope)
-		e.DiffBefore, e.DiffAfter = json.RawMessage(before), json.RawMessage(after)
+		var before, after, detail string
+		err := row.Scan(&e.ID, &e.CreatedAt, &e.ActorEmail, &e.Action, &e.ResourceType, &e.ResourceID, &e.Severity, &before, &after, &e.Scope, &e.ActorType, &detail)
+		e.DiffBefore, e.DiffAfter, e.ActorDetail = json.RawMessage(before), json.RawMessage(after), json.RawMessage(detail)
 		return e, err
 	})
 	if err != nil {

@@ -188,6 +188,8 @@ func TestLogCallsAreNotGivenCredentials(t *testing.T) {
 	root := filepath.Join("..", "..")
 	fset := token.NewFileSet()
 	suspicious := []string{"token", "plaintext", "secret", "password", "passwd", "authorization", "bearer", "apikey", "sdkkey", "jwt", "cookie", "keyhash", "databaseurl",
+		// API tokens (hlt_...): the token, its hash, the raw bearer value, and the Authorization header.
+		"hlt", "tokenhash", "rawtoken", "bearerval", "digest", "tokensecret",
 		// Event content is customer data (subject keys are opaque but may be personal): never logged.
 		"subjectkey", "properties", "props"}
 	logFuncs := map[string]bool{"Printf": true, "Print": true, "Println": true, "Fatal": true, "Fatalf": true, "Fatalln": true, "Panic": true, "Panicf": true}

@@ -46,6 +46,10 @@ const (
 	// changes waiting to run (pending or running): per flag (all environments) and per workspace.
 	MaxPendingChangesPerFlag      = 10
 	MaxPendingChangesPerWorkspace = 100
+	// MaxActiveAPITokensPerWorkspace and MaxActiveAPITokensPerUser cap the API tokens that are neither
+	// revoked nor expired: per workspace, and per person who created them (in that workspace).
+	MaxActiveAPITokensPerWorkspace = 25
+	MaxActiveAPITokensPerUser      = 10
 )
 
 // Exceeded says which limit a request would have broken. Per is what the
@@ -169,6 +173,27 @@ func CheckScheduledChange(ctx context.Context, tx pgx.Tx, workspaceID, flagID st
 		return Exceeded{Resource: "pending scheduled changes", Limit: MaxPendingChangesPerFlag, Per: "flag"}
 	}
 	return check("pending scheduled changes", perWorkspace, MaxPendingChangesPerWorkspace)
+}
+
+// CheckAPIToken returns Exceeded when creating one more API token would pass a cap
+// on active ones (not revoked, not expired). Call it first in the transaction that
+// inserts the token: it takes the workspace row lock, so two concurrent creates
+// cannot both pass.
+func CheckAPIToken(ctx context.Context, tx pgx.Tx, workspaceID, userID string) error {
+	if err := lockWorkspace(ctx, tx, workspaceID); err != nil {
+		return err
+	}
+	var perWorkspace, perUser int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE created_by = $2::uuid)
+		FROM api_tokens WHERE workspace_id = $1::uuid AND revoked_at IS NULL AND expires_at > now()`,
+		workspaceID, userID).Scan(&perWorkspace, &perUser); err != nil {
+		return err
+	}
+	if perUser >= MaxActiveAPITokensPerUser {
+		return Exceeded{Resource: "active API tokens", Limit: MaxActiveAPITokensPerUser, Per: "person"}
+	}
+	return check("active API tokens", perWorkspace, MaxActiveAPITokensPerWorkspace)
 }
 
 // CheckMember returns Exceeded when members plus open invites already reach

@@ -142,7 +142,8 @@ func buildListQuery(workspaceID, environmentID string, p listParams) (string, []
 	query := `
 	SELECT id, created_at, actor_email, action, resource_type, resource_id, severity,
 	       COALESCE(diff_before::text, 'null'), COALESCE(diff_after::text, 'null'),
-	       CASE WHEN environment_id IS NULL THEN 'global' ELSE 'environment' END
+	       CASE WHEN environment_id IS NULL THEN 'global' ELSE 'environment' END,
+	       actor_type, COALESCE(actor_detail::text, 'null')
 	FROM audit_logs
 	WHERE ` + strings.Join(where, " AND ") + fmt.Sprintf(`
 	ORDER BY id DESC
