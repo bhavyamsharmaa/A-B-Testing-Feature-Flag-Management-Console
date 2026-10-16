@@ -13,6 +13,7 @@ import (
 	"helios/backend/internal/controlplane/audit"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/dataplane/evaluation"
+	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/httpx"
 )
 
@@ -85,7 +86,7 @@ type usageView struct {
 func usageOf(ctx context.Context, q queryer, workspaceID, segKey string) ([]flagUse, error) {
 	in, notIn := referencing(segKey)
 	rows, err := q.Query(ctx, `
-		SELECT f.key, f.name, e.key, fc.enabled
+		SELECT f.key, f.name, e.key, fc.enabled, e.id::text
 		FROM flag_configs fc
 		JOIN flags f ON f.id = fc.flag_id AND f.workspace_id = fc.workspace_id
 		JOIN environments e ON e.id = fc.environment_id AND e.workspace_id = fc.workspace_id
@@ -99,8 +100,13 @@ func usageOf(ctx context.Context, q queryer, workspaceID, segKey string) ([]flag
 	for rows.Next() {
 		var flagKey, flagName string
 		var env environmentUse
-		if err := rows.Scan(&flagKey, &flagName, &env.Key, &env.Enabled); err != nil {
+		var envID string
+		if err := rows.Scan(&flagKey, &flagName, &env.Key, &env.Enabled, &envID); err != nil {
 			return nil, err
+		}
+		// An API token limited to some environments is told about those only.
+		if tok, isToken := auth.APITokenFrom(ctx); isToken && !tok.AllowsEnvironment(envID) {
+			continue
 		}
 		if n := len(out); n == 0 || out[n-1].FlagKey != flagKey {
 			out = append(out, flagUse{FlagKey: flagKey, FlagName: flagName})

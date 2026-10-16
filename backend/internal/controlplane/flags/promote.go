@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/httpx"
 )
 
@@ -159,6 +160,11 @@ func plan(ctx context.Context, q queryRower, target rbac.Environment, flagKey st
 	}
 	if err != nil {
 		return prev, Change{}, err
+	}
+	// An API token limited to some environments cannot read another one's configuration
+	// through a promotion either: a source it may not reach is "not found".
+	if tok, isToken := auth.APITokenFrom(ctx); isToken && !tok.AllowsEnvironment(srcID) {
+		return prev, Change{}, promotionError{http.StatusNotFound, "ENVIRONMENT_NOT_FOUND", "source environment not found in this workspace"}
 	}
 	if srcID == target.ID {
 		return prev, Change{}, promotionError{http.StatusBadRequest, "INVALID_REQUEST", "the source and the target are the same environment"}

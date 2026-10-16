@@ -222,8 +222,8 @@ func (v *Verifier) touch(ctx context.Context, id string) {
 		return
 	}
 	if _, err := v.pool.Exec(ctx, `
-		UPDATE api_tokens SET last_used_at = $2
-		WHERE id = $1::uuid AND (last_used_at IS NULL OR last_used_at <= $2 - interval '1 minute')`, id, now); err != nil {
+		UPDATE api_tokens SET last_used_at = $2::timestamptz
+		WHERE id = $1::uuid AND (last_used_at IS NULL OR last_used_at <= $2::timestamptz - interval '1 minute')`, id, now); err != nil {
 		log.Printf("apitoken: could not record a token's last use: %v", err) // never the token
 	}
 }
