@@ -125,9 +125,9 @@ def main():
     if a.which in ('backend', 'all'):
         rows += run_backend(a.only)
     if a.which in ('frontend', 'all'):
-        rows += run_playwright('frontend', mutations.FRONTEND, a.only, lambda e: ['e2e/unit/segments.spec.tsx'])
+        rows += run_playwright('frontend', mutations.FRONTEND, a.only, lambda e: [e[4] if len(e) > 4 else 'e2e/unit/segments.spec.tsx'])
     if a.which in ('ui', 'all'):
-        rows += run_playwright('ui', mutations.UI, a.only, lambda e: ['e2e/segments.spec.ts', '-g', e[4]])
+        rows += run_playwright('ui', mutations.UI, a.only, lambda e: ['e2e/scheduling.spec.ts' if ('schedul' in e[1] or 'Modal' in e[1]) and 'segments' not in e[4] else 'e2e/segments.spec.ts', '-g', e[4]])
 
     bad = [r for r in rows if r[2] != 'CAUGHT']
     caught = len(rows) - len(bad)
