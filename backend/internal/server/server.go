@@ -21,22 +21,28 @@ import (
 	"helios/backend/internal/controlplane/auditlog"
 	"helios/backend/internal/controlplane/experiments"
 	"helios/backend/internal/controlplane/flags"
+	"helios/backend/internal/controlplane/outbox"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/controlplane/results"
 	"helios/backend/internal/controlplane/scheduling"
 	"helios/backend/internal/controlplane/sdkkeys"
 	"helios/backend/internal/controlplane/segments"
+	"helios/backend/internal/controlplane/webhooks"
 	"helios/backend/internal/controlplane/workspaces"
 	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/dataplane/stream"
 	"helios/backend/internal/dataplane/track"
+	"helios/backend/internal/delivery"
 	"helios/backend/internal/platform/apikey"
 	"helios/backend/internal/platform/apitoken"
 	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/exposuretoken"
 	"helios/backend/internal/platform/health"
+	"helios/backend/internal/platform/mail"
+	"helios/backend/internal/platform/netguard"
 	"helios/backend/internal/platform/ratelimit"
+	"helios/backend/internal/platform/secretbox"
 )
 
 type Deps struct {
@@ -75,6 +81,13 @@ type Deps struct {
 	// APITokenCacheTTL bounds how long an instance trusts a verified API token it was not
 	// told was revoked (zero: apitoken.DefaultCacheTTL, 15 seconds).
 	APITokenCacheTTL time.Duration
+	// Delivery configures webhooks and invite email (the signing-secret box, the SSRF guard, the
+	// mail sender). The zero value is safe: webhooks report themselves unavailable, mail goes to the
+	// sink, and endpoints must be public https hosts.
+	Delivery delivery.Options
+	// OutboxSecret enables POST /internal/outbox/run when at least outbox.MinSharedLen long;
+	// empty (or shorter) leaves the endpoint answering 404. It is a secret: never log it.
+	OutboxSecret string
 	// StreamRecheck is how often an open /sdk/stream asks whether its key was
 	// revoked. Zero means 10 seconds.
 	StreamRecheck time.Duration
@@ -194,7 +207,22 @@ func rank(r rbac.Role) int {
 // New returns the router with every route mounted.
 func New(d Deps) *Router {
 	guard := rbac.NewGuard(d.Pool)
-	ws := workspaces.NewHandlers(workspaces.NewService(d.Pool), d.Email, d.InvitesByID)
+	del := d.Delivery
+	if del.Box == nil {
+		del.Box, _ = secretbox.New("")
+	}
+	if del.Guard == nil {
+		del.Guard = netguard.New(netguard.Policy{})
+	}
+	if del.Mail == nil {
+		del.Mail = &mail.Sink{}
+	}
+	if del.Outbox.Now == nil && d.Clock != nil {
+		del.Outbox.Now = d.Clock
+	}
+	outboxWorker := delivery.NewWorker(d.Pool, del)
+	wh := webhooks.NewHandlers(d.Pool, del.Box, del.Guard, outboxWorker, del.Outbox.Now)
+	ws := workspaces.NewHandlers(workspaces.NewService(d.Pool).WithMail(del.Mail.Mode(), del.Outbox.Now), d.Email, d.InvitesByID)
 	fl := flags.NewHandlers(d.Pool, d.Publisher)
 	al := auditlog.NewHandlers(d.Pool)
 	sg := segments.NewHandlers(d.Pool, d.Publisher)
@@ -315,6 +343,18 @@ func New(d Deps) *Router {
 	workspace("GET /workspaces/{wsId}/invites", rbac.WorkspaceAdmin, ws.Invites)
 	workspace("POST /workspaces/{wsId}/invites", rbac.WorkspaceAdmin, ws.CreateInvite, perUser(ratelimit.ClassInvite))
 	workspace("DELETE /workspaces/{wsId}/invites/{inviteId}", rbac.WorkspaceAdmin, ws.RevokeInvite, perUser(ratelimit.ClassInvite))
+	workspace("POST /workspaces/{wsId}/invites/{inviteId}/resend", rbac.WorkspaceAdmin, ws.ResendInvite, perUser(ratelimit.ClassInvite))
+
+	// Webhooks (see docs/WEBHOOKS.md): admins and owners, session only (token-denied).
+	workspace("GET /workspaces/{wsId}/webhooks", rbac.WorkspaceAdmin, wh.List)
+	workspace("POST /workspaces/{wsId}/webhooks", rbac.WorkspaceAdmin, wh.Create, perUser(ratelimit.ClassWebhookWrite))
+	workspace("PATCH /workspaces/{wsId}/webhooks/{endpointId}", rbac.WorkspaceAdmin, wh.Update, perUser(ratelimit.ClassWebhookWrite))
+	workspace("DELETE /workspaces/{wsId}/webhooks/{endpointId}", rbac.WorkspaceAdmin, wh.Delete, perUser(ratelimit.ClassWebhookWrite))
+	workspace("POST /workspaces/{wsId}/webhooks/{endpointId}/rotate-secret", rbac.WorkspaceAdmin, wh.RotateSecret, perUser(ratelimit.ClassWebhookWrite))
+	workspace("POST /workspaces/{wsId}/webhooks/{endpointId}/test", rbac.WorkspaceAdmin, wh.Test, perUser(ratelimit.ClassWebhookTest))
+	workspace("GET /workspaces/{wsId}/webhooks/{endpointId}/deliveries", rbac.WorkspaceAdmin, wh.Deliveries)
+	workspace("POST /workspaces/{wsId}/webhooks/{endpointId}/deliveries/{deliveryId}/resend", rbac.WorkspaceAdmin, wh.Resend, perUser(ratelimit.ClassWebhookTest))
+	internal("POST /internal/outbox/run", outbox.InternalHandler(d.OutboxSecret, outboxWorker.Run), ratelimit.ClassOutboxRun)
 
 	// API tokens (see docs/API_TOKENS.md). Managing them is for admins and owners and is
 	// session-only: these routes are classified token-denied. A token's creator is the

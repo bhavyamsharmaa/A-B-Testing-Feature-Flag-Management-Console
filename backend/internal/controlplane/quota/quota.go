@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -50,6 +51,14 @@ const (
 	// revoked nor expired: per workspace, and per person who created them (in that workspace).
 	MaxActiveAPITokensPerWorkspace = 25
 	MaxActiveAPITokensPerUser      = 10
+	// MaxWebhookEndpoints is per workspace (enabled or not).
+	MaxWebhookEndpoints = 10
+	// MaxInviteEmailsPerWorkspacePerDay counts invite emails queued in any 24 hours, resends included.
+	MaxInviteEmailsPerWorkspacePerDay = 50
+	// MaxInviteEmailsPerRecipientPerDay is per workspace and recipient;
+	// MaxInviteEmailsPerRecipientAnywherePerDay is per recipient across every workspace.
+	MaxInviteEmailsPerRecipientPerDay         = 3
+	MaxInviteEmailsPerRecipientAnywherePerDay = 6
 )
 
 // Exceeded says which limit a request would have broken. Per is what the
@@ -87,6 +96,11 @@ func CheckEnvironments(requested int) error {
 func lockWorkspace(ctx context.Context, tx pgx.Tx, workspaceID string) error {
 	var one int
 	return tx.QueryRow(ctx, `SELECT 1 FROM workspaces WHERE id = $1::uuid FOR UPDATE`, workspaceID).Scan(&one)
+}
+
+// LockWorkspace takes the workspace row lock that counted limits serialise on.
+func LockWorkspace(ctx context.Context, tx pgx.Tx, workspaceID string) error {
+	return lockWorkspace(ctx, tx, workspaceID)
 }
 
 // CheckFlag returns Exceeded when the workspace already has MaxFlags flags.
@@ -194,6 +208,49 @@ func CheckAPIToken(ctx context.Context, tx pgx.Tx, workspaceID, userID string) e
 		return Exceeded{Resource: "active API tokens", Limit: MaxActiveAPITokensPerUser, Per: "person"}
 	}
 	return check("active API tokens", perWorkspace, MaxActiveAPITokensPerWorkspace)
+}
+
+// CheckWebhookEndpoint returns Exceeded when the workspace already has MaxWebhookEndpoints
+// endpoints. It takes the workspace row lock, like the other counted limits.
+func CheckWebhookEndpoint(ctx context.Context, tx pgx.Tx, workspaceID string) error {
+	if err := lockWorkspace(ctx, tx, workspaceID); err != nil {
+		return err
+	}
+	var have int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM webhook_endpoints WHERE workspace_id = $1::uuid`, workspaceID).Scan(&have); err != nil {
+		return err
+	}
+	return check("webhook endpoints", have, MaxWebhookEndpoints)
+}
+
+// CheckInviteEmail applies the daily limits on invite emails (resends included), counted
+// over the last 24 hours from the outbox. Call it in the transaction that queues the email,
+// after the workspace row is locked (CheckMember does that), so concurrent invites cannot
+// both pass.
+//
+// The workspace-wide limit and the per-recipient limit inside the workspace return Exceeded:
+// they count only this workspace's own activity, so refusing says nothing about anyone else.
+// The per-recipient limit ACROSS workspaces counts other workspaces' activity, so it is not
+// reported as an error (that would let one workspace probe for another's invites): it
+// returns suppress=true and the caller records the email as not sent.
+func CheckInviteEmail(ctx context.Context, tx pgx.Tx, workspaceID, recipient string, now time.Time) (suppress bool, err error) {
+	var perWorkspace, perRecipient, anywhere int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE workspace_id = $1::uuid),
+		       count(*) FILTER (WHERE workspace_id = $1::uuid AND target_key = $2),
+		       count(*) FILTER (WHERE target_key = $2)
+		FROM outbox
+		WHERE kind = 'email' AND created_at > $3
+		  AND (workspace_id = $1::uuid OR target_key = $2)`, workspaceID, recipient, now.Add(-24*time.Hour)).Scan(&perWorkspace, &perRecipient, &anywhere); err != nil {
+		return false, err
+	}
+	if perWorkspace >= MaxInviteEmailsPerWorkspacePerDay {
+		return false, Exceeded{Resource: "invite emails", Limit: MaxInviteEmailsPerWorkspacePerDay, Per: "workspace per day"}
+	}
+	if perRecipient >= MaxInviteEmailsPerRecipientPerDay {
+		return false, Exceeded{Resource: "invite emails to one address", Limit: MaxInviteEmailsPerRecipientPerDay, Per: "workspace per day"}
+	}
+	return anywhere >= MaxInviteEmailsPerRecipientAnywherePerDay, nil
 }
 
 // CheckMember returns Exceeded when members plus open invites already reach

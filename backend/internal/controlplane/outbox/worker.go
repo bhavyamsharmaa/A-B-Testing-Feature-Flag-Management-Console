@@ -43,6 +43,9 @@ type Result struct {
 	Hint string
 	// Permanent: do not retry (the target is gone, disabled or no longer relevant).
 	Permanent bool
+	// Internal: the failure is ours (no signing key, say), not the receiver's, so it
+	// does not count against the target's health.
+	Internal bool
 }
 
 // Sender performs the network call for one kind. It is called with NO
@@ -400,4 +403,42 @@ func Purge(ctx context.Context, pool *pgxpool.Pool, now time.Time) (int64, error
 		}
 	}
 	return total, nil
+}
+
+// ClaimOne leases one specific row now if it is claimable (pending or failed):
+// a test ping or a resend that should be sent at once rather than at the next
+// worker pass. ok is false when the row is not in this workspace, is delivered,
+// dead-and-not-reset, or is already leased.
+func (w *Worker) ClaimOne(ctx context.Context, workspaceID, deliveryID string) (Delivery, bool, error) {
+	now := w.cfg.Now()
+	rows, err := w.pool.Query(ctx, `
+		UPDATE outbox SET status = 'delivering', lease_owner = $3, lease_expires_at = $4, attempts = attempts + 1, last_attempt_at = $5, updated_at = $5
+		WHERE delivery_id = $1::uuid AND workspace_id = $2::uuid AND status IN ('pending', 'failed')
+		RETURNING id::text, workspace_id::text, kind, event_type, event_id::text, delivery_id::text,
+		          COALESCE(endpoint_id::text, ''), COALESCE(invite_id::text, ''), target_key, payload::text, attempts, false`,
+		deliveryID, workspaceID, w.cfg.WorkerID, now.Add(w.cfg.Lease), now)
+	if err != nil {
+		return Delivery{}, false, err
+	}
+	got, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Delivery, error) {
+		var d Delivery
+		var kind, payload string
+		err := row.Scan(&d.ID, &d.WorkspaceID, &kind, &d.EventType, &d.EventID, &d.DeliveryID, &d.EndpointID, &d.InviteID, &d.TargetKey, &payload, &d.Attempt, &d.Reclaimed)
+		d.Kind, d.Payload = Kind(kind), json.RawMessage(payload)
+		return d, err
+	})
+	if err != nil || len(got) == 0 {
+		return Delivery{}, false, err
+	}
+	return got[0], true, nil
+}
+
+// SendNow claims one row and delivers it in this call, returning the stats.
+func (w *Worker) SendNow(ctx context.Context, workspaceID, deliveryID string) (Stats, bool, error) {
+	var st Stats
+	d, ok, err := w.ClaimOne(ctx, workspaceID, deliveryID)
+	if err != nil || !ok {
+		return st, false, err
+	}
+	return st, true, w.Deliver(ctx, d, &st)
 }

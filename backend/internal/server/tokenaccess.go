@@ -46,9 +46,19 @@ var tokenAccess = map[string]bool{
 	"DELETE /workspaces/{wsId}/invites/{inviteId}": false,
 
 	// Token management: session only. A token can never mint, list or revoke tokens.
-	"POST /workspaces/{wsId}/api-tokens":             false,
-	"GET /workspaces/{wsId}/api-tokens":              false,
-	"DELETE /workspaces/{wsId}/api-tokens/{tokenId}": false,
+	"POST /workspaces/{wsId}/api-tokens":                                           false,
+	"GET /workspaces/{wsId}/api-tokens":                                            false,
+	"POST /workspaces/{wsId}/invites/{inviteId}/resend":                            false,
+	"GET /workspaces/{wsId}/webhooks":                                              false,
+	"POST /workspaces/{wsId}/webhooks":                                             false,
+	"PATCH /workspaces/{wsId}/webhooks/{endpointId}":                               false,
+	"DELETE /workspaces/{wsId}/webhooks/{endpointId}":                              false,
+	"POST /workspaces/{wsId}/webhooks/{endpointId}/rotate-secret":                  false,
+	"POST /workspaces/{wsId}/webhooks/{endpointId}/test":                           false,
+	"GET /workspaces/{wsId}/webhooks/{endpointId}/deliveries":                      false,
+	"POST /workspaces/{wsId}/webhooks/{endpointId}/deliveries/{deliveryId}/resend": false,
+	"POST /internal/outbox/run":                                                    false,
+	"DELETE /workspaces/{wsId}/api-tokens/{tokenId}":                               false,
 
 	// SDK key management: keys grant read access to an environment.
 	"GET /environments/{envId}/sdk-keys":            false,

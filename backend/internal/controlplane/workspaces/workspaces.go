@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,12 +100,29 @@ type PendingInvite struct {
 }
 
 type Service struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	mailMode string
+	now      func() time.Time
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
-	return &Service{pool: pool}
+	return &Service{pool: pool, mailMode: "sink", now: time.Now}
 }
+
+// WithMail says how invite email is delivered ("sink": it is not actually sent, or "smtp"), so the
+// console can tell people the truth, and gives the clock the daily email limits use.
+func (s *Service) WithMail(mode string, now func() time.Time) *Service {
+	if mode != "" {
+		s.mailMode = mode
+	}
+	if now != nil {
+		s.now = now
+	}
+	return s
+}
+
+// MailMode is "sink" or "smtp".
+func (s *Service) MailMode() string { return s.mailMode }
 
 type querier interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
@@ -124,7 +142,11 @@ func (e apiError) Error() string { return e.Message }
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	var ae apiError
 	var re roleError
+	var cd ErrResendCooldown
 	switch {
+	case errors.As(err, &cd):
+		w.Header().Set("Retry-After", strconv.Itoa(int(cd.RetryAfter.Seconds())+1))
+		httpx.WriteError(w, http.StatusTooManyRequests, "RESEND_COOLDOWN", cd.Error())
 	case errors.As(err, &ae):
 		httpx.WriteError(w, ae.Status, ae.Code, ae.Message)
 	case errors.As(err, &re):

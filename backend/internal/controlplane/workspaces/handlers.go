@@ -149,10 +149,15 @@ type inviteView struct {
 	InvitedByEmail string             `json:"invitedByEmail"`
 	CreatedAt      time.Time          `json:"createdAt"`
 	ExpiresAt      time.Time          `json:"expiresAt"`
+	// EmailStatus: none (no email was queued, e.g. an invite from before email existed), queued, sent or failed.
+	EmailStatus    string     `json:"emailStatus"`
+	EmailError     string     `json:"emailError,omitempty"`
+	EmailUpdatedAt *time.Time `json:"emailUpdatedAt"`
 }
 
 func inviteOf(i Invite) inviteView {
-	return inviteView{ID: i.ID, Email: i.Email, Role: i.Role, InvitedByEmail: i.InvitedByEmail, CreatedAt: i.CreatedAt, ExpiresAt: i.ExpiresAt}
+	return inviteView{ID: i.ID, Email: i.Email, Role: i.Role, InvitedByEmail: i.InvitedByEmail, CreatedAt: i.CreatedAt, ExpiresAt: i.ExpiresAt,
+		EmailStatus: i.EmailStatus, EmailError: i.EmailError, EmailUpdatedAt: i.EmailUpdatedAt}
 }
 
 // Invites handles GET /workspaces/{wsId}/invites: open invites (admin+).
@@ -167,7 +172,7 @@ func (h *Handlers) Invites(w http.ResponseWriter, r *http.Request) {
 	for _, i := range list {
 		out = append(out, inviteOf(i))
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"invites": out})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"invites": out, "email": map[string]any{"mode": h.svc.MailMode(), "sent": h.svc.MailMode() == "smtp"}})
 }
 
 type createInviteRequest struct {
@@ -195,7 +200,22 @@ func (h *Handlers) CreateInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	inv.EmailStatus = "queued"
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"invite": inviteOf(inv), "token": token})
+}
+
+// ResendInvite handles POST /workspaces/{wsId}/invites/{inviteId}/resend (admin+). It
+// emails the invitee again with a NEW link (the old one stops working) and returns the
+// new token once, like creating an invite does, so the copy-link fallback stays valid.
+func (h *Handlers) ResendInvite(w http.ResponseWriter, r *http.Request) {
+	access := rbac.WorkspaceAccessFrom(r.Context())
+	inv, token, err := h.svc.ResendInvite(r.Context(), access, pathID(r, "inviteId"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	inv.EmailStatus = "queued"
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"invite": inviteOf(inv), "token": token})
 }
 
 // RevokeInvite handles DELETE /workspaces/{wsId}/invites/{inviteId} (admin+).

@@ -16,7 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	"helios/backend/internal/controlplane/outbox"
 	"helios/backend/internal/controlplane/scheduling"
+	"helios/backend/internal/delivery"
 	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/config"
 	"helios/backend/internal/platform/cors"
@@ -150,7 +152,36 @@ func main() {
 		log.Printf("scheduler endpoint: enabled")
 	}
 
+	delOpts, err := delivery.FromConfig(cfg)
+	if err != nil {
+		log.Fatalf("webhooks / email settings: %v", err) // never quotes a key or password
+	}
+	// Only whether things are on: never a key, password or address.
+	if delOpts.Box.Available() {
+		log.Printf("webhooks: available (secrets sealed with AES-256-GCM)")
+	} else {
+		log.Printf("webhooks: UNAVAILABLE, WEBHOOK_SECRET_KEY is not set (endpoints cannot be created; fail closed)")
+	}
+	if cfg.WebhookAllowInsecureLocal == "true" {
+		log.Printf("WARNING: WEBHOOK_ALLOW_INSECURE_LOCAL=true: webhooks may use http and loopback addresses (development only)")
+	}
+	if delOpts.Mail.Mode() == "sink" {
+		log.Printf("invite email: SINK, nothing is actually sent (set MAIL_MODE=smtp to send)")
+	} else {
+		log.Printf("invite email: smtp")
+	}
+	switch {
+	case cfg.OutboxSecret == "":
+		log.Printf("outbox endpoint: disabled (OUTBOX_SECRET is not set); deliver with cmd/outbox")
+	case len(cfg.OutboxSecret) < outbox.MinSharedLen:
+		log.Printf("outbox endpoint: DISABLED, OUTBOX_SECRET is shorter than %d characters", outbox.MinSharedLen)
+	default:
+		log.Printf("outbox endpoint: enabled")
+	}
+
 	router := server.New(server.Deps{
+		Delivery:        delOpts,
+		OutboxSecret:    cfg.OutboxSecret,
 		SchedulerSecret: cfg.SchedulerSecret,
 		Scheduler:       schedulerCfg,
 		ExposureTokens:  keyring,

@@ -36,6 +36,29 @@ type Config struct {
 	SchedulerSecret    string
 	SchedulerGrace     string
 	CORSAllowedOrigins []string // browser origins allowed to call the API, e.g. the Vercel URL
+
+	// Webhooks and the outbox (see docs/WEBHOOKS.md, docs/OUTBOX.md). WebhookSecretKey is a SECRET:
+	// 32 random bytes, base64 (openssl rand -base64 32); without it webhooks are unavailable
+	// (fail closed). The previous key is only for rotation. WebhookAllowInsecureLocal ("true")
+	// lets endpoints use http and loopback addresses: a development switch, never for production.
+	WebhookSecretKey          string
+	WebhookSecretKeyPrevious  string
+	WebhookAllowInsecureLocal string
+	// OutboxSecret (a SECRET, at least 32 characters) enables POST /internal/outbox/run; unset leaves it answering 404.
+	OutboxSecret string
+
+	// Email (invites). MailMode is "sink" (the default: nothing is sent) or "smtp".
+	MailMode          string
+	MailSinkDir       string // sink: also write each message to a file here (development only; the files hold invite links)
+	MailAllowInsecure string // "true" allows SMTP_TLS=none (a local catcher)
+	SMTPHost          string
+	SMTPPort          string
+	SMTPUsername      string
+	SMTPPassword      string // a SECRET
+	SMTPFrom          string
+	SMTPTLS           string // starttls (default) | implicit | none
+	// PublicConsoleURL is the console's origin, used for the link in invite emails.
+	PublicConsoleURL string
 }
 
 // Load reads configuration from the environment, applying defaults that match
@@ -60,6 +83,21 @@ func Load() Config {
 		SchedulerSecret:          os.Getenv("SCHEDULER_SECRET"),
 		SchedulerGrace:           os.Getenv("SCHEDULER_GRACE"),
 		CORSAllowedOrigins:       splitList(os.Getenv("CORS_ALLOWED_ORIGINS")),
+
+		WebhookSecretKey:          os.Getenv("WEBHOOK_SECRET_KEY"),
+		WebhookSecretKeyPrevious:  os.Getenv("WEBHOOK_SECRET_KEY_PREVIOUS"),
+		WebhookAllowInsecureLocal: os.Getenv("WEBHOOK_ALLOW_INSECURE_LOCAL"),
+		OutboxSecret:              os.Getenv("OUTBOX_SECRET"),
+		MailMode:                  os.Getenv("MAIL_MODE"),
+		MailSinkDir:               os.Getenv("MAIL_SINK_DIR"),
+		MailAllowInsecure:         os.Getenv("MAIL_ALLOW_INSECURE_SMTP"),
+		SMTPHost:                  os.Getenv("SMTP_HOST"),
+		SMTPPort:                  os.Getenv("SMTP_PORT"),
+		SMTPUsername:              os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:              os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:                  os.Getenv("SMTP_FROM"),
+		SMTPTLS:                   os.Getenv("SMTP_TLS"),
+		PublicConsoleURL:          strings.TrimRight(os.Getenv("PUBLIC_CONSOLE_URL"), "/"),
 	}
 }
 

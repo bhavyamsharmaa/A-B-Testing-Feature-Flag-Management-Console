@@ -247,12 +247,21 @@ type Invite struct {
 	InvitedByEmail string
 	CreatedAt      time.Time
 	ExpiresAt      time.Time
+	// The state of the latest email for this invite: none, queued, sent or failed.
+	EmailStatus    string
+	EmailError     string
+	EmailUpdatedAt *time.Time
 }
 
 func (s *Service) Invites(ctx context.Context, workspaceID string) ([]Invite, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT i.id::text, i.email, i.role::text, COALESCE(u.email, ''), i.created_at, i.expires_at
+		SELECT i.id::text, i.email, i.role::text, COALESCE(u.email, ''), i.created_at, i.expires_at,
+		       COALESCE(m.status, ''), COALESCE(m.last_error, ''), m.updated_at
 		FROM workspace_invites i LEFT JOIN auth.users u ON u.id = i.invited_by
+		LEFT JOIN LATERAL (
+			SELECT status, last_error, updated_at FROM outbox
+			WHERE workspace_id = i.workspace_id AND invite_id = i.id AND kind = 'email'
+			ORDER BY created_at DESC, id DESC LIMIT 1) m ON true
 		WHERE i.workspace_id = $1::uuid AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now()
 		ORDER BY i.created_at DESC`, workspaceID)
 	if err != nil {
@@ -260,7 +269,9 @@ func (s *Service) Invites(ctx context.Context, workspaceID string) ([]Invite, er
 	}
 	list, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Invite, error) {
 		var i Invite
-		err := row.Scan(&i.ID, &i.Email, &i.Role, &i.InvitedByEmail, &i.CreatedAt, &i.ExpiresAt)
+		var status string
+		err := row.Scan(&i.ID, &i.Email, &i.Role, &i.InvitedByEmail, &i.CreatedAt, &i.ExpiresAt, &status, &i.EmailError, &i.EmailUpdatedAt)
+		i.EmailStatus = emailStatusOf(status)
 		return i, err
 	})
 	if list == nil {
@@ -316,7 +327,7 @@ func (s *Service) CreateInvite(ctx context.Context, access rbac.WorkspaceAccess,
 		).Scan(&inv.ID, &inv.CreatedAt, &inv.ExpiresAt); err != nil {
 			return err
 		}
-		return audit.Write(ctx, tx, audit.Entry{
+		if err := audit.Write(ctx, tx, audit.Entry{
 			WorkspaceID:  access.WorkspaceID,
 			ActorID:      access.User.ID,
 			ActorEmail:   access.User.Email,
@@ -324,7 +335,12 @@ func (s *Service) CreateInvite(ctx context.Context, access rbac.WorkspaceAccess,
 			ResourceType: "invite",
 			ResourceID:   inv.ID,
 			After:        map[string]any{"email": email, "role": role},
-		})
+		}); err != nil {
+			return err
+		}
+		// The email is queued in this same transaction: an invite that commits has its email
+		// waiting, and one that rolls back sends nothing.
+		return s.queueInviteEmail(ctx, tx, access, inv, token)
 	})
 	if isUniqueViolation(err, "one_open_invite_per_email") {
 		return Invite{}, "", apiError{409, "INVITE_EXISTS", "there is already an open invite for that email; revoke it to send a new one"}
