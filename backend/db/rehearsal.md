@@ -273,3 +273,33 @@ added NOT VALID and validated afterwards (SHARE UPDATE EXCLUSIVE: inserts contin
 `audit_logs`, schedule the migration for a quiet moment because the brief ACCESS EXCLUSIVE queues behind
 running inserts. **Rollback:** deploy a backend without tokens first, then the commented block in the
 migration (discards every token and the actor type of audit rows tokens wrote; back up first).
+
+
+## Migration 0013: outbox, webhooks, invite email (a later release than API tokens)
+
+Adds `webhook_endpoints` and `outbox` (new, empty), `scheduled_changes.created_by_token_id` and a UNIQUE
+`(id, workspace_id)` on `workspace_invites`. On the rehearsal database (never production), once 0001-0012 are in place:
+
+```bash
+psql "$REHEARSAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0013_webhooks_email.sql
+psql "$REHEARSAL_DATABASE_URL" -f backend/db/verify_0013.sql      # every row PASS
+```
+
+Then, with the backend running against it and `WEBHOOK_SECRET_KEY` set (any local random key):
+
+1. As an owner create a webhook endpoint pointing at a LOCAL receiver (set `WEBHOOK_ALLOW_INSECURE_LOCAL=true`
+   on the rehearsal backend only). Edit a flag; run `go run ./cmd/outbox`; the receiver gets one signed POST.
+2. Invite an address; run `go run ./cmd/outbox`; with the default sink, `MAIL_SINK_DIR` holds one .eml file and
+   the outbox row's payload no longer contains the invite token.
+3. Schedule a change with an API token, then revoke the token: the change shows as cancelled.
+4. `verify_0013.sql` again.
+
+Negative rehearsals: `ALTER TABLE outbox DISABLE ROW LEVEL SECURITY` or dropping `outbox_invite_workspace_fkey`
+must turn the matching `verify_0013.sql` rows to FAIL (done on a throwaway copy).
+
+**Lock impact:** `workspace_invites` takes a SHARE lock while the unique index builds (invite writes wait, reads do
+not; milliseconds). `scheduled_changes` gets one nullable column (catalog-only) and a foreign key added NOT VALID
+then validated. The foreign keys of the new tables take SHARE ROW EXCLUSIVE on `workspaces`, `environments`,
+`auth.users` and `api_tokens` for milliseconds. Nothing is rewritten. **Rollback:** deploy a backend without
+webhooks and invite email first, then the commented block at the end of the migration (discards every endpoint,
+secret and queued delivery; back up first).
