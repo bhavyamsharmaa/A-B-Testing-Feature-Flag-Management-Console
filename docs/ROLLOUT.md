@@ -17,6 +17,9 @@ Goal: existing users and SDK integrations see no breakage, and every step can be
 Nothing in release 1 reads or writes anything release 2 adds, and release 2 needs
 release 1's schema (it uses `workspace_id`). That is what makes the split safe.
 
+**A fifth release comes after the fourth: scoped API tokens for CI and scripts** (`feature/api-tokens`,
+section "Release 5" below). It adds one migration, 0012, and needs only release 1's schema.
+
 **A fourth release comes after the third: promotion between environments and scheduled changes**
 (`feature/scheduling`, section "Release 4" below). It adds one migration, 0011, and needs only
 release 1's schema.
@@ -51,7 +54,7 @@ The history is strictly linear (each branch contains the one before it; checked 
 `git merge-base --is-ancestor`). A bundle of all local branches is kept in
 `~/helios-backups/` (outside the repository).
 
-## Migrations 0004-0011
+## Migrations 0004-0012
 
 All files are in `backend/db/migrations/`; verify scripts in `backend/db/`. Every
 migration runs in its own transaction (no `psql -1`). Lock notes come from each file's
@@ -70,6 +73,8 @@ restored copy gives the real numbers.
 | 0010 segments | **3** | after releases 1 and 2 are finished | two NEW tables, `segments` and `segment_members` (`workspace_id` on both, composite FK, RLS on, indexes lead with `workspace_id`); no existing table changes | none on existing data: new empty tables. The foreign keys take `SHARE ROW EXCLUSIVE` on `workspaces` and `auth.users` for milliseconds while created (blocks writes to those two tables, not reads) | commented block: `DROP TABLE` both (deploy a backend without segments first; discards segments) | `verify_0010.sql` |
 
 | 0011 scheduled changes | **4** | after release 3 (or on its own after release 1: it needs only `workspaces`, `flags`, `environments`) | one NEW table, `scheduled_changes` (`workspace_id`, composite FKs, RLS on, indexes lead with `workspace_id` except the two partial claim indexes); no existing table changes | none on existing data: a new empty table. The foreign keys take `SHARE ROW EXCLUSIVE` on `workspaces`, `flags`, `environments` and `auth.users` for milliseconds while created (blocks writes to those tables, not reads) | commented block: `DROP TABLE` (deploy a backend without scheduling first; discards scheduled changes) | `verify_0011.sql` |
+
+| 0012 api tokens | **5** | after release 4 (or on its own after release 1: it needs `workspaces`, `environments`, `audit_logs`) | two NEW tables (`api_tokens`, `api_token_environments`; `workspace_id`, composite FKs, RLS on) and two columns on `audit_logs` (`actor_type` default `user`, `actor_detail`) | new tables: none on existing data (FKs take `SHARE ROW EXCLUSIVE` on `workspaces`, `environments`, `auth.users` for milliseconds). `audit_logs`: `ADD COLUMN ... DEFAULT <constant>` is catalog-only on PostgreSQL 11+ (no rewrite, no row updated, the append-only trigger does not fire) with a brief `ACCESS EXCLUSIVE` that queues behind running inserts; the CHECK is added NOT VALID then validated (`SHARE UPDATE EXCLUSIVE`, inserts continue) | commented block: drop the tables and the two audit columns (deploy a backend without tokens first; discards tokens) | `verify_0012.sql` |
 
 `verify_0005.sql` is expected to FAIL until 0005 is applied.
 
@@ -99,6 +104,11 @@ Names only for secrets. "Recommended" is for production on day one of that relea
 | `HELIOS_EVENT_RETENTION_DAYS` | new, read only by the `purgeevents` command, not the API | `90` |
 
 Vercel (console), release 2: no new variables. Supabase auth settings: not changed by either release.
+
+**Release 5 (API tokens):** no new variables in the backend or the console. Three rate-limit classes,
+overridable through `RATE_LIMITS`: `api_token` (per token, default burst 200 then 20/s), `token_invalid` (failed
+token authentications per IP, burst 30 then one per 2 s) and `api_token_write` (creating and revoking, per
+user). The verification cache TTL is a constant (15 s, `apitoken.DefaultCacheTTL`).
 
 **Release 4 (scheduling):** two optional variables on the API. `SCHEDULER_SECRET` (a **secret**, at
 least 32 characters) enables `POST /internal/scheduler/run`; unset, the endpoint does not exist (404) and
@@ -297,6 +307,40 @@ block in the file, after a backup.
 the every-route test, the tenant checks and the workspace guard of release 1 are assumed. It
 does not need 0008 or 0009, so it could ship without release 2, but this plan keeps the order.
 
+## Release 5 - API tokens
+
+Do not start until the release before it in your plan is finished and observed.
+
+**What it adds:** `hlt_` bearer tokens for CI and scripts (create, list, revoke, admins and owners only, in the
+console or with a session), an allowlist of the routes a token may reach, `GET /workspaces/{wsId}/environments`,
+and an actor type on audit entries. See `docs/API_TOKENS.md`.
+
+**Schema:** one migration, 0012: two new tables and two columns on `audit_logs`. The previous backend keeps
+running against the migrated database (it neither reads nor writes the new columns, which have defaults). The
+reverse is also safe: a token minted and then a rollback to an older backend leaves the token **unused**, not
+more powerful: the older backend has no token authentication and refuses `hlt_` bearers as invalid JWTs.
+
+**Authority to confirm before announcing it:** a token is never above its creator (checked on every request,
+from the live membership), never above its own role, restricted tokens cannot see other environments, the
+production approval gate applies, and tokens cannot manage tokens.
+
+**Sequence (each step on "go", with a report; never chained):**
+
+1. **K0 Preflight** (read-only): the checks under "After each merge" on the merged branch.
+2. **K1 Backup** (`backend/scripts/backup_db.sh`, via `PGSERVICE` only) and restore into a throwaway database.
+3. **K2 Rehearsal** on the restored copy: 0012, `verify_0012.sql`, the backend, the Playwright suite, and the
+   steps in `backend/db/rehearsal.md` ("Rehearsing 0012"). Confirm the pre-0012 audit entries still read as `user`.
+4. **K3 Migrate:** 0012, `verify_0012.sql`. The running backend is unaffected.
+5. **K4 Deploy** backend and console together. Smoke: create a viewer token limited to dev, read dev flags with
+   it, confirm staging is 404 and `/api-tokens` is 403 `TOKEN_NOT_ALLOWED`; create an editor token, confirm a
+   production edit is 403; edit a dev flag with it and find the audit entry with the token as actor; revoke it
+   and confirm 401 at once on every instance (look at the second Render instance, if there is one).
+6. **K5 Observe**, including the rate of `429` on `/environments/...` for token traffic and any
+   `api_token.rejected` audit entries (a revoked token still in use is worth chasing).
+
+**Rollback:** redeploy the previous backend and console. Tokens already created stay in the database,
+unusable. Undoing 0012 itself is the commented block in the file, after a backup; it discards the tokens.
+
 ## Release 4 - promotion and scheduled changes
 
 Do not start until the release before it in your plan is finished (release 1 is the real dependency;
@@ -339,7 +383,7 @@ commented `DROP TABLE` block in the file, after a backup.
 ## Merge order and keeping the stack consistent
 
 The branches form one line: `main` <- `feature/workspaces-ui` <- `-tracking` <- `-results`
-<- `-results-ui` <- `-hardening` <- `feature/ci` <- `feature/segments` (release 3) <- `feature/scheduling` (release 4). Merge in that order, one at a time.
+<- `-results-ui` <- `-hardening` <- `feature/ci` <- `feature/segments` (release 3) <- `feature/scheduling` (release 4) <- `feature/api-tokens` (release 5). Merge in that order, one at a time.
 
 1. **Release 1:** merge `feature/workspaces-ui` into `main` with a **merge commit or fast-forward, not a squash**. (Local `main`'s two extra commits are already inside that branch.)
 2. Deploy and finish release 1 (G0-G7). Any fixes made to release 1 during the gates go on `feature/workspaces-ui`/`main` first.
