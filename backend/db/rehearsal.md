@@ -239,3 +239,37 @@ SHARE ROW EXCLUSIVE on `workspaces`, `flags`, `environments` and `auth.users` fo
 each while created: writes to those tables wait, reads do not. **Rollback:** deploy a backend
 without scheduling first, then the commented `DROP TABLE` block (discards every scheduled change
 and its history; back up first with `backend/scripts/backup_db.sh`).
+
+## Rehearsing 0012 (API tokens) — AFTER the multi-tenancy release
+
+0012 is a separate, later change (see `docs/ROLLOUT.md`, release 5). It adds two new, empty tables
+(`api_tokens`, `api_token_environments`) and two columns on `audit_logs` (`actor_type`, default
+`user`, and `actor_detail`). On the rehearsal database (never production), once 0001-0011 are in place:
+
+```bash
+psql "$REHEARSAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0012_api_tokens.sql
+psql "$REHEARSAL_DATABASE_URL" -f backend/db/verify_0012.sql      # every row PASS
+```
+
+Then run the backend and check, in a rehearsal workspace:
+
+1. As an owner, create a token (admin role, environment dev only). Use it with `curl` in
+   `Authorization: Bearer` against `GET /environments/<dev id>/flags` (200), against staging (404), against
+   `GET /workspaces/<id>/api-tokens` (403: tokens cannot manage tokens).
+2. Edit a flag with it; the audit log shows the actor as the token (name and prefix) with the creator.
+3. Demote the creator to viewer: the same token's edit is refused at once (403); remove the creator: 404.
+4. Revoke the token in the console: the next request fails, with a generic 401.
+5. `verify_0012.sql` again, and confirm the audit entries written before 0012 still read as `user`.
+
+Negative rehearsals: `ALTER TABLE api_tokens DISABLE ROW LEVEL SECURITY` or dropping
+`api_token_environments_environment_fkey` must turn the matching `verify_0012.sql` row to FAIL (restore
+afterwards, on the throwaway copy only).
+
+**Lock impact:** two new empty tables (their foreign keys take SHARE ROW EXCLUSIVE on `workspaces`,
+`environments` and `auth.users` for milliseconds: writes to those tables wait, reads do not), and
+`ALTER TABLE audit_logs ADD COLUMN ... DEFAULT <constant>`, which on PostgreSQL 11+ is catalog-only: no rewrite,
+no row updated (so the append-only trigger does not fire), an ACCESS EXCLUSIVE lock for a moment. The CHECK is
+added NOT VALID and validated afterwards (SHARE UPDATE EXCLUSIVE: inserts continue), as in 0009. On a very busy
+`audit_logs`, schedule the migration for a quiet moment because the brief ACCESS EXCLUSIVE queues behind
+running inserts. **Rollback:** deploy a backend without tokens first, then the commented block in the
+migration (discards every token and the actor type of audit rows tokens wrote; back up first).
