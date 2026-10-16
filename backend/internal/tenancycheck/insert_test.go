@@ -34,6 +34,8 @@ var tenantTables = map[string]bool{
 	"scheduled_changes":      true, // 0011
 	"api_tokens":             true, // 0012
 	"api_token_environments": true, // 0012
+	"webhook_endpoints":      true, // 0013
+	"outbox":                 true, // 0013
 }
 
 var insertRE = regexp.MustCompile(`(?is)INSERT\s+INTO\s+([a-z_][a-z0-9_]*)\s*(\(([^)]*)\))?`)
@@ -190,6 +192,9 @@ func TestLogCallsAreNotGivenCredentials(t *testing.T) {
 	suspicious := []string{"token", "plaintext", "secret", "password", "passwd", "authorization", "bearer", "apikey", "sdkkey", "jwt", "cookie", "keyhash", "databaseurl",
 		// API tokens (hlt_...): the token, its hash, the raw bearer value, and the Authorization header.
 		"hlt", "tokenhash", "rawtoken", "bearerval", "digest", "tokensecret",
+		// Webhooks and email: the signing secret and its ciphertext, signatures, the outbox payload (it holds an
+		// invite token while an email is pending), the invite link, and an endpoint's URL (it can carry a token).
+		"whsec", "sealed", "signature", "outboxpayload", "emailpayload", "invitelink", "inviteurl", "mailbody", "endpointurl", "targeturl", "hookurl", "signingkey",
 		// Event content is customer data (subject keys are opaque but may be personal): never logged.
 		"subjectkey", "properties", "props"}
 	logFuncs := map[string]bool{"Printf": true, "Print": true, "Println": true, "Fatal": true, "Fatalf": true, "Fatalln": true, "Panic": true, "Panicf": true}
