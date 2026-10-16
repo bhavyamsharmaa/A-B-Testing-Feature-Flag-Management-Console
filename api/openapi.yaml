@@ -24,6 +24,7 @@ tags:
   - name: system
   - name: control-plane
   - name: data-plane
+  - name: webhooks
 
 paths:
   /healthz:
@@ -223,11 +224,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [invites]
+                required: [invites, email]
                 properties:
                   invites:
                     type: array
                     items: { $ref: "#/components/schemas/Invite" }
+                  email:
+                    type: object
+                    required: [mode, sent]
+                    properties:
+                      mode: { type: string, enum: [sink, smtp], description: "sink: emails are NOT actually sent in this environment" }
+                      sent: { type: boolean }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/WorkspaceNotFound" }
@@ -235,9 +242,14 @@ paths:
       tags: [control-plane]
       summary: Invite someone by email (admin+)
       description: >-
-        Helios does not send email: the response carries a one-time token (only
-        its hash is stored; it can't be shown again) for the inviter to turn
-        into a link. It is valid for 7 days and only for that address. Members
+        An email with the invite link is queued in the same transaction (and
+        sent by the outbox worker; in a development environment mail goes to a
+        sink and nothing is actually sent: see `email` in the list response).
+        The response also carries the one-time token (only its hash is stored;
+        it can't be shown again) so the inviter can copy the link as a fallback.
+        It is valid for 7 days and only for that address. At most 3 emails a day
+        per address and 50 per workspace (409 QUOTA_EXCEEDED); the response is
+        the same whether or not the address already has an account. Members
         plus open invites are capped at 20 (409 QUOTA_EXCEEDED). Invites are
         never for the owner role.
       security: [{ supabaseJWT: [] }]
@@ -281,6 +293,232 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: "WORKSPACE_NOT_FOUND or INVITE_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/invites/{inviteId}/resend:
+    parameters:
+      - $ref: "#/components/parameters/WsPath"
+      - { name: inviteId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [control-plane]
+      summary: Email an open invite again, with a NEW link (admin+)
+      description: >-
+        The old token cannot be recovered (only its hash is stored), so a resend
+        issues a new one: the earlier link stops working and an earlier email still
+        queued is cancelled. At most one email per invite every 10 minutes (429
+        RESEND_COOLDOWN with Retry-After). The new token is returned once.
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invite, token]
+                properties:
+                  invite: { $ref: "#/components/schemas/Invite" }
+                  token: { type: string, description: "hinv_… shown once" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND or INVITE_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: QUOTA_EXCEEDED (daily invite emails), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: RESEND_COOLDOWN or RATE_LIMITED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/webhooks:
+    parameters: [{ $ref: "#/components/parameters/WsPath" }]
+    get:
+      tags: [webhooks]
+      summary: The workspace's webhook endpoints (admin+, session only)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Endpoints with their health. Never a secret, only its last characters.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [endpoints, available, eventTypes, limit]
+                properties:
+                  endpoints: { type: array, items: { $ref: "#/components/schemas/WebhookEndpoint" } }
+                  available: { type: boolean, description: "false when the server has no WEBHOOK_SECRET_KEY: endpoints cannot be created" }
+                  eventTypes: { type: array, items: { type: string } }
+                  limit: { type: integer, example: 10 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+    post:
+      tags: [webhooks]
+      summary: Create an endpoint (admin+, session only)
+      description: >-
+        The URL must be https on a public host (port 443 or 8443), validated now and again at every
+        delivery. The signing secret is returned ONCE. At most 10 endpoints per workspace. 503
+        WEBHOOKS_UNAVAILABLE when the server has no encryption key.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, eventTypes]
+              properties:
+                url: { type: string, maxLength: 2048 }
+                description: { type: string, maxLength: 200 }
+                eventTypes: { type: array, minItems: 1, items: { $ref: "#/components/schemas/WebhookEventType" } }
+                environmentId: { type: [string, "null"], format: uuid, description: "Only events of this environment; omit for all" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [endpoint, secret]
+                properties:
+                  endpoint: { $ref: "#/components/schemas/WebhookEndpoint" }
+                  secret: { type: string, description: "whsec_… shown once" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+        "409": { description: QUOTA_EXCEEDED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { description: WEBHOOKS_UNAVAILABLE, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/webhooks/{endpointId}:
+    parameters:
+      - $ref: "#/components/parameters/WsPath"
+      - { name: endpointId, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [webhooks]
+      summary: Change an endpoint, or enable/disable it (admin+, session only)
+      description: Re-enabling clears the failure counters. Every field is optional.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string }
+                description: { type: string }
+                eventTypes: { type: array, items: { $ref: "#/components/schemas/WebhookEventType" } }
+                environmentId: { type: [string, "null"], format: uuid }
+                enabled: { type: boolean }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/WebhookEndpoint" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND or WEBHOOK_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    delete:
+      tags: [webhooks]
+      summary: Delete an endpoint and its queued deliveries (admin+, session only)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND or WEBHOOK_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/webhooks/{endpointId}/rotate-secret:
+    parameters:
+      - $ref: "#/components/parameters/WsPath"
+      - { name: endpointId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [webhooks]
+      summary: Rotate the signing secret (admin+, session only)
+      description: The new secret is returned once. The old one keeps signing for 24 hours (both signatures are sent).
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Rotated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [endpoint, secret]
+                properties:
+                  endpoint: { $ref: "#/components/schemas/WebhookEndpoint" }
+                  secret: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND or WEBHOOK_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { description: WEBHOOKS_UNAVAILABLE, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/webhooks/{endpointId}/test:
+    parameters:
+      - $ref: "#/components/parameters/WsPath"
+      - { name: endpointId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [webhooks]
+      summary: Send a test ping now (admin+, session only, rate limited)
+      description: Works on a disabled endpoint. Returns the delivery record after the attempt.
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200": { description: The attempt, content: { application/json: { schema: { $ref: "#/components/schemas/WebhookDelivery" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND or WEBHOOK_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: RATE_LIMITED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/webhooks/{endpointId}/deliveries:
+    parameters:
+      - $ref: "#/components/parameters/WsPath"
+      - { name: endpointId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [webhooks]
+      summary: The delivery log of an endpoint, newest first (admin+, session only)
+      security: [{ supabaseJWT: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: status, in: query, schema: { type: string, enum: [pending, delivering, delivered, failed, dead] } }
+      responses:
+        "200":
+          description: Deliveries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deliveries]
+                properties:
+                  deliveries: { type: array, items: { $ref: "#/components/schemas/WebhookDelivery" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND or WEBHOOK_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/webhooks/{endpointId}/deliveries/{deliveryId}/resend:
+    parameters:
+      - $ref: "#/components/parameters/WsPath"
+      - { name: endpointId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: deliveryId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [webhooks]
+      summary: Send a failed delivery again, with the same delivery id (admin+, session only, rate limited)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200": { description: The attempt, content: { application/json: { schema: { $ref: "#/components/schemas/WebhookDelivery" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND, WEBHOOK_NOT_FOUND or DELIVERY_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: NOT_RESENDABLE (only failed or dead deliveries), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: RATE_LIMITED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /internal/outbox/run:
+    post:
+      tags: [system]
+      summary: Run the outbox worker once (machines only)
+      description: >-
+        Not part of the public API. Needs the X-Helios-Outbox-Secret header; with no OUTBOX_SECRET
+        configured it answers 404. Returns counts only.
+      security: []
+      parameters:
+        - { name: X-Helios-Outbox-Secret, in: header, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Counts, content: { application/json: { schema: { type: object } } } }
+        "401": { description: One fixed answer, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Not enabled }
+        "429": { description: RATE_LIMITED }
 
   /invites/accept:
     post:
@@ -1523,6 +1761,9 @@ components:
         invitedByEmail: { type: string }
         createdAt: { type: string, format: date-time }
         expiresAt: { type: string, format: date-time }
+        emailStatus: { type: string, enum: [none, queued, sent, failed], description: "The latest invite email. none: no email was queued (an invite from before email existed)." }
+        emailError: { type: string, description: "Short, fixed-vocabulary reason when failed" }
+        emailUpdatedAt: { type: [string, "null"], format: date-time }
 
     SdkKey:
       type: object
@@ -1713,6 +1954,52 @@ components:
         role: { type: string, enum: [viewer, editor, admin], description: At most the caller's own role. Fixed for the life of the token. }
         environments: { type: array, maxItems: 20, items: { type: string }, description: "Keys or ids of this workspace's environments; empty or absent: all" }
         expiresInDays: { type: integer, minimum: 1, maximum: 366, default: 90 }
+
+    WebhookEventType:
+      type: string
+      enum: [flag.created, flag.updated, flag.killed, flag.deleted, experiment.started, experiment.stopped, promotion.applied, scheduled_change.executed, scheduled_change.failed]
+
+    WebhookEndpoint:
+      type: object
+      required: [id, url, description, eventTypes, environment, enabled, secretHint, previousSecretExpiresAt, health, createdAt, status]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        description: { type: string }
+        eventTypes: { type: array, items: { $ref: "#/components/schemas/WebhookEventType" } }
+        environment: { type: [object, "null"], properties: { id: { type: string }, key: { type: string } }, description: "null: every environment" }
+        enabled: { type: boolean }
+        secretHint: { type: string, description: "The last four characters of the signing secret" }
+        previousSecretExpiresAt: { type: [string, "null"], format: date-time, description: "While set, deliveries carry two signatures" }
+        health:
+          type: object
+          properties:
+            consecutiveFailures: { type: integer }
+            failingSince: { type: [string, "null"], format: date-time }
+            lastSuccessAt: { type: [string, "null"], format: date-time }
+            lastFailureAt: { type: [string, "null"], format: date-time }
+            disabledReason: { type: [string, "null"] }
+            disabledAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+        status: { type: string, enum: [healthy, failing, disabled, idle] }
+
+    WebhookDelivery:
+      type: object
+      required: [id, eventId, eventType, status, attempts, createdAt]
+      properties:
+        id: { type: string, format: uuid, description: "The delivery id the receiver sees in Helios-Delivery-Id; stable across attempts" }
+        eventId: { type: string, format: uuid }
+        eventType: { type: string }
+        status: { type: string, enum: [pending, delivering, delivered, failed, dead] }
+        attempts: { type: integer }
+        httpStatus: { type: [integer, "null"] }
+        durationMs: { type: [integer, "null"] }
+        error: { type: [string, "null"], description: "A short fixed-vocabulary description; never a secret or the receiver's body" }
+        responseHint: { type: [string, "null"], description: "A truncated, printable start of the receiver's response to a failed attempt" }
+        createdAt: { type: string, format: date-time }
+        lastAttemptAt: { type: [string, "null"], format: date-time }
+        nextAttemptAt: { type: [string, "null"], format: date-time }
+        deliveredAt: { type: [string, "null"], format: date-time }
 
     ApiToken:
       type: object
