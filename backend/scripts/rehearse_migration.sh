@@ -2,7 +2,7 @@
 # Rehearse the multi-tenancy migrations on a LOCAL database, and prove what
 # keeps working at every step. Nothing here can reach production: the script
 # unsets DATABASE_URL and every PG* variable, and only ever talks to the
-# throwaway Postgres on 127.0.0.1:55432 (PGPORT below).
+# throwaway Postgres on 127.0.0.1:55432 (PGPORT below); backend/scripts/local_pg.sh ensure starts it.
 #
 #   rehearse_migration.sh --db NAME [--seed | --admin-email EMAIL] [--order 0004,0005,0006,0007]
 #

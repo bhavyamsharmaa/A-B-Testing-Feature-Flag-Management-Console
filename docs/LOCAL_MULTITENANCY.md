@@ -11,14 +11,19 @@ too: `docker compose up -d postgres` applies every migration in
 
 ```bash
 brew install postgresql@16
+backend/scripts/local_pg.sh ensure        # creates it if missing, starts it if stopped; safe to repeat
 PGBIN=/opt/homebrew/opt/postgresql@16/bin
-$PGBIN/initdb -D /tmp/helios-pg -U helios --auth=trust -E UTF8
-$PGBIN/pg_ctl -D /tmp/helios-pg -o "-p 55432 -c unix_socket_directories= -c listen_addresses=127.0.0.1" -l /tmp/helios-pg.log start
 $PGBIN/createdb -h 127.0.0.1 -p 55432 -U helios helios_dev
-for f in backend/db/migrations/0*.sql; do
-  $PGBIN/psql -h 127.0.0.1 -p 55432 -U helios -d helios_dev -v ON_ERROR_STOP=1 -q -f "$f"
-done
+backend/scripts/apply_migrations.sh   # with PGHOST=127.0.0.1 PGPORT=55432 PGUSER=helios PGDATABASE=helios_dev
 ```
+
+The data directory is `~/helios-local/pg` (set `HELIOS_LOCAL_DIR` to move `helios-local`; `local_pg.sh path`
+prints it). It is deliberately **outside the repository**, which the script enforces, and outside `/tmp`,
+which is cleared on restart and once took the database with it. After a reboot, run `local_pg.sh ensure`
+again. If the directory is ever lost or damaged, `ensure` recreates it empty: nothing in it is worth
+keeping (the integration tests create and drop their own databases; `helios_dev` is rebuilt by the two
+commands above). `local_pg.sh stop` shuts it down. It listens on 127.0.0.1 only, with trust
+authentication, so never point anything but local throwaway work at it.
 
 ## 2. Auth stand-in, backend, console
 
