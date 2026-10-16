@@ -154,6 +154,7 @@ test('webhooks: add, show the secret once, test, fail, resend, rotate, disable, 
   recv.state.status = 200
   await failedRow.getByRole('button', { name: /Resend flag.updated/ }).click()
   await expect(dialog(page).getByTestId('delivery-delivered').first()).toContainText('Delivered')
+  await expect(dialog(page).getByTestId('delivery-delivered').first().getByRole('button', { name: /Resend/ })).toHaveCount(0) // only a failure can be resent
   const resent = recv.got[recv.got.length - 1]
   expect(resent.headers['helios-delivery-id']).toBe(failedHeader) // same delivery id on the new attempt
   expect(verifies(secret, resent)).toBe(true)
