@@ -175,6 +175,9 @@ func TestADeliveryIsSignedAndCarriesAStableDeliveryID(t *testing.T) {
 	if err := webhooks.Verify(ep.Secret, r.Header.Get(webhooks.HeaderSignature), r.Header.Get(webhooks.HeaderTimestamp), delivery, r.Body, time.Now(), webhooks.Tolerance); err != nil {
 		t.Fatalf("the receiver cannot verify the signature: %v", err)
 	}
+	if hint := w.dbString(`SELECT last_response_hint FROM outbox WHERE delivery_id = $1::uuid`, delivery); hint != "" {
+		t.Errorf("a successful receiver's body was kept: %q", hint)
+	}
 	if n := w.h.count(`SELECT count(*) FROM outbox WHERE delivery_id = $1::uuid AND status = 'delivered'`, delivery); n != 1 {
 		t.Errorf("the delivery id the receiver saw is not the outbox row's")
 	}
