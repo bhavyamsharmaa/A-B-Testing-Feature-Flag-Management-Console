@@ -175,8 +175,10 @@ test('scheduling and promotion in the console', async ({ browser }) => {
   await page.keyboard.press('Enter')
   await expect(dialog(page).getByRole('heading', { name: 'Schedule a change to sched-banner' })).toBeVisible()
   await page.keyboard.press('Escape')
-  await expect(page.getByRole('heading', { name: 'Schedule and promote' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Schedule a change to sched-banner' })).toHaveCount(0)
+  // let every pending timer run (the drawer decides about Escape one tick after the key press), then it must still be there
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 100)))
+  await expect(page.getByRole('heading', { name: 'Schedule and promote' })).toBeVisible()
 
   // the audit log names the creator and the workspace-level rows, and the scheduled change is recorded
   await page.keyboard.press('Escape')
