@@ -325,7 +325,7 @@ paths:
       description: >-
         Segments are workspace-wide: every environment evaluates the same ones.
         The list omits each segment's members (see the single read).
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200":
           description: Segments by key
@@ -355,7 +355,7 @@ paths:
         Audited as segment.create. Segment writes (this route, PATCH and
         DELETE) share a per-user rate limit tighter than the general one (burst
         30, then 1 per second by default): 429 RATE_LIMITED with Retry-After.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       requestBody:
         required: true
         content:
@@ -379,7 +379,7 @@ paths:
     get:
       tags: [control-plane]
       summary: Read a segment with its members (any member)
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200":
           description: The segment, members sorted
@@ -399,7 +399,7 @@ paths:
         update that changes nothing changes nothing (no version bump). Audited
         as segment.update with counts and a short sample of keys, never the
         whole member list.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       requestBody:
         required: true
         content:
@@ -425,7 +425,7 @@ paths:
         that named it stay stored and then match nobody (inSegment and
         notInSegment alike), and the affected flag configurations' versions are
         bumped. A flag rule cannot be saved with a segment that does not exist.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       parameters:
         - { name: confirm, in: query, required: false, schema: { type: boolean } }
       responses:
@@ -442,7 +442,7 @@ paths:
     get:
       tags: [control-plane]
       summary: Which flags use a segment (any member)
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200":
           description: The flags whose rules reference the segment, with the environments
@@ -465,7 +465,7 @@ paths:
         NOT copied. Writes nothing. `problems` says why the selected parts cannot be
         applied (a rule naming a segment that does not exist, a variation the flag
         does not have).
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       requestBody:
         required: true
         content:
@@ -494,7 +494,7 @@ paths:
         changed since, 409 VERSION_CONFLICT / SOURCE_CHANGED and nothing is written.
         409 NOTHING_TO_PROMOTE when the selected parts are already identical; 400
         when the target would refuse the result.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       requestBody:
         required: true
         content:
@@ -528,7 +528,7 @@ paths:
         `Idempotent-Replay: true`); the same key for a different change is 409
         IDEMPOTENCY_CONFLICT. At most 10 pending changes per flag and 100 per
         workspace (409 QUOTA_EXCEEDED). Audited as scheduled_change.create.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       requestBody:
         required: true
         content:
@@ -549,7 +549,7 @@ paths:
       tags: [control-plane]
       summary: List scheduled changes in this environment (any role)
       description: Waiting ones first (soonest first), then history (newest first); at most 200.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       parameters:
         - { name: flag, in: query, required: false, schema: { type: string } }
         - { name: status, in: query, required: false, schema: { type: string, enum: [pending, running, succeeded, failed, missed, cancelled] } }
@@ -576,7 +576,7 @@ paths:
     get:
       tags: [control-plane]
       summary: Read one scheduled change (any role)
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200": { description: The change, content: { application/json: { schema: { $ref: "#/components/schemas/ScheduledChange" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -593,7 +593,7 @@ paths:
         A change is applied completely or not at all: if it is being applied right
         now, the cancel waits for it and is refused (409 NOT_CANCELLABLE) when it
         succeeded. Audited as scheduled_change.cancel.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200": { description: Cancelled, content: { application/json: { schema: { $ref: "#/components/schemas/ScheduledChange" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -634,6 +634,114 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { description: Disabled (no secret configured) }
         "429": { description: RATE_LIMITED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/api-tokens:
+    parameters: [{ $ref: "#/components/parameters/WsPath" }]
+    get:
+      tags: [control-plane]
+      summary: List the workspace's API tokens (admin or owner; user session only)
+      description: >-
+        Newest first, with status (active, expired, revoked). Only display data: never the
+        secret, never the hash. **Not available to an API token** (403 TOKEN_NOT_ALLOWED): a
+        token cannot list, create or revoke tokens.
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: Tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tokens]
+                properties:
+                  tokens:
+                    type: array
+                    items: { $ref: "#/components/schemas/ApiToken" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+    post:
+      tags: [control-plane]
+      summary: Create an API token (admin or owner; user session only)
+      description: >-
+        The plaintext token is in the response **once** and can never be shown again; only its
+        SHA-256 hash is stored. The role is `viewer`, `editor` or `admin` and at most the caller's
+        own (403 above it; `owner` is not a token role). `environments` (keys or ids of this
+        workspace) restricts the token; empty means all. `expiresInDays` is 1-366, default 90: there
+        is no way to make a token that never expires. At most 10 active tokens per person and 25 per
+        workspace (409 QUOTA_EXCEEDED). Audited as api_token.create (the secret is never recorded).
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApiTokenCreateRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, plaintext]
+                properties:
+                  token: { $ref: "#/components/schemas/ApiToken" }
+                  plaintext: { type: string, description: "hlt_<8 hex>_<43 base64url>; shown once", example: hlt_1a2b3c4d_REDACTED }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+        "409": { description: QUOTA_EXCEEDED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/api-tokens/{tokenId}:
+    parameters:
+      - $ref: "#/components/parameters/WsPath"
+      - { name: tokenId, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      tags: [control-plane]
+      summary: Revoke an API token (admin or owner; user session only)
+      description: >-
+        Any admin or owner may revoke any of the workspace's tokens. The token stops working at once on
+        the instance that handled this request and, through the revocation announcement, on every
+        other within milliseconds; if the announcement is lost, within the 15-second verification
+        cache. Revoking a revoked token is a no-op. Audited as api_token.revoke (critical).
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "204": { description: Revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND or TOKEN_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/environments:
+    parameters: [{ $ref: "#/components/parameters/WsPath" }]
+    get:
+      tags: [control-plane]
+      summary: The environments the caller can see (any member, or an API token)
+      description: >-
+        For an API token limited to some environments, only those: it cannot even learn the names of
+        the others.
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
+      responses:
+        "200":
+          description: Environments by key
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [environments]
+                properties:
+                  environments:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, key, name, isProduction]
+                      properties:
+                        id: { type: string, format: uuid }
+                        key: { type: string }
+                        name: { type: string }
+                        isProduction: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
 
   /environments/{envId}/sdk-keys:
     parameters: [{ $ref: "#/components/parameters/EnvPath" }]
@@ -709,7 +817,7 @@ paths:
     get:
       tags: [control-plane]
       summary: List flags with their config in this environment (any role)
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200":
           description: Flags, ordered by key
@@ -755,7 +863,7 @@ paths:
     get:
       tags: [control-plane]
       summary: Get one flag's config in this environment (any role)
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200":
           description: The flag
@@ -773,7 +881,7 @@ paths:
         Absent fields are unchanged; targetingRules or rollout set to null are
         cleared. Lowering a rollout revokes access already granted, so the
         console should warn before saving that (US-03 AC-3).
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       requestBody:
         required: true
         content:
@@ -820,7 +928,7 @@ paths:
         Allowed for editors even in production: a blocked kill during an
         incident costs more than an unnecessary one (US-06). Idempotent, and
         audited at severity=critical on every call (US-08).
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200":
           description: Flag is disabled
@@ -854,7 +962,7 @@ paths:
         (api_key.create stores "[REDACTED]"), but flag and member diffs
         contain whatever the user entered, such as variation values,
         targeting-rule values and member emails.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       parameters:
         - name: limit
           in: query
@@ -900,7 +1008,7 @@ paths:
       tags: [control-plane]
       summary: List experiments in this environment (any role)
       description: Newest first, capped at 200 rows (not paginated yet).
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       parameters:
         - { name: status, in: query, schema: { $ref: "#/components/schemas/ExperimentStatus" } }
         - { name: flagKey, in: query, schema: { type: string } }
@@ -952,7 +1060,7 @@ paths:
     get:
       tags: [control-plane]
       summary: Get one experiment (any role)
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200":
           description: The experiment
@@ -975,7 +1083,7 @@ paths:
         targeting, rollout and fallthrough so later edits can be reported as
         configChangedSinceStart. Editing the flag while the experiment runs is
         not blocked.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200":
           description: Running
@@ -995,7 +1103,7 @@ paths:
       tags: [control-plane]
       summary: Stop a running experiment (approver+)
       description: Stopped is terminal; run a new experiment to measure again.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200":
           description: Stopped
@@ -1018,7 +1126,7 @@ paths:
         Raw counts so a user can see data arriving: exposures per variation
         (every variation of the flag is listed, zero included) and the number
         of other events. These are not results: no rates, no significance.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       responses:
         "200":
           description: Counts
@@ -1076,7 +1184,7 @@ paths:
         size; see `peekingNote`. Rate limited per user (429 RATE_LIMITED);
         answers are cached for 5 seconds. Draft experiments answer 409
         EXPERIMENT_NOT_STARTED. See docs/RESULTS.md for every formula.
-      security: [{ supabaseJWT: [] }]
+      security: [{ supabaseJWT: [] }, { apiToken: [] }]
       parameters:
         - name: metrics
           in: query
@@ -1236,6 +1344,17 @@ paths:
 
 components:
   securitySchemes:
+    apiToken:
+      type: http
+      scheme: bearer
+      description: >-
+        An API token ("hlt_<8 hex>_<43 base64url>", 256 bits) in the Authorization: Bearer header, and
+        nowhere else (a token in a query string or body is ignored). Usable only on routes marked
+        token-accessible (the operations that list `apiToken` in their security); every other
+        route answers 403 TOKEN_NOT_ALLOWED. The effective role is the lower of the token's role and
+        its creator's current role; a token limited to some environments gets 404 for the others.
+        A token that is unknown, expired or revoked always gets the same 401 UNAUTHORIZED.
+        See docs/API_TOKENS.md.
     schedulerSecret:
       type: apiKey
       in: header
@@ -1584,6 +1703,35 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         finishedAt: { type: [string, "null"], format: date-time }
+
+    ApiTokenCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, role]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 60 }
+        role: { type: string, enum: [viewer, editor, admin], description: At most the caller's own role. Fixed for the life of the token. }
+        environments: { type: array, maxItems: 20, items: { type: string }, description: "Keys or ids of this workspace's environments; empty or absent: all" }
+        expiresInDays: { type: integer, minimum: 1, maximum: 366, default: 90 }
+
+    ApiToken:
+      type: object
+      required: [id, name, prefix, role, environments, expiresAt, lastUsedAt, createdAt, createdBy, revokedAt, status]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        prefix: { type: string, description: '"hlt_" and 8 hex characters: identifies the token in lists and audit entries; not secret', example: hlt_1a2b3c4d }
+        role: { type: string, enum: [viewer, editor, admin] }
+        environments:
+          type: array
+          description: Empty means every environment of the workspace
+          items: { type: object, required: [id, key], properties: { id: { type: string, format: uuid }, key: { type: string } } }
+        expiresAt: { type: string, format: date-time }
+        lastUsedAt: { type: [string, "null"], format: date-time, description: Written at most once a minute; null until first used }
+        createdAt: { type: string, format: date-time }
+        createdBy: { type: string, description: The creator's email }
+        revokedAt: { type: [string, "null"], format: date-time }
+        status: { type: string, enum: [active, expired, revoked] }
 
     SegmentRules:
       type: array
