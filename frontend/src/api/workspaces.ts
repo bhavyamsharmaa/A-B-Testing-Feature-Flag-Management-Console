@@ -1,4 +1,4 @@
-import type { Member, SdkKey, Workspace, WorkspaceInvite, WorkspaceRole } from '../types'
+import type { InviteEmailMode, Member, SdkKey, Workspace, WorkspaceInvite, WorkspaceRole } from '../types'
 import { apiClient } from './client'
 import { envPath } from './envPath'
 
@@ -23,9 +23,11 @@ export const changeMemberRole = (id: string, userId: string, role: WorkspaceRole
 export const removeMember = (id: string, userId: string) =>
   apiClient.delete<void>(`${ws(id)}/members/${encodeURIComponent(userId)}`)
 
-export async function listInvites(id: string): Promise<WorkspaceInvite[]> {
-  return (await apiClient.get<{ invites: WorkspaceInvite[] }>(`${ws(id)}/invites`)).invites
-}
+export const listInvites = (id: string) => apiClient.get<{ invites: WorkspaceInvite[]; email: InviteEmailMode }>(`${ws(id)}/invites`)
+
+/** Emails the invitee again with a NEW link (the old one stops working); the new token comes back once. */
+export const resendInvite = (id: string, inviteId: string) =>
+  apiClient.post<{ invite: WorkspaceInvite; token: string }>(`${ws(id)}/invites/${encodeURIComponent(inviteId)}/resend`)
 
 /** The token comes back once; the console turns it into a link to share. */
 export const createInvite = (id: string, email: string, role: WorkspaceRole) =>

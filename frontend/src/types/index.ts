@@ -51,6 +51,8 @@ export interface Member {
   isYou: boolean
 }
 
+export type InviteEmailStatus = 'none' | 'queued' | 'sent' | 'failed'
+
 export interface WorkspaceInvite {
   id: string
   email: string
@@ -58,6 +60,68 @@ export interface WorkspaceInvite {
   invitedByEmail: string
   createdAt: string
   expiresAt: string
+  /** The latest invite email. `none`: no email was queued (an invite from before email existed). */
+  emailStatus: InviteEmailStatus
+  emailError?: string
+  emailUpdatedAt: string | null
+}
+
+/** How the server delivers invite email. `sink`: emails are NOT actually sent in this environment. */
+export interface InviteEmailMode {
+  mode: 'sink' | 'smtp'
+  sent: boolean
+}
+
+export type WebhookEventType =
+  | 'flag.created'
+  | 'flag.updated'
+  | 'flag.killed'
+  | 'flag.deleted'
+  | 'experiment.started'
+  | 'experiment.stopped'
+  | 'promotion.applied'
+  | 'scheduled_change.executed'
+  | 'scheduled_change.failed'
+
+export type WebhookEndpointStatus = 'healthy' | 'failing' | 'disabled' | 'idle'
+
+export interface WebhookEndpoint {
+  id: string
+  url: string
+  description: string
+  eventTypes: WebhookEventType[]
+  environment: { id: string; key: string } | null
+  enabled: boolean
+  secretHint: string
+  previousSecretExpiresAt: string | null
+  health: {
+    consecutiveFailures: number
+    failingSince: string | null
+    lastSuccessAt: string | null
+    lastFailureAt: string | null
+    disabledReason: string | null
+    disabledAt: string | null
+  }
+  createdAt: string
+  status: WebhookEndpointStatus
+}
+
+export type WebhookDeliveryStatus = 'pending' | 'delivering' | 'delivered' | 'failed' | 'dead'
+
+export interface WebhookDelivery {
+  id: string
+  eventId: string
+  eventType: string
+  status: WebhookDeliveryStatus
+  attempts: number
+  httpStatus: number | null
+  durationMs: number | null
+  error: string | null
+  responseHint: string | null
+  createdAt: string
+  lastAttemptAt: string | null
+  nextAttemptAt: string | null
+  deliveredAt: string | null
 }
 
 export interface SdkKey {

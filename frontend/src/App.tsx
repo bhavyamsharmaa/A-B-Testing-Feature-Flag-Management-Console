@@ -14,6 +14,7 @@ import LoginPage from './pages/LoginPage'
 import SegmentsPage from './pages/SegmentsPage'
 import SettingsPage from './pages/SettingsPage'
 import TokensPage from './pages/TokensPage'
+import WebhooksPage from './pages/WebhooksPage'
 import { WorkspaceProvider, useWorkspace } from './workspace/WorkspaceProvider'
 
 function RootRedirect() {
@@ -52,6 +53,7 @@ export default function App() {
               <Route path="/console/experiments/:key/results" element={<ExperimentPage tab="results" />} />
               <Route path="/console/segments" element={<SegmentsPage />} />
               <Route path="/console/tokens" element={<TokensPage />} />
+              <Route path="/console/webhooks" element={<WebhooksPage />} />
               <Route path="/console/audit" element={<AuditPage />} />
               <Route path="/console/settings" element={<SettingsPage />} />
             </Route>

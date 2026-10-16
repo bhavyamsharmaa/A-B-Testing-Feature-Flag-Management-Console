@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { ApiError } from '../../api/client'
-import { createInvite, listInvites, revokeInvite } from '../../api/workspaces'
+import { createInvite, listInvites, resendInvite, revokeInvite } from '../../api/workspaces'
 import { assignableRoles, canManageWorkspace, ROLE_LABEL } from '../../lib/permissions'
-import type { Workspace, WorkspaceInvite, WorkspaceRole } from '../../types'
+import { EMAIL_MARK } from '../../lib/webhooks'
+import type { InviteEmailMode, Workspace, WorkspaceInvite, WorkspaceRole } from '../../types'
 import { CopyField } from './CopyField'
 
 const fmt = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' })
@@ -11,17 +12,21 @@ const fmt = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateS
 export function InvitesSection({ workspace, onChanged }: { workspace: Workspace; onChanged: () => void }) {
   const canManage = canManageWorkspace(workspace.role)
   const [invites, setInvites] = useState<WorkspaceInvite[] | null>(null)
+  const [mail, setMail] = useState<InviteEmailMode | null>(null)
+  const [resending, setResending] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<WorkspaceRole>('viewer')
   const [sending, setSending] = useState(false)
-  const [created, setCreated] = useState<{ email: string; link: string } | null>(null)
+  const [created, setCreated] = useState<{ email: string; link: string; emailed: boolean } | null>(null)
   const [revoking, setRevoking] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!canManage) return
     try {
-      setInvites(await listInvites(workspace.id))
+      const res = await listInvites(workspace.id)
+      setInvites(res.invites)
+      setMail(res.email)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not load invites.')
     }
@@ -49,7 +54,7 @@ export function InvitesSection({ workspace, onChanged }: { workspace: Workspace;
     setCreated(null)
     try {
       const res = await createInvite(workspace.id, email.trim(), role)
-      setCreated({ email: res.invite.email, link: `${window.location.origin}/invite/${res.token}` })
+      setCreated({ email: res.invite.email, link: `${window.location.origin}/invite/${res.token}`, emailed: true })
       setEmail('')
       await load()
       onChanged()
@@ -57,6 +62,21 @@ export function InvitesSection({ workspace, onChanged }: { workspace: Workspace;
       setError(err instanceof ApiError ? err.message : 'Could not create the invite.')
     } finally {
       setSending(false)
+    }
+  }
+
+  async function onResend(inv: WorkspaceInvite) {
+    setResending(inv.id)
+    setError(null)
+    setCreated(null)
+    try {
+      const res = await resendInvite(workspace.id, inv.id)
+      setCreated({ email: res.invite.email, link: `${window.location.origin}/invite/${res.token}`, emailed: true })
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not resend the invite.')
+    } finally {
+      setResending(null)
     }
   }
 
@@ -122,7 +142,15 @@ export function InvitesSection({ workspace, onChanged }: { workspace: Workspace;
           {sending ? 'Inviting…' : 'Create invite'}
         </button>
       </form>
-      <p className="text-xs text-zinc-500">Helios does not send email. You get a link to share; it works once, for that address, for 7 days.</p>
+      {mail && !mail.sent && (
+        <p role="note" data-testid="mail-sink-note" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+          Emails are not actually sent in this environment (development mail sink). Copy the invite link below and share it yourself.
+        </p>
+      )}
+      <p className="text-xs text-zinc-500">
+        {mail?.sent ? 'The invitee is emailed a link. ' : ''}The link works once, for that address, for 7 days. You can also copy it and share it yourself. Resending an
+        email makes a new link and the old one stops working.
+      </p>
 
       {error && (
         <p role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
@@ -133,7 +161,9 @@ export function InvitesSection({ workspace, onChanged }: { workspace: Workspace;
       {created && (
         <div role="status" data-testid="invite-link" className="space-y-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm">
           <p className="text-emerald-200">
-            Invite created for <span className="font-medium">{created.email}</span>. Copy the link now; it can't be shown again.
+            {mail?.sent ? 'An email is on its way to ' : 'Invite created for '}
+            <span className="font-medium">{created.email}</span>
+            {mail?.sent ? '. ' : '. '}Copy the link now if you want to share it yourself; it can't be shown again.
           </p>
           <CopyField value={created.link} label="Invite link" />
         </div>
@@ -141,7 +171,7 @@ export function InvitesSection({ workspace, onChanged }: { workspace: Workspace;
 
       {invites && invites.length > 0 && (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[520px] text-left text-sm" data-testid="pending-invites-table">
+          <table className="w-full min-w-[760px] text-left text-sm" data-testid="pending-invites-table">
             <caption className="pb-2 text-left text-xs uppercase tracking-wider text-zinc-500">Pending invites</caption>
             <tbody>
               {invites.map((inv) => (
@@ -151,7 +181,23 @@ export function InvitesSection({ workspace, onChanged }: { workspace: Workspace;
                     <span className="rounded bg-white/10 px-2 py-1 text-xs text-zinc-300">{ROLE_LABEL[inv.role]}</span>
                   </td>
                   <td className="px-3 py-2.5 text-xs text-zinc-400">Expires {fmt(inv.expiresAt)}</td>
+                  <td className="px-3 py-2.5" data-testid="invite-email-status">
+                    <span className={`whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold ${EMAIL_MARK[inv.emailStatus].tone}`}>
+                      <span aria-hidden="true">{EMAIL_MARK[inv.emailStatus].mark} </span>
+                      Email: {EMAIL_MARK[inv.emailStatus].label.toLowerCase()}
+                    </span>
+                    {mail && !mail.sent && inv.emailStatus !== 'none' && <div className="mt-1 text-[11px] text-zinc-500">not actually sent here</div>}
+                    {inv.emailStatus === 'failed' && inv.emailError && <div className="mt-1 max-w-[16rem] text-[11px] text-red-300">{inv.emailError}</div>}
+                  </td>
                   <td className="px-3 py-2.5 text-right">
+                    <button
+                      onClick={() => void onResend(inv)}
+                      disabled={resending === inv.id}
+                      aria-label={`Resend the email to ${inv.email}`}
+                      className="mr-2 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 transition hover:border-accent/60 hover:bg-accent/10 hover:text-white disabled:opacity-50"
+                    >
+                      {resending === inv.id ? 'Sending…' : 'Resend'}
+                    </button>
                     <button
                       onClick={() => void onRevoke(inv.id)}
                       disabled={revoking === inv.id}
