@@ -80,7 +80,7 @@ func ParseAddress(s string) (string, error) {
 		return "", fmt.Errorf("%w: bad address", ErrInvalid)
 	}
 	a, err := mail.ParseAddress(s)
-	if err != nil || a.Address != s || a.Name != "" || len(s) > 254 {
+	if err != nil || a.Address != s || a.Name != "" || len(s) > 254 || !strings.Contains(s[strings.LastIndex(s, "@")+1:], ".") {
 		return "", fmt.Errorf("%w: bad address", ErrInvalid)
 	}
 	return s, nil
