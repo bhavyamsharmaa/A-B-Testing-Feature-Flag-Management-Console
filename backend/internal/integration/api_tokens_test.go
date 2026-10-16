@@ -247,9 +247,11 @@ func TestEffectiveRoleIsTheLowerOfTheTokenAndItsCreator(t *testing.T) {
 		t.Errorf("the refusal does not say why: %s", b)
 	}
 	w.tokExpect(t, 403, tok.Plaintext, "POST", flagPath+"/kill", nil)
+	w.tokExpect(t, 403, tok.Plaintext, "POST", segPath(w.wsA.ID), segReq("by-demoted", nil)) // workspace-level routes are capped too
 	// ...and restored when the creator is: the token never held more than the person did
 	h.expect(200, w.a, "PATCH", "/workspaces/"+w.wsA.ID+"/members/"+admin.id, map[string]any{"role": "editor"})
 	w.tokExpect(t, 200, tok.Plaintext, "PATCH", flagPath, patch)
+	w.tokExpect(t, 201, tok.Plaintext, "POST", segPath(w.wsA.ID), segReq("by-editor", nil))
 	w.tokExpect(t, 403, tok.Plaintext, "PATCH", "/environments/"+w.prod+"/flags/"+secretFlag, patch) // an editor cannot change production
 	h.expect(200, w.a, "PATCH", "/workspaces/"+w.wsA.ID+"/members/"+admin.id, map[string]any{"role": "admin"})
 	w.tokExpect(t, 200, tok.Plaintext, "PATCH", "/environments/"+w.prod+"/flags/"+secretFlag, patch)
@@ -951,6 +953,23 @@ func TestFailedTokenAttemptsAreLimitedPerIPBeforeAnyHashingOrDatabaseWork(t *tes
 	h.expect(200, w.a, "GET", path, nil)
 }
 
+// A pipeline's traffic is counted against the token, never against the person who made it.
+func TestATokensTrafficDoesNotThrottleItsCreator(t *testing.T) {
+	w := newTokWorld(t, map[string]ratelimit.Rule{ratelimit.ClassUser: {PerSecond: 0.01, Burst: 40}})
+	tok := w.mint(t, w.a, w.wsA.ID, "chatty", "viewer")
+	path := "/environments/" + w.devA + "/flags"
+	for i := 0; i < 40; i++ {
+		w.tokExpect(t, 200, tok.Plaintext, "GET", path, nil)
+	}
+	st, _, _ := w.h.tokenCall(tok.Plaintext, "GET", path, nil)
+	if st != 429 {
+		t.Fatalf("the 41st token request: %d, want 429 from the token's own bucket", st)
+	}
+	for i := 0; i < 10; i++ { // the person is untouched
+		w.h.expect(200, w.a, "GET", path, nil)
+	}
+}
+
 func TestEachTokenHasItsOwnRateLimitAndTheCreatorKeepsTheirs(t *testing.T) {
 	w := newTokWorld(t, map[string]ratelimit.Rule{ratelimit.ClassToken: tiny(3)})
 	h := w.h
@@ -1112,6 +1131,24 @@ func TestATokenOfOneWorkspaceReachesNothingOfAnother(t *testing.T) {
 	}
 	if n := w.dbCount(`SELECT count(*) FROM audit_logs WHERE workspace_id = $1::uuid AND actor_type = 'api_token'`, w.wsB.ID); n != 0 {
 		t.Errorf("%d audit rows in B's workspace were written by A's token", n)
+	}
+	// A creator who belongs to BOTH workspaces: the token is still confined to the workspace it was made in
+	bTok := h.newUser("both")
+	h.me(bTok)
+	inviteA := decode[struct{ Token string }](t, h.expect(201, w.a, "POST", "/workspaces/"+w.wsA.ID+"/invites", map[string]any{"email": bTok.email, "role": "admin"})).Token
+	h.expect(200, bTok, "POST", "/invites/accept", map[string]any{"token": inviteA})
+	inviteB := decode[struct{ Token string }](t, h.expect(201, w.b, "POST", "/workspaces/"+w.wsB.ID+"/invites", map[string]any{"email": bTok.email, "role": "admin"})).Token
+	h.expect(200, bTok, "POST", "/invites/accept", map[string]any{"token": inviteB})
+	both := w.mint(t, bTok, w.wsA.ID, "made-for-A", "admin")
+	w.tokExpect(t, 200, both.Plaintext, "GET", "/environments/"+w.devA+"/flags", nil)
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/environments/" + w.devB + "/flags"}, {"PATCH", "/environments/" + w.devB + "/flags/" + secretB},
+		{"GET", segPath(w.wsB.ID)}, {"GET", "/workspaces/" + w.wsB.ID + "/environments"},
+	} {
+		st, _, body := h.tokenCall(both.Plaintext, c.method, c.path, map[string]any{"enabled": true})
+		if st != 404 || bytes.Contains(body, []byte("bob")) {
+			t.Errorf("a token made for A by someone who is also in B, %s %s: %d %s", c.method, c.path, st, body)
+		}
 	}
 	// A's token on A's own side works, and B's token cannot touch A's
 	w.tokExpect(t, 200, tokA.Plaintext, "GET", "/environments/"+w.devA+"/flags/"+secretFlag, nil)
