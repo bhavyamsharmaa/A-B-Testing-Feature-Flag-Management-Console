@@ -16,6 +16,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { DeleteFlagSection, type DeleteState } from './DeleteFlagSection'
 import { ProductionStrip } from './ProductionStrip'
 import { RolloutControl } from './RolloutControl'
+import { ScheduleSection } from './schedule/ScheduleSection'
 import { TargetingSection, type TargetingState } from './TargetingSection'
 import { VariationsList } from './VariationsList'
 import { WeightsSection, type WeightsState } from './WeightsSection'
@@ -25,6 +26,8 @@ interface Props {
   env: string
   prod: boolean
   role: Role | null
+  /** Signed-in user's email, to tell which scheduled changes are theirs to cancel. */
+  email: string
   /** The user's roles in every environment (from /me), to decide whether deleting is allowed. */
   roles: EnvironmentRole[]
   /** Whether the user's role may change this flag here (same rule as toggling). */
@@ -38,7 +41,7 @@ interface Props {
 
 type Dialog = 'discard' | 'lower' | 'prod' | null
 
-export function FlagDrawer({ flag, env, prod, role, roles, canEdit, onClose, onSaved, onDeleted, onGone }: Props) {
+export function FlagDrawer({ flag, env, prod, role, email, roles, canEdit, onClose, onSaved, onDeleted, onGone }: Props) {
   const [current, setCurrent] = useState(flag)
   const bools = booleanVariations(current)
   const savedBp = bools ? savedOnBp(current, bools) : 0
@@ -55,6 +58,7 @@ export function FlagDrawer({ flag, env, prod, role, roles, canEdit, onClose, onS
   const [targeting, setTargeting] = useState<TargetingState>({ dirty: false, busy: false, dialogOpen: false })
   const [deleting, setDeleting] = useState<DeleteState>({ dialogOpen: false, busy: false })
   const [weights, setWeights] = useState<WeightsState>({ dirty: false, busy: false, dialogOpen: false })
+  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false)
   const slow = useSlowHint(saving || refreshing)
 
   // Latest values for the async refresh below, so it never overwrites an edit in progress.
@@ -95,7 +99,7 @@ export function FlagDrawer({ flag, env, prod, role, roles, canEdit, onClose, onS
   // Esc closes the drawer, unless a confirmation is open (it handles Esc itself).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dialog === null && !targeting.dialogOpen && !deleting.dialogOpen && !weights.dialogOpen) requestClose()
+      if (e.key === 'Escape' && dialog === null && !targeting.dialogOpen && !deleting.dialogOpen && !weights.dialogOpen && !scheduleDialogOpen) requestClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -313,6 +317,22 @@ export function FlagDrawer({ flag, env, prod, role, roles, canEdit, onClose, onS
             </div>
           )}
         </section>
+
+        <ScheduleSection
+          flag={current}
+          env={env}
+          prod={prod}
+          roles={roles}
+          email={email}
+          canEdit={canEdit}
+          disabledReason={reason}
+          onFlagChanged={(updated) => {
+            setCurrent(updated)
+            setPendingBp(bools ? savedOnBp(updated, bools) : 0)
+            onSaved(updated)
+          }}
+          onDialogChange={setScheduleDialogOpen}
+        />
 
         <DeleteFlagSection
           flagKey={current.key}

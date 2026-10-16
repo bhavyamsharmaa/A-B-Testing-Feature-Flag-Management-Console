@@ -281,3 +281,42 @@ export interface SegmentUsage {
   segmentKey: string
   flags: { flagKey: string; flagName: string; environments: { key: string; enabled: boolean }[] }[]
 }
+
+export type ScheduledKind = 'enable' | 'disable' | 'kill' | 'patch'
+export type ScheduledStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'missed' | 'cancelled'
+
+/** A change to one flag in one environment at a future time. */
+export interface ScheduledChange {
+  id: string
+  flagKey: string
+  environment: string
+  kind: ScheduledKind
+  change: { rollout?: Record<string, number> | null; fallthroughVariationId?: string; targetingRules?: TargetingRule[] | null }
+  runAt: string
+  status: ScheduledStatus
+  idempotencyKey: string
+  baseVersion: number
+  attempts: number
+  resultCode: string | null
+  resultMessage: string | null
+  /** The creator's email. */
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+  finishedAt: string | null
+}
+
+export type PromotionPart = 'rules' | 'rollout' | 'fallthrough' | 'enabled'
+
+export interface PromotionPreview {
+  flagKey: string
+  source: { environment: string; version: number; enabled: boolean }
+  target: { environment: string; version: number; enabled: boolean }
+  parts: { part: PromotionPart; selected: boolean; changed: boolean; source: unknown; target: unknown }[]
+  defaultParts: PromotionPart[]
+  problems: string[]
+  nothingToApply: boolean
+  canApply: boolean
+  expectedVersion: number
+  sourceVersion: number
+}

@@ -224,6 +224,7 @@ export default function ConsolePage() {
 
       {configuring && env && (
         <FlagDrawer
+          email={email}
           key={configuring.key}
           flag={configuring}
           env={env}
