@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/dataplane/track"
@@ -61,14 +62,20 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 	h.expect(201, x.a, "POST", "/workspaces/"+x.wsA.ID+"/segments", map[string]any{
 		"key": secretSegment, "name": "Acme secret audience", "members": []string{"acme-secret-member"}})
 
-	forbidden := []string{secretSegment, "Acme secret audience", "acme-secret-member", secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, x.devA, x.wsA.Name, "alice key", keyID, inviteID, x.expID(), "someone@example.com", x.sdkKeyA[:12]}
+	// A's scheduled change, which routes take by id.
+	h.expect(201, x.a, "POST", "/environments/"+x.devA+"/flags/"+secretFlag+"/scheduled-changes", map[string]any{
+		"idempotencyKey": "route-test", "kind": "disable", "runAt": time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)})
+	changeID := decode[struct{ ID string }](t, h.expect(200, x.a, "POST", "/environments/"+x.devA+"/flags/"+secretFlag+"/scheduled-changes", map[string]any{
+		"idempotencyKey": "route-test", "kind": "disable", "runAt": time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)})).ID
+
+	forbidden := []string{changeID, "route-test", secretSegment, "Acme secret audience", "acme-secret-member", secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, x.devA, x.wsA.Name, "alice key", keyID, inviteID, x.expID(), "someone@example.com", x.sdkKeyA[:12]}
 	fill := func(path string) string {
 		key := secretFlag
 		if strings.Contains(path, "/experiments/") {
 			key = "acme-secret-exp"
 		}
 		return strings.NewReplacer("{envId}", x.devA, "{wsId}", x.wsA.ID, "{userId}", x.a.id,
-			"{inviteId}", inviteID, "{keyId}", keyID, "{segKey}", secretSegment, "{key}", key).Replace(path)
+			"{inviteId}", inviteID, "{keyId}", keyID, "{segKey}", secretSegment, "{changeId}", changeID, "{key}", key).Replace(path)
 	}
 	assertNoLeak := func(label string, body []byte) {
 		t.Helper()
@@ -96,7 +103,7 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 				if rt.Scope != server.ScopeWorkspace {
 					t.Errorf("%s: has {wsId} but is registered as %q", label, rt.Scope)
 				}
-			case "key", "userId", "inviteId", "keyId", "segKey":
+			case "key", "userId", "inviteId", "keyId", "segKey", "changeId":
 				if rt.Scope != server.ScopeEnv && rt.Scope != server.ScopeWorkspace {
 					t.Errorf("%s: {%s} on a route that is not environment- or workspace-scoped", label, m[1])
 				}
@@ -149,6 +156,17 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 				if vst == 403 || vst == 404 || vst == 401 {
 					t.Errorf("%s as a viewer: status %d, but viewers are allowed here", label, vst)
 				}
+			}
+
+		case server.ScopeInternal:
+			// Machine-to-machine: no user, no tenant. With no secret configured (as here) it does not
+			// exist, whoever asks; it never answers a browser. Its own tests (scheduler_test.go) cover
+			// the secret, the rate limit and the logs.
+			if label != "POST /internal/scheduler/run" {
+				t.Errorf("%s: an internal route this test does not know", label)
+			}
+			if st, body := h.call(x.a, rt.Method, rt.Path, map[string]any{}); st != 404 || bytes.Contains(body, []byte("scheduler")) {
+				t.Errorf("%s with no secret configured: status %d body %s", label, st, body)
 			}
 
 		case server.ScopePublic:
@@ -224,7 +242,7 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 			t.Errorf("%s: route registered with unknown scope %q", label, rt.Scope)
 		}
 	}
-	for _, sc := range []server.Scope{server.ScopeEnv, server.ScopeWorkspace, server.ScopeSelf, server.ScopeSDK, server.ScopePublic} {
+	for _, sc := range []server.Scope{server.ScopeEnv, server.ScopeWorkspace, server.ScopeSelf, server.ScopeSDK, server.ScopePublic, server.ScopeInternal} {
 		if seen[sc] == 0 {
 			t.Errorf("no route registered with scope %q; the test is not exercising it", sc)
 		}
