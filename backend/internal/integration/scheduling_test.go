@@ -298,6 +298,41 @@ func TestACrashBetweenClaimAndCompletionIsRecovered(t *testing.T) {
 	}
 }
 
+// The takeover itself: B takes the row over from A while it is still "running" (not yet executed by B), and
+// then A, which still thinks it holds it, tries to execute. Only the holder of the lease may.
+func TestAStaleWorkerCannotExecuteARowThatWasTakenOver(t *testing.T) {
+	w := newSchedWorld(t)
+	c := w.scheduleOK(t, w.a, w.devA, "sched", "takeover", "enable", 5*time.Minute, nil)
+	w.clock.advance(5 * time.Minute)
+	a := w.runner("worker-a", scheduling.Config{})
+	claimedA, err := a.Claim(context.Background(), 5)
+	if err != nil || len(claimedA) != 1 {
+		t.Fatal(claimedA, err)
+	}
+	w.clock.advance(3 * time.Minute) // A's lease runs out
+	b := w.runner("worker-b", scheduling.Config{})
+	claimedB, err := b.Claim(context.Background(), 5)
+	if err != nil || len(claimedB) != 1 || !claimedB[0].Reclaimed {
+		t.Fatalf("B did not take over: %v %v", claimedB, err)
+	}
+	var stA, stB scheduling.Stats
+	if err := a.Execute(context.Background(), claimedA[0], &stA); err != nil || stA.Skipped != 1 || stA.Succeeded != 0 {
+		t.Fatalf("the stale worker executed a row it no longer holds: %+v %v", stA, err)
+	}
+	if en, _, _ := w.flagCfg(t, w.devA, "sched"); en {
+		t.Fatal("applied by the stale worker")
+	}
+	if err := b.Execute(context.Background(), claimedB[0], &stB); err != nil || stB.Succeeded != 1 {
+		t.Fatalf("the holder of the lease could not execute: %+v %v", stB, err)
+	}
+	if got := w.get(t, w.a, w.devA, c.ID); got.Status != "succeeded" || got.Attempts != 2 {
+		t.Errorf("final: %+v", got)
+	}
+	if _, version, _ := w.flagCfg(t, w.devA, "sched"); version != 2 {
+		t.Errorf("version %d: applied more than once", version)
+	}
+}
+
 func TestAWorkerThatKeepsDyingStopsAtTheBound(t *testing.T) {
 	w := newSchedWorld(t)
 	c := w.scheduleOK(t, w.a, w.devA, "sched", "poison", "enable", 2*time.Minute, nil)
