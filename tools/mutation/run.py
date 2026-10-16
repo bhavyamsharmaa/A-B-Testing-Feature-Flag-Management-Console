@@ -44,23 +44,28 @@ def dirty(files):
 
 
 def apply(path, old, new, check):
-    """old/new may be lists of equal length: several edits in one file, all of which must match."""
-    full = os.path.join(ROOT, path)
-    with open(full) as f:
-        src = f.read()
+    """old/new may be lists of equal length: several edits, all of which must match. path may be a list
+    too (one entry per edit, the same file may repeat): an edit that spans files."""
     olds, news = (old, new) if isinstance(old, (list, tuple)) else ([old], [new])
-    mutated = src
-    for o, n in zip(olds, news):
-        if o not in mutated:
+    paths = path if isinstance(path, (list, tuple)) else [path] * len(olds)
+    originals, mutated = {}, {}
+    for p in set(paths):
+        full = os.path.join(ROOT, p)
+        with open(full) as f:
+            originals[p] = mutated[p] = f.read()
+    for p, o, n in zip(paths, olds, news):
+        if o not in mutated[p]:
             return None, 'PATTERN NOT FOUND (the code changed; update mutations.py)'
-        mutated = mutated.replace(o, n, 1)
-    with open(full, 'w') as f:
-        f.write(mutated)
+        mutated[p] = mutated[p].replace(o, n, 1)
     try:
-        return src, check()
+        for p, text in mutated.items():
+            with open(os.path.join(ROOT, p), 'w') as f:
+                f.write(text)
+        return originals, check()
     finally:
-        with open(full, 'w') as f:
-            f.write(src)
+        for p, text in originals.items():
+            with open(os.path.join(ROOT, p), 'w') as f:
+                f.write(text)
 
 
 def classify(proc, output):
@@ -116,7 +121,7 @@ def main():
 
     files = set()
     if a.which in ('backend', 'all'):
-        files |= {m[1] for m in mutations.BACKEND}
+        files |= {p for m in mutations.BACKEND for p in (m[1] if isinstance(m[1], (list, tuple)) else [m[1]])}
     if a.which in ('frontend', 'all'):
         files |= {m[1] for m in mutations.FRONTEND}
     if a.which in ('ui', 'all'):
