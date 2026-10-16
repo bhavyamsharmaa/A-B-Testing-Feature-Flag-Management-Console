@@ -157,6 +157,13 @@ func (h *harness) newUser(name string) user {
 // call performs a request as u and returns the status and raw body.
 func (h *harness) call(u user, method, path string, body any) (int, []byte) {
 	h.t.Helper()
+	st, _, b := h.callHdr(u, method, path, body)
+	return st, b
+}
+
+// callHdr is call that also returns the response headers.
+func (h *harness) callHdr(u user, method, path string, body any) (int, http.Header, []byte) {
+	h.t.Helper()
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -184,7 +191,7 @@ func (h *harness) call(u user, method, path string, body any) (int, []byte) {
 	h.mu.Lock()
 	h.bodies = append(h.bodies, b)
 	h.mu.Unlock()
-	return res.StatusCode, b
+	return res.StatusCode, res.Header, b
 }
 
 // expect fails the test unless the call returns want, and returns the body.
