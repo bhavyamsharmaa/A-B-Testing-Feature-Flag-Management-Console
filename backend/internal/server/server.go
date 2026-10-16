@@ -279,6 +279,12 @@ func New(d Deps) *Router {
 	env("POST /environments/{envId}/flags", rbac.Min(rbac.Editor), fl.Create)
 	env("PATCH /environments/{envId}/flags/{key}", rbac.FlagWrite, fl.Update)
 	env("DELETE /environments/{envId}/flags/{key}", rbac.Min(rbac.Admin), fl.Delete)
+	// Promotion: copy a flag's configuration from another environment of the
+	// workspace into {envId} (the target). Preview is a read, any role. Apply is
+	// an edit of the target, so it needs what an edit there needs: an approver
+	// for production. {key} is the flag.
+	env("POST /environments/{envId}/flags/{key}/promotions/preview", rbac.Min(rbac.Viewer), fl.PromotePreview)
+	env("POST /environments/{envId}/flags/{key}/promotions", rbac.FlagWrite, fl.PromoteApply)
 	// Editor+ in every environment, production included: an unnecessary
 	// kill costs a disabled feature, a blocked one during an incident costs
 	// prolonged user harm (PRD US-06).
