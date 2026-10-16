@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { cancelScheduledChange } from '../../api/scheduling'
 import { describeError } from '../../lib/errors'
 import { isProduction, roleIn } from '../../lib/permissions'
@@ -21,8 +22,6 @@ interface Props {
   canEdit: boolean
   disabledReason: string
   onFlagChanged: (flag: Flag) => void
-  /** Tells the drawer a dialog is open, so Escape closes the dialog, not the drawer. */
-  onDialogChange: (open: boolean) => void
 }
 
 /** Status as words and a symbol: never colour alone. */
@@ -44,7 +43,7 @@ function describeChange(c: ScheduledChange): string {
   return `Change ${parts.join(' and ')}`
 }
 
-export function ScheduleSection({ flag, env, prod, roles, email, canEdit, disabledReason, onFlagChanged, onDialogChange }: Props) {
+export function ScheduleSection({ flag, env, prod, roles, email, canEdit, disabledReason, onFlagChanged }: Props) {
   const { active } = useWorkspace()
   const { changes, loading, error, reload } = useScheduledChanges(env, flag.key, active?.id ?? null)
   const [dialog, setDialog] = useState<'schedule' | 'promote' | null>(null)
@@ -56,10 +55,6 @@ export function ScheduleSection({ flag, env, prod, roles, email, canEdit, disabl
   const zone = browserZone()
   const role = roleIn(roles, env)
   const blockedEverything = ['enable', 'disable', 'kill', 'patch'].every((k) => scheduleBlockedReason(role, k as 'enable', prod, env) !== null)
-
-  useEffect(() => {
-    onDialogChange(dialog !== null || cancelling !== null)
-  }, [dialog, cancelling, onDialogChange])
 
   const canCancel = (c: ScheduledChange) =>
     (c.status === 'pending' || c.status === 'running') &&
@@ -145,6 +140,9 @@ export function ScheduleSection({ flag, env, prod, roles, email, canEdit, disabl
       {upcoming.length > 0 && <List title="Upcoming" items={upcoming} zone={zone} canCancel={canCancel} onCancel={(c) => { setCancelError(null); setCancelling(c) }} />}
       {past.length > 0 && <List title="History" items={past} zone={zone} canCancel={canCancel} onCancel={() => undefined} />}
 
+      {/* Portalled: the drawer is a transformed element, which would otherwise become the dialogs' containing block. */}
+      {createPortal(
+        <>
       {dialog === 'schedule' && (
         <ScheduleDialog
           flag={flag}
@@ -187,6 +185,9 @@ export function ScheduleSection({ flag, env, prod, roles, email, canEdit, disabl
             {describeChange(cancelling)} in <span className="font-mono">{cancelling.environment}</span>, scheduled for {formatUtc(cancelling.runAt)}, will not run.
           </p>
         </ConfirmDialog>
+      )}
+        </>,
+        document.body,
       )}
     </section>
   )

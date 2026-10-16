@@ -15,7 +15,10 @@ interface Props {
 export function ConfirmDialog({ title, children, confirmLabel, tone, busy, error, slowHint, onConfirm, onCancel }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busy) onCancel()
+      if (e.key === 'Escape' && !busy) {
+        e.preventDefault() // handled: a drawer behind this dialog must not also close
+        onCancel()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)

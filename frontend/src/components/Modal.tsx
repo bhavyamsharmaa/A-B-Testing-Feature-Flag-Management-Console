@@ -15,7 +15,10 @@ export function Modal({ title, onClose, busy = false, wide = false, children }: 
   const titleId = useId()
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busy) onClose()
+      if (e.key === 'Escape' && !busy) {
+        e.preventDefault() // handled: a drawer behind this dialog must not also close
+        onClose()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)

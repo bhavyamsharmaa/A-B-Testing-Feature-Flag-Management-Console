@@ -58,7 +58,6 @@ export function FlagDrawer({ flag, env, prod, role, email, roles, canEdit, onClo
   const [targeting, setTargeting] = useState<TargetingState>({ dirty: false, busy: false, dialogOpen: false })
   const [deleting, setDeleting] = useState<DeleteState>({ dialogOpen: false, busy: false })
   const [weights, setWeights] = useState<WeightsState>({ dirty: false, busy: false, dialogOpen: false })
-  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false)
   const slow = useSlowHint(saving || refreshing)
 
   // Latest values for the async refresh below, so it never overwrites an edit in progress.
@@ -96,10 +95,16 @@ export function FlagDrawer({ flag, env, prod, role, email, roles, canEdit, onClo
     else onClose()
   }
 
-  // Esc closes the drawer, unless a confirmation is open (it handles Esc itself).
+  // Esc closes the drawer, unless a confirmation is open (it handles Esc itself). Dialogs inside the drawer mark the
+  // key event as handled (preventDefault); the decision waits until every listener has seen the event, so it does not
+  // depend on which listener ran first or on how soon React re-rendered after the dialog closed.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dialog === null && !targeting.dialogOpen && !deleting.dialogOpen && !weights.dialogOpen && !scheduleDialogOpen) requestClose()
+      if (e.key === 'Escape' && dialog === null && !targeting.dialogOpen && !deleting.dialogOpen && !weights.dialogOpen) {
+        setTimeout(() => {
+          if (!e.defaultPrevented) requestClose()
+        }, 0)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -331,7 +336,6 @@ export function FlagDrawer({ flag, env, prod, role, email, roles, canEdit, onClo
             setPendingBp(bools ? savedOnBp(updated, bools) : 0)
             onSaved(updated)
           }}
-          onDialogChange={setScheduleDialogOpen}
         />
 
         <DeleteFlagSection
