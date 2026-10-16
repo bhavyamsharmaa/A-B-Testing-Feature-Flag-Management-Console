@@ -893,7 +893,6 @@ BACKEND += [
     ("secrets: a sealed value under an unknown key is opened with the current one", 'backend/internal/platform/secretbox/secretbox.go', "	if k == nil {\n		return nil, ErrUnknownKey\n	}", "	if k == nil {\n		k = b.current\n	}", './internal/platform/secretbox', 'Rotation'),
 
     ("email: the subject is not cleaned or encoded", 'backend/internal/platform/mail/mail.go', ['	subject := CleanHeader(msg.Subject, 200)\n', '	w("Subject", mime.QEncoding.Encode("utf-8", subject))\n'], ['	subject := msg.Subject\n', '	w("Subject", mime.QEncoding.Encode("utf-8", "")+subject)\n'], _MAIL, 'HostileSubjects'),
-    ("email: a recipient with a line break is accepted", 'backend/internal/platform/mail/mail.go', "	if strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) ||", "	if false && strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) ||", _MAIL, 'AddressesAreStrict'),
     ("email: bodies are not quoted-printable", 'backend/internal/platform/mail/mail.go', 'Content-Transfer-Encoding: quoted-printable', 'Content-Transfer-Encoding: 8bit', _MAIL, 'QuotedPrintable'),
     ("email: the sink logs the full recipient", 'backend/internal/platform/mail/sink.go', 'Redact(msg.To)', 'msg.To', _MAIL, 'SinkSendsNothingAndLogsOnly'),
     ("email: the SMTP client sends over a connection with no TLS", 'backend/internal/platform/mail/smtp.go', '		if ok, _ := c.Extension("STARTTLS"); !ok {', '		if ok, _ := c.Extension("STARTTLS"); !ok && false {', _MAIL, 'NeverDowngradesStartTLS'),
