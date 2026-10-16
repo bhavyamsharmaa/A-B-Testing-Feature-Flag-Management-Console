@@ -444,6 +444,10 @@ func TestATestPingAndAResendAreSentAtOnceWithTheSameDeliveryID(t *testing.T) {
 	if ping.EventType != "webhook.ping" || ping.Status != "delivered" || len(w.recv.requests()) != 1 {
 		t.Fatalf("ping %+v, %d requests", ping, len(w.recv.requests()))
 	}
+	// a test must not make an endpoint look healthy (or sick): health comes from real events
+	if st := w.dbString(`SELECT CASE WHEN last_success_at IS NULL AND consecutive_failures = 0 THEN 'untouched' ELSE 'touched' END FROM webhook_endpoints WHERE id = $1::uuid`, ep.Endpoint.ID); st != "untouched" {
+		t.Errorf("a test ping changed the endpoint's health")
+	}
 	// a failed real delivery, then a resend once the receiver is fixed
 	w.recv.status.Store(503)
 	w.h.expect(200, w.a, "PATCH", "/environments/"+w.devA+"/flags/"+secretFlag, map[string]any{"enabled": false})

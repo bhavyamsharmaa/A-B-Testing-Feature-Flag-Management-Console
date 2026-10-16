@@ -221,11 +221,14 @@ func TestRedirectsAreNotFollowed(t *testing.T) {
 }
 
 func TestTheClientDoesNotUseAnEnvironmentProxy(t *testing.T) {
+	// (Go never proxies loopback hosts, so the request names a hostname that resolves to loopback.)
 	t.Setenv("HTTPS_PROXY", "http://10.0.0.1:3128")
 	t.Setenv("HTTP_PROXY", "http://10.0.0.1:3128")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
 	defer srv.Close()
-	res, err := New(Policy{AllowLocalHTTP: true}).Client().Get(srv.URL)
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	g := New(Policy{AllowLocalHTTP: true, Resolver: &fakeResolver{answer: func(int, string) []netip.Addr { return addrs("127.0.0.1") }}})
+	res, err := g.Client().Get("http://dev.example.test:" + port + "/")
 	if err != nil {
 		t.Fatalf("went through a proxy? %v", err)
 	}
