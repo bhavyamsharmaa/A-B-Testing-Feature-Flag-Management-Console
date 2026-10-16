@@ -47,7 +47,17 @@ export function AuditTable({ entries }: { entries: AuditEntry[] }) {
                       <span title={absoluteTime(e.createdAt)}>{relativeTime(e.createdAt, now)}</span>
                     </button>
                   </td>
-                  <td className="px-3 py-3 text-zinc-300">{e.actorEmail}</td>
+                  <td className="px-3 py-3 text-zinc-300">
+                    {e.actorType === 'api_token' ? (
+                      <div data-testid="actor-api-token">
+                        <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-medium text-zinc-200">API token</span>
+                        <div className="mt-1 break-all">{e.actorEmail}</div>
+                        {e.actorDetail?.createdBy && <div className="text-[11px] text-zinc-500">created by {e.actorDetail.createdBy}</div>}
+                      </div>
+                    ) : (
+                      e.actorEmail
+                    )}
+                  </td>
                   <td className="px-3 py-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className={kill ? 'font-semibold text-red-200' : 'text-zinc-100'}>{actionLabel(e.action)}</span>

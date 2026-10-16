@@ -122,6 +122,9 @@ export interface AuditEntry {
   diffAfter: unknown
   /** "global" = a workspace-level change, not tied to one environment (flag.create, segment.*); one entry, listed in every environment's log. */
   scope: 'environment' | 'global'
+  /** Who acted: a person, or an API token (then `actorEmail` reads "name (hlt_xxxxxxxx)" and `actorDetail` names its creator). */
+  actorType?: 'user' | 'api_token'
+  actorDetail?: { tokenId: string; name: string; prefix: string; createdBy: string; createdById: string } | null
 }
 
 export interface AuditLogPage {
@@ -319,4 +322,24 @@ export interface PromotionPreview {
   canApply: boolean
   expectedVersion: number
   sourceVersion: number
+}
+
+export type ApiTokenRole = 'viewer' | 'editor' | 'admin'
+export type ApiTokenStatus = 'active' | 'expired' | 'revoked'
+
+/** An API token as the API lists it: never the secret. */
+export interface ApiToken {
+  id: string
+  name: string
+  /** "hlt_" and 8 hex characters: identifies the token, is not secret. */
+  prefix: string
+  role: ApiTokenRole
+  /** Empty: every environment of the workspace. */
+  environments: { id: string; key: string }[]
+  expiresAt: string
+  lastUsedAt: string | null
+  createdAt: string
+  createdBy: string
+  revokedAt: string | null
+  status: ApiTokenStatus
 }

@@ -38,6 +38,9 @@ export function ConsoleHeader({ email, onSignOut }: { email: string; onSignOut: 
         <NavLink to="/console/segments" className={tab}>
           Segments
         </NavLink>
+        <NavLink to="/console/tokens" className={tab}>
+          API tokens
+        </NavLink>
         <NavLink to="/console/audit" className={tab}>
           Audit log
         </NavLink>
