@@ -73,7 +73,7 @@ export function MembersSection({ workspace, reloadKey }: { workspace: Workspace;
       )}
       {members === null && !error && <div className="h-24 animate-shimmer rounded-lg bg-white/[0.06]" role="status" aria-label="Loading members" />}
       {members && (
-        <div className="overflow-x-auto">
+        <div className="relative overflow-x-auto">
           <table className="w-full min-w-[560px] text-left text-sm" data-testid="members-table">
             <thead>
               <tr className="text-xs uppercase tracking-wider text-zinc-500">
