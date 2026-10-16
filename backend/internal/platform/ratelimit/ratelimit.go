@@ -50,7 +50,12 @@ const (
 	ClassResults = "results"
 	// POST, PATCH and DELETE on segments, per user: a member-list replace
 	// reads, diffs and rewrites up to 10,000 rows from a body of up to 4 MiB.
-	ClassSegmentWrite   = "segment_write"
+	ClassSegmentWrite = "segment_write"
+	// POST on scheduled changes and their cancellation, per user.
+	ClassScheduleWrite = "schedule_write"
+	// POST /internal/scheduler/run, per client IP, applied BEFORE the secret is
+	// checked so guessing it is as slow as using it.
+	ClassSchedulerRun   = "scheduler_run"
 	ClassSDKTrackEvents = "sdk_track_events"
 )
 
@@ -77,7 +82,12 @@ func DefaultRules() map[string]Rule {
 		// Editing a segment is a person at a keyboard: a save every few seconds
 		// is busy. 30 writes at once, then one a second, never trips that; a
 		// script replaying 10,000-member bodies does.
-		ClassSegmentWrite:   {PerSecond: 1, Burst: 30},
+		ClassSegmentWrite: {PerSecond: 1, Burst: 30},
+		// Scheduling is deliberate and rare: 30 at once, then one a second.
+		ClassScheduleWrite: {PerSecond: 1, Burst: 30},
+		// A scheduler job runs once a minute. 10 at once, then one every five
+		// seconds is far above that and far below a guessing loop.
+		ClassSchedulerRun:   {PerSecond: 0.2, Burst: 10},
 		ClassSDKTrackEvents: {PerSecond: 100, Burst: 1000},
 	}
 }

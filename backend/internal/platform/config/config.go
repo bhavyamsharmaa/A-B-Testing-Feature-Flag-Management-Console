@@ -27,9 +27,15 @@ type Config struct {
 	// SECRET: "<id>:<secret of at least 32 bytes>". The previous key is only for rotation.
 	ExposureTokenKey         string
 	ExposureTokenKeyPrevious string
-	ExposureVerification     string   // off (default) | report | required
-	ExposureTokenMaxAge      string   // e.g. "24h"
-	CORSAllowedOrigins       []string // browser origins allowed to call the API, e.g. the Vercel URL
+	ExposureVerification     string // off (default) | report | required
+	ExposureTokenMaxAge      string // e.g. "24h"
+	// SchedulerSecret (a SECRET, at least 32 characters) enables POST
+	// /internal/scheduler/run; unset leaves it answering 404. SchedulerGrace is how
+	// late a scheduled change may still run (default 15m); an unparseable value is
+	// an error at startup, not a silent default.
+	SchedulerSecret    string
+	SchedulerGrace     string
+	CORSAllowedOrigins []string // browser origins allowed to call the API, e.g. the Vercel URL
 }
 
 // Load reads configuration from the environment, applying defaults that match
@@ -51,6 +57,8 @@ func Load() Config {
 		ExposureTokenKeyPrevious: os.Getenv("EXPOSURE_TOKEN_KEY_PREVIOUS"),
 		ExposureVerification:     os.Getenv("EXPOSURE_VERIFICATION"),
 		ExposureTokenMaxAge:      os.Getenv("EXPOSURE_TOKEN_MAX_AGE"),
+		SchedulerSecret:          os.Getenv("SCHEDULER_SECRET"),
+		SchedulerGrace:           os.Getenv("SCHEDULER_GRACE"),
 		CORSAllowedOrigins:       splitList(os.Getenv("CORS_ALLOWED_ORIGINS")),
 	}
 }

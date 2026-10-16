@@ -22,6 +22,7 @@ import (
 	"helios/backend/internal/controlplane/flags"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/controlplane/results"
+	"helios/backend/internal/controlplane/scheduling"
 	"helios/backend/internal/controlplane/sdkkeys"
 	"helios/backend/internal/controlplane/segments"
 	"helios/backend/internal/controlplane/workspaces"
@@ -60,6 +61,15 @@ type Deps struct {
 	ExposureTokens *exposuretoken.Keyring
 	// ExposureMode is what /track does with them (default off).
 	ExposureMode exposuretoken.Mode
+	// SchedulerSecret enables POST /internal/scheduler/run when it is at least
+	// scheduling.MinSharedLen long; empty (or shorter) leaves the endpoint
+	// answering 404. It is a secret: never log it.
+	SchedulerSecret string
+	// Clock is the time source of scheduled changes; nil means the real clock.
+	// Tests inject their own.
+	Clock scheduling.Clock
+	// Scheduler tunes the scheduled-change runner (grace window, lease, ...).
+	Scheduler scheduling.Config
 	// StreamRecheck is how often an open /sdk/stream asks whether its key was
 	// revoked. Zero means 10 seconds.
 	StreamRecheck time.Duration
@@ -82,6 +92,9 @@ const (
 	// ScopeSDK: authenticated by an SDK key, which sees only its own
 	// environment.
 	ScopeSDK Scope = "sdk"
+	// ScopeInternal: not part of the public API. Called by a scheduler job with
+	// a shared secret; carries no tenant id and returns counts only.
+	ScopeInternal Scope = "internal"
 )
 
 // Route is one registered route and how it is protected.
@@ -177,6 +190,8 @@ func New(d Deps) *Router {
 	fl := flags.NewHandlers(d.Pool, d.Publisher)
 	al := auditlog.NewHandlers(d.Pool)
 	sg := segments.NewHandlers(d.Pool, d.Publisher)
+	sc := scheduling.NewHandlers(d.Pool, d.Clock)
+	runner := scheduling.NewRunner(d.Pool, d.Publisher, d.Clock, d.Scheduler)
 	ex := experiments.NewHandlers(d.Pool)
 	res := results.NewHandlers(d.Pool)
 	sdkKeys := apikey.NewVerifier(d.Pool, d.SDKKeyCacheTTL)
@@ -237,6 +252,12 @@ func New(d Deps) *Router {
 	workspace := func(pattern string, min rbac.WorkspaceRole, h http.HandlerFunc, extras ...limit) {
 		wrapped, names := controlPlane(guard.RequireWorkspace(min, h), extras)
 		rt.add(pattern, ScopeWorkspace, min, names, wrapped)
+	}
+	// internal: a route for machines, not people or browsers: no user, no tenant,
+	// a shared secret checked inside the handler. Its rate limit is per client IP
+	// and runs first, so guessing the secret is limited like using it.
+	internal := func(pattern string, h http.Handler, class string) {
+		rt.add(pattern, ScopeInternal, "", []string{class}, lim.ByIP(class)(h))
 	}
 	// sdkAlso: per-IP throttling of uncached key verifications (in the
 	// verifier), then a per-key limit once the key is known. inHandler names
@@ -299,6 +320,16 @@ func New(d Deps) *Router {
 	workspace("POST /workspaces/{wsId}/segments", rbac.WorkspaceEditor, sg.Create, perUser(ratelimit.ClassSegmentWrite))
 	workspace("PATCH /workspaces/{wsId}/segments/{segKey}", rbac.WorkspaceEditor, sg.Update, perUser(ratelimit.ClassSegmentWrite))
 	workspace("DELETE /workspaces/{wsId}/segments/{segKey}", rbac.WorkspaceEditor, sg.Delete, perUser(ratelimit.ClassSegmentWrite))
+
+	// Scheduled changes. Any role reads. Writing needs an editor here and then the
+	// requirement of the change's own kind in the handler (an approver for a
+	// production change that is not a kill), the same as making it now; the
+	// runner checks it again when it executes. {key} is the flag.
+	env("GET /environments/{envId}/scheduled-changes", rbac.Min(rbac.Viewer), sc.List)
+	env("GET /environments/{envId}/scheduled-changes/{changeId}", rbac.Min(rbac.Viewer), sc.Get)
+	env("POST /environments/{envId}/flags/{key}/scheduled-changes", rbac.Min(rbac.Editor), sc.Create, perUser(ratelimit.ClassScheduleWrite))
+	env("POST /environments/{envId}/scheduled-changes/{changeId}/cancel", rbac.Min(rbac.Editor), sc.Cancel, perUser(ratelimit.ClassScheduleWrite))
+	internal("POST /internal/scheduler/run", scheduling.InternalHandler(d.SchedulerSecret, runner.Run), ratelimit.ClassSchedulerRun)
 
 	// Same requirement as listing flags: any role in {envId}.
 	env("GET /environments/{envId}/audit-logs", rbac.Min(rbac.Viewer), al.List)

@@ -5,6 +5,7 @@ package cors
 import (
 	"net/http"
 	"slices"
+	"strings"
 )
 
 // Middleware allows exactly the listed origins. An empty list sends no CORS
@@ -13,6 +14,12 @@ import (
 // method-specific routes would otherwise reply 405.
 func Middleware(allowedOrigins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Machine-to-machine routes are never offered to browsers: no CORS
+		// headers, and a preflight falls through to the router's 405.
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		origin := r.Header.Get("Origin")
 		allowed := origin != "" && slices.Contains(allowedOrigins, origin)
 		if allowed {

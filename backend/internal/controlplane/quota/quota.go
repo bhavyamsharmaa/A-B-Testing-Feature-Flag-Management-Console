@@ -42,6 +42,10 @@ const (
 	// carries the same bounds as a CHECK (16384 bytes, 20 clauses) as a backstop.
 	MaxSegmentRuleBytes   = 8192
 	MaxSegmentRuleClauses = 20
+	// MaxPendingChangesPerFlag and MaxPendingChangesPerWorkspace cap the scheduled
+	// changes waiting to run (pending or running): per flag (all environments) and per workspace.
+	MaxPendingChangesPerFlag      = 10
+	MaxPendingChangesPerWorkspace = 100
 )
 
 // Exceeded says which limit a request would have broken. Per is what the
@@ -144,6 +148,27 @@ func CheckSegmentRules(encodedBytes, clauses int) error {
 		return Exceeded{Resource: "bytes of rule definition", Limit: MaxSegmentRuleBytes, Per: "segment"}
 	}
 	return nil
+}
+
+// CheckScheduledChange returns Exceeded when scheduling one more change for the
+// flag would pass a cap on pending ones. Call it first in the transaction that
+// inserts the change: it takes the workspace row lock, so two concurrent
+// schedules cannot both pass.
+func CheckScheduledChange(ctx context.Context, tx pgx.Tx, workspaceID, flagID string) error {
+	if err := lockWorkspace(ctx, tx, workspaceID); err != nil {
+		return err
+	}
+	var perWorkspace, perFlag int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE flag_id = $2::uuid)
+		FROM scheduled_changes WHERE workspace_id = $1::uuid AND status IN ('pending', 'running')`,
+		workspaceID, flagID).Scan(&perWorkspace, &perFlag); err != nil {
+		return err
+	}
+	if perFlag >= MaxPendingChangesPerFlag {
+		return Exceeded{Resource: "pending scheduled changes", Limit: MaxPendingChangesPerFlag, Per: "flag"}
+	}
+	return check("pending scheduled changes", perWorkspace, MaxPendingChangesPerWorkspace)
 }
 
 // CheckMember returns Exceeded when members plus open invites already reach

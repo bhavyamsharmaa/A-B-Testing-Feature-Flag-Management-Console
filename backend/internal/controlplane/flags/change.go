@@ -266,3 +266,54 @@ func KillFlag(ctx context.Context, tx pgx.Tx, env rbac.Environment, flagKey stri
 func (h *Handlers) PublishChange(ctx context.Context, env rbac.Environment, action string, v View) {
 	h.publish(ctx, env.WorkspaceID, env.ID, action, v.Key, v.Config.Enabled, v.Config.Version)
 }
+
+// Inspection is what scheduling needs to know about a flag's configuration in
+// an environment: which flag, its version, and the parts a change would touch
+// as they are now (canonical JSON, comparable).
+type Inspection struct {
+	FlagID  string
+	Version int64
+	Touched map[string]json.RawMessage
+}
+
+// Inspect reads the configuration and, with validate set, refuses a change an
+// edit would refuse (a bad rule, an unknown segment, a variation that does not
+// exist) with the same errors, writing nothing. It returns pgx.ErrNoRows for an
+// unknown flag.
+func Inspect(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}, env rbac.Environment, flagKey string, ch Change, validate bool) (Inspection, error) {
+	var in Inspection
+	if err := q.QueryRow(ctx, `SELECT f.id::text FROM flags f WHERE f.key = $1 AND f.workspace_id = $2::uuid`, flagKey, env.WorkspaceID).Scan(&in.FlagID); err != nil {
+		return in, err
+	}
+	cur, variations, err := readConfig(ctx, q, env.WorkspaceID, env.ID, flagKey)
+	if err != nil {
+		return in, err
+	}
+	in.Version = cur.Version
+	in.Touched = map[string]json.RawMessage{}
+	if ch.TargetingRules != nil {
+		in.Touched["targetingRules"] = canonicalJSON(cur.TargetingRules)
+	}
+	if ch.Rollout != nil {
+		in.Touched["rollout"] = canonicalJSON(cur.Rollout)
+	}
+	if ch.FallthroughVariationID != nil {
+		in.Touched["fallthroughVariationId"] = jsonString(cur.FallthroughVariationID)
+	}
+	if ch.Enabled != nil {
+		in.Touched["enabled"] = jsonBool(cur.Enabled)
+	}
+	if validate {
+		known, err := existingSegments(ctx, q, env.WorkspaceID, ruleSegmentRefs(ch.TargetingRules))
+		if err != nil {
+			return in, err
+		}
+		if _, err := applyToSnapshot(cur.configSnapshot, variations, ch, known); err != nil {
+			return in, err
+		}
+	}
+	return in, nil
+}

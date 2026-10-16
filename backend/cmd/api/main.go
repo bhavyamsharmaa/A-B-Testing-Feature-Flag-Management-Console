@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"helios/backend/internal/controlplane/scheduling"
 	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/config"
 	"helios/backend/internal/platform/cors"
@@ -131,18 +132,38 @@ func main() {
 		log.Printf("WARNING: EXPOSURE_VERIFICATION=report with a development key: with more than one instance most tokens will fail to verify")
 	}
 
+	var schedulerCfg scheduling.Config
+	if v := strings.TrimSpace(cfg.SchedulerGrace); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Minute || d > 24*time.Hour {
+			log.Fatalf("SCHEDULER_GRACE must be a duration between 1m and 24h, got %q", v)
+		}
+		schedulerCfg.Grace = d
+	}
+	// The secret is never printed: only whether the endpoint is on.
+	switch {
+	case cfg.SchedulerSecret == "":
+		log.Printf("scheduler endpoint: disabled (SCHEDULER_SECRET is not set); run changes with cmd/scheduler")
+	case len(cfg.SchedulerSecret) < scheduling.MinSharedLen:
+		log.Printf("scheduler endpoint: DISABLED, SCHEDULER_SECRET is shorter than %d characters", scheduling.MinSharedLen)
+	default:
+		log.Printf("scheduler endpoint: enabled")
+	}
+
 	router := server.New(server.Deps{
-		ExposureTokens: keyring,
-		ExposureMode:   exposureMode,
-		Context:        appCtx,
-		InvitesByID:    !strings.EqualFold(strings.TrimSpace(cfg.InvitesByID), "false"),
-		Limiter:        ratelimit.New(limits),
-		Email:          emailPolicy,
-		Pool:           pool,
-		Authn:          verifier.Middleware,
-		Publisher:      publisher,
-		Subscriber:     subscriber,
-		SDKKeyCacheTTL: sdkKeyCacheTTL,
+		SchedulerSecret: cfg.SchedulerSecret,
+		Scheduler:       schedulerCfg,
+		ExposureTokens:  keyring,
+		ExposureMode:    exposureMode,
+		Context:         appCtx,
+		InvitesByID:     !strings.EqualFold(strings.TrimSpace(cfg.InvitesByID), "false"),
+		Limiter:         ratelimit.New(limits),
+		Email:           emailPolicy,
+		Pool:            pool,
+		Authn:           verifier.Middleware,
+		Publisher:       publisher,
+		Subscriber:      subscriber,
+		SDKKeyCacheTTL:  sdkKeyCacheTTL,
 	})
 
 	srv := &http.Server{
