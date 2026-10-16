@@ -36,6 +36,7 @@ import (
 	"helios/backend/internal/controlplane/flags"
 	"helios/backend/internal/controlplane/quota"
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/httpx"
 )
 
@@ -75,6 +76,7 @@ const (
 	CodeConflict      = "CONFLICT"
 	CodeInvalid       = "INVALID_CHANGE"
 	CodeFlagGone      = "FLAG_NOT_FOUND"
+	CodeTokenInvalid  = "TOKEN_NO_LONGER_VALID"
 )
 
 // Clock is the time source. Production uses time.Now; tests inject their own
@@ -271,11 +273,11 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		err = tx.QueryRow(ctx, `
 			INSERT INTO scheduled_changes
 				(workspace_id, flag_id, environment_id, kind, change, base_version, base_config, run_at, due_at,
-				 idempotency_key, created_by, created_by_email, created_at, updated_at)
-			VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::jsonb, $6, $7::jsonb, $8, $8, $9, NULLIF($10, '')::uuid, $11, $12, $12)
+				 idempotency_key, created_by, created_by_email, created_at, updated_at, created_by_token_id)
+			VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::jsonb, $6, $7::jsonb, $8, $8, $9, NULLIF($10, '')::uuid, $11, $12, $12, NULLIF($13, '')::uuid)
 			RETURNING id::text`,
 			access.Env.WorkspaceID, in.FlagID, access.Env.ID, req.Kind, string(stored), in.Version, string(base), runAt,
-			req.IdempotencyKey, access.User.ID, access.User.Email, now).Scan(&id)
+			req.IdempotencyKey, access.User.ID, access.User.Email, now, tokenID(ctx)).Scan(&id)
 		if err != nil {
 			return err
 		}
@@ -504,4 +506,45 @@ func (h *Handlers) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, view)
+}
+
+// tokenID is the API token making this request, or "" for a session.
+func tokenID(ctx context.Context) string {
+	if t, ok := auth.APITokenFrom(ctx); ok {
+		return t.ID
+	}
+	return ""
+}
+
+// CancelForToken cancels the pending changes an API token scheduled, in the
+// caller's transaction (the revocation). The reason is recorded on each row and
+// each cancellation is audited. Running rows are left to the executor, which
+// refuses them for the same reason.
+func CancelForToken(ctx context.Context, tx pgx.Tx, workspaceID, tokenID, reason string, now time.Time) (int, error) {
+	rows, err := tx.Query(ctx, `
+		UPDATE scheduled_changes
+		SET status = 'cancelled', result_code = $3, result_message = $4, finished_at = $5, updated_at = $5,
+		    lease_owner = NULL, lease_expires_at = NULL
+		WHERE workspace_id = $1::uuid AND created_by_token_id = $2::uuid AND status = 'pending'
+		RETURNING id::text, environment_id::text`, workspaceID, tokenID, CodeTokenInvalid, reason, now)
+	if err != nil {
+		return 0, err
+	}
+	type pair struct{ id, env string }
+	cancelled, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (pair, error) {
+		var p pair
+		return p, row.Scan(&p.id, &p.env)
+	})
+	if err != nil {
+		return 0, err
+	}
+	for _, c := range cancelled {
+		if err := audit.Write(ctx, tx, audit.Entry{
+			WorkspaceID: workspaceID, EnvironmentID: c.env, Action: "scheduled_change.cancel", ResourceType: "scheduled_change", ResourceID: c.id,
+			Severity: audit.SeverityCritical, After: map[string]any{"resultCode": CodeTokenInvalid, "reason": reason, "tokenId": tokenID},
+		}); err != nil {
+			return 0, err
+		}
+	}
+	return len(cancelled), nil
 }

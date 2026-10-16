@@ -30,6 +30,7 @@ import (
 	"helios/backend/internal/controlplane/audit"
 	"helios/backend/internal/controlplane/quota"
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/controlplane/scheduling"
 	"helios/backend/internal/platform/apitoken"
 	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/events"
@@ -291,6 +292,10 @@ func (h *Handlers) Revoke(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		if _, err := tx.Exec(ctx, `UPDATE api_tokens SET revoked_at = now() WHERE id = $1::uuid`, id); err != nil {
+			return err
+		}
+		// What the token left scheduled must not run after it is revoked.
+		if _, err := scheduling.CancelForToken(ctx, tx, ws.WorkspaceID, id, "cancelled: the API token that scheduled this change was revoked", time.Now()); err != nil {
 			return err
 		}
 		return audit.Write(ctx, tx, audit.Entry{

@@ -80,7 +80,8 @@ type Stats struct {
 	Succeeded int `json:"succeeded"`
 	Failed    int `json:"failed"`
 	Retried   int `json:"retried"`
-	Skipped   int `json:"skipped"` // claimed, then cancelled or taken over before it ran
+	Skipped   int `json:"skipped"`   // claimed, then cancelled or taken over before it ran
+	Cancelled int `json:"cancelled"` // cancelled because the API token that scheduled them is revoked or expired
 }
 
 // Runner executes due scheduled changes. It holds no state between calls and
@@ -118,6 +119,9 @@ func NewRunner(pool *pgxpool.Pool, pub events.Publisher, clock Clock, cfg Config
 func (r *Runner) Run(ctx context.Context) (Stats, error) {
 	var st Stats
 	if err := r.sweep(ctx, &st); err != nil {
+		return st, err
+	}
+	if err := r.cancelDeadTokenChanges(ctx, &st); err != nil {
 		return st, err
 	}
 	handled := 0
@@ -192,6 +196,9 @@ type row struct {
 	createdBy                               *string
 	createdByEmail                          string
 	attempts                                int
+	tokenID                                 *string
+	tokenRevoked                            bool
+	tokenExpires                            *time.Time
 }
 
 func (rw row) env() rbac.Environment {
@@ -208,8 +215,10 @@ func (rw row) actor() flags.Actor {
 
 const selectForRun = `
 	SELECT sc.id::text, sc.workspace_id::text, f.key, e.id::text, e.key, e.is_production, sc.kind, sc.change::text, sc.base_config::text,
-	       sc.base_version, sc.run_at, sc.status, COALESCE(sc.lease_owner, ''), sc.created_by::text, sc.created_by_email, sc.attempts
+	       sc.base_version, sc.run_at, sc.status, COALESCE(sc.lease_owner, ''), sc.created_by::text, sc.created_by_email, sc.attempts,
+	       sc.created_by_token_id::text, COALESCE(t.revoked_at IS NOT NULL, false), t.expires_at
 	FROM scheduled_changes sc
+	LEFT JOIN api_tokens t ON t.id = sc.created_by_token_id AND t.workspace_id = sc.workspace_id
 	JOIN flags f ON f.id = sc.flag_id AND f.workspace_id = sc.workspace_id
 	JOIN environments e ON e.id = sc.environment_id AND e.workspace_id = sc.workspace_id
 	WHERE sc.id = $1::uuid AND sc.workspace_id = $2::uuid
@@ -219,7 +228,7 @@ func loadRow(ctx context.Context, tx pgx.Tx, id, workspaceID string) (row, error
 	var rw row
 	var change, base string
 	err := tx.QueryRow(ctx, selectForRun, id, workspaceID).Scan(&rw.id, &rw.workspaceID, &rw.flagKey, &rw.envID, &rw.envKey, &rw.isProd,
-		&rw.kind, &change, &base, &rw.baseVersion, &rw.runAt, &rw.status, &rw.leaseOwner, &rw.createdBy, &rw.createdByEmail, &rw.attempts)
+		&rw.kind, &change, &base, &rw.baseVersion, &rw.runAt, &rw.status, &rw.leaseOwner, &rw.createdBy, &rw.createdByEmail, &rw.attempts, &rw.tokenID, &rw.tokenRevoked, &rw.tokenExpires)
 	rw.change, rw.baseConfig = json.RawMessage(change), json.RawMessage(base)
 	return rw, err
 }
@@ -311,6 +320,7 @@ const (
 	outFailed
 	outRetried
 	outMissed
+	outCancelled
 )
 
 // execute applies one claimed change in its own transaction.
@@ -355,6 +365,16 @@ func (r *Runner) Execute(ctx context.Context, c Claimed, st *Stats) error {
 				return err
 			}
 			return rw.audit(ctx, tx, "scheduled_change.missed", audit.SeverityCritical, map[string]any{"resultCode": CodeMissed})
+		}
+
+		// A change scheduled through an API token runs only while that token is
+		// still valid, even if the cancellation made at revocation was missed.
+		if rw.tokenGone(now) {
+			out = outCancelled
+			if err := finish(ctx, tx, rw.id, StatusCancelled, CodeTokenInvalid, tokenGoneMessage, now); err != nil {
+				return err
+			}
+			return rw.audit(ctx, tx, "scheduled_change.cancel", audit.SeverityCritical, map[string]any{"resultCode": CodeTokenInvalid, "reason": tokenGoneMessage})
 		}
 
 		// Authority as of now, from the creator's current membership: someone
@@ -427,8 +447,56 @@ func (r *Runner) Execute(ctx context.Context, c Claimed, st *Stats) error {
 		}
 	case outRetried:
 		st.Retried++
+	case outCancelled:
+		st.Cancelled++
 	}
 	return nil
+}
+
+const tokenGoneMessage = "cancelled: the API token that scheduled this change was revoked or has expired"
+
+// tokenGone: the change came from an API token that is no longer valid.
+func (rw row) tokenGone(now time.Time) bool {
+	return rw.tokenID != nil && (rw.tokenRevoked || rw.tokenExpires == nil || !now.Before(*rw.tokenExpires))
+}
+
+// cancelDeadTokenChanges cancels pending changes whose API token has expired
+// (revocation cancels in its own transaction). Nothing else announces an expiry.
+func (r *Runner) cancelDeadTokenChanges(ctx context.Context, st *Stats) error {
+	now := r.clock.now()
+	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT sc.id::text, sc.workspace_id::text FROM scheduled_changes sc
+			JOIN api_tokens t ON t.id = sc.created_by_token_id AND t.workspace_id = sc.workspace_id
+			WHERE sc.status = 'pending' AND (t.revoked_at IS NOT NULL OR t.expires_at <= $1)
+			ORDER BY sc.run_at, sc.id LIMIT 200
+			FOR UPDATE OF sc SKIP LOCKED`, now)
+		if err != nil {
+			return err
+		}
+		type pair struct{ id, ws string }
+		pairs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (pair, error) {
+			var p pair
+			return p, row.Scan(&p.id, &p.ws)
+		})
+		if err != nil {
+			return err
+		}
+		for _, p := range pairs {
+			rw, err := loadRow(ctx, tx, p.id, p.ws)
+			if err != nil {
+				return err
+			}
+			if err := finish(ctx, tx, rw.id, StatusCancelled, CodeTokenInvalid, tokenGoneMessage, now); err != nil {
+				return err
+			}
+			if err := rw.audit(ctx, tx, "scheduled_change.cancel", audit.SeverityCritical, map[string]any{"resultCode": CodeTokenInvalid, "reason": tokenGoneMessage}); err != nil {
+				return err
+			}
+			st.Cancelled++
+		}
+		return nil
+	})
 }
 
 // authority re-checks the creator's right to make this change, from the

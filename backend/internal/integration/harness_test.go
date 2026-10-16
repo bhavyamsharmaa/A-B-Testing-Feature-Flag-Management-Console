@@ -4,7 +4,7 @@
 //
 //	HELIOS_TEST_DATABASE_URL='postgres://helios@127.0.0.1:55432/postgres?sslmode=disable' go test ./internal/integration
 //
-// Each test creates its own database, applies every migration (0001-0012), and
+// Each test creates its own database, applies every migration (0001-0013), and
 // drops it afterwards. It refuses any non-local host.
 package integration
 
@@ -87,8 +87,8 @@ func newHarnessWith(t *testing.T, adjust func(*server.Deps)) *harness {
 		_ = admin.Close(ctx)
 	})
 	files, err := filepath.Glob(filepath.Join("..", "..", "db", "migrations", "0*.sql"))
-	if err != nil || len(files) < 12 {
-		t.Fatalf("expected migrations 0001-0012, found %v (%v)", files, err)
+	if err != nil || len(files) < 13 {
+		t.Fatalf("expected migrations 0001-0013, found %v (%v)", files, err)
 	}
 	sort.Strings(files)
 	for _, f := range files {
