@@ -809,3 +809,123 @@ BACKEND += [
      'backend/internal/server/tokenaccess.go',
      '"GET /workspaces/{wsId}/segments":                                true,', '"GET /workspaces/{wsId}/segments":                                false,', _I, 'OpenAPITokenMarksMatch'),
 ]
+
+
+# ---- outbox, webhooks, SSRF, secrets, invite email -------------------------------------------------------
+_OB = 'backend/internal/controlplane/outbox/worker.go'
+_ONE = 'backend/internal/controlplane/outbox/outbox.go'
+_WH = 'backend/internal/controlplane/webhooks/'
+_NG = 'backend/internal/platform/netguard/netguard.go'
+_NGP = './internal/platform/netguard'
+_WHP = './internal/controlplane/webhooks'
+_MAIL = './internal/platform/mail'
+BACKEND += [
+    ("outbox: a claimed row is claimable again by a second worker (candidate snapshot only)", _OB,
+     """			  AND ((o.status IN ('pending', 'failed') AND o.next_attempt_at <= $2)
+			    OR (o.status = 'delivering' AND o.lease_expires_at <= $2))
+""", "", _I, 'TwoWorkersNeverClaim'),
+    ("outbox: a result is recorded without holding the lease", _OB,
+     "WHERE id = $1::uuid AND workspace_id = $2::uuid AND status = 'delivering' AND lease_owner = $11`,",
+     "WHERE id = $1::uuid AND workspace_id = $2::uuid AND ($11::text IS NOT NULL)`,", _I, 'StaleLeaseIsReclaimed'),
+    ("outbox: the network call is made inside a transaction", _OB,
+     "	res := sender.Send(ctx, d)\n",
+     "	held, _ := w.pool.Begin(ctx)\n	defer held.Rollback(ctx)\n	res := sender.Send(ctx, d)\n", _I, 'NetworkCallHappensOutside'),
+    ("outbox: an expired lease is never reclaimed", _OB,
+     ["			    OR (status = 'delivering' AND lease_expires_at <= $2))\n		), busy AS (", "WHERE status = 'delivering' AND lease_expires_at > $2 GROUP BY target_key"],
+     ["			  )\n		), busy AS (", "WHERE status = 'delivering' GROUP BY target_key"], _I, 'StaleLeaseIsReclaimed|CrashedDelivery'),
+    ("outbox: backoff does not grow", _OB, "var defaultBackoff = []time.Duration{time.Minute, 5 * time.Minute,", "var defaultBackoff = []time.Duration{time.Minute, time.Minute,", _I, 'BackoffThenDead'),
+    ("outbox: a row is never dead-lettered", _OB, "case res.Permanent || d.Attempt >= w.cfg.MaxAttempts:", "case res.Permanent:", _I, 'BackoffThenDead'),
+    ("outbox: a row that keeps killing its worker is retried forever", _OB, "WHERE status = 'delivering' AND lease_expires_at <= $1 AND attempts >= $2`, now, w.cfg.MaxAttempts)", "WHERE status = 'delivering' AND lease_expires_at <= $1 AND attempts >= $2 + 1000000`, now, w.cfg.MaxAttempts)", _I, 'KeepsKillingItsWorker'),
+    ("outbox: no per-target in-flight cap", _OB, "WHERE c.rn <= GREATEST($3 - COALESCE(b.n, 0), 0)", "WHERE c.rn <= 100000 + $3 * 0", _I, 'OneSlowTargetCannot'),
+    ("outbox: in-flight rows of a target are not counted across workers", _OB, "GREATEST($3 - COALESCE(b.n, 0), 0)", "GREATEST($3 - 0 * COALESCE(b.n, 0), 0)", _I, 'OneSlowTargetCannot'),
+    ("outbox: a full queue is not capped", _ONE, "	if queued < MaxQueuedWebhooksPerWorkspace {\n		return nil\n	}", "	if true {\n		return nil\n	}", _I, 'QueueCapDrops'),
+    ("outbox: the overflow is not audited once", _ONE, "	if recent {\n		return nil\n	}\n	return audit.Write(", "	if recent && false {\n		return nil\n	}\n	return audit.Write(", _I, 'QueueCapDrops'),
+    ("outbox: delivered rows are kept forever", _ONE, "RetentionDelivered = 14 * 24 * time.Hour", "RetentionDelivered = 14 * 365 * 24 * time.Hour", _I, 'PurgeRemovesOnlyOldFinished'),
+    ("outbox: pending rows can be purged", _OB, "WHERE (status = 'delivered' AND updated_at < $1) OR (status = 'dead' AND updated_at < $2)", "WHERE (status IN ('delivered', 'pending') AND updated_at < $1) OR (status = 'dead' AND updated_at < $2)", _I, 'PurgeRemovesOnlyOldFinished'),
+    ("outbox: stored errors are not sanitised", _OB, "		case unicode.IsPrint(r):\n			b.WriteRune(r)\n		}", "		default:\n			b.WriteRune(r)\n		}", _I, 'ErrorsAreStoredShortAndPrintable'),
+    ("outbox: the secret-header check for the internal endpoint is skipped", 'backend/internal/controlplane/outbox/internal.go', "if r.Header.Get(\"Origin\") != \"\" || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {", "if r.Header.Get(\"Origin\") != \"\" || subtle.ConstantTimeCompare(got[:], want[:]) != 1 && false {", _I + ' ./internal/controlplane/outbox', 'InternalEndpoint|OutboxEndpoint|EveryRoute'),
+
+    ("webhooks: the signature does not cover the delivery id", _WH + 'signing.go', '	mac.Write([]byte(deliveryID))\n	mac.Write([]byte("."))\n', '	mac.Write([]byte("."))\n', _WHP, 'GoldenSignature'),
+    ("webhooks: the signature does not cover the timestamp", _WH + 'signing.go', '	mac.Write([]byte(strconv.FormatInt(timestamp, 10)))\n', '', _WHP, 'GoldenSignature'),
+    ("webhooks: the reference verifier ignores the timestamp tolerance", _WH + 'signing.go', 'if age > tolerance || age < -tolerance {', 'if false {', _WHP, 'WithinTheTolerance'),
+    ("webhooks: the reference verifier accepts only the first signature", _WH + 'signing.go', 'for _, part := range strings.Split(header, ",") {', 'for _, part := range strings.Split(header, ",")[:1] {', _WHP, 'RotationHeaderVerifies'),
+    ("webhooks: during a rotation only one signature is sent", _WH + 'sender.go', 'if len(prev) > 0 && prevExp != nil && s.now().Before(*prevExp) {', 'if false && len(prev) > 0 && prevExp != nil && s.now().Before(*prevExp) {', _I, 'SecretRotationSends'),
+    ("webhooks: the old secret signs forever", _WH + 'sender.go', 'if len(prev) > 0 && prevExp != nil && s.now().Before(*prevExp) {', 'if len(prev) > 0 && prevExp != nil {', _I, 'SecretRotationSends'),
+    ("webhooks: the delivery id changes on every attempt", _WH + 'sender.go', 'req.Header.Set(HeaderDeliveryID, d.DeliveryID)', 'req.Header.Set(HeaderDeliveryID, d.DeliveryID+"-"+itoa(int64(d.Attempt)))', _I, 'AtLeastOnceTheSame|ADeliveryIsSigned|PingAndAResend'),
+    ("webhooks: creation works without an encryption key", _WH + 'handlers.go', '	if !h.requireKey(w) {\n		return\n	}\n	var req endpointRequest', '	var req endpointRequest', _I, 'WithoutAKeyWebhooksFailClosed'),
+    ("webhooks: viewers may manage endpoints", 'backend/internal/server/server.go', 'workspace("POST /workspaces/{wsId}/webhooks", rbac.WorkspaceAdmin,', 'workspace("POST /workspaces/{wsId}/webhooks", rbac.WorkspaceViewer,', _I, 'ManagementNeedsAnAdmin|EveryRouteIsTenantScoped'),
+    ("webhooks: API tokens may manage endpoints", 'backend/internal/server/tokenaccess.go', '"POST /workspaces/{wsId}/webhooks":  ', '"POST /workspaces/{wsId}/webhooks":  true, //', _I + ' ./internal/server', 'ManagementNeedsAnAdmin|ClassifiedForTokens|TokenAllowlistAcrossEveryRoute|OpenAPIToken'),
+    ("webhooks: another workspace can delete an endpoint", _WH + 'handlers.go', 'DELETE FROM webhook_endpoints WHERE id = $1::uuid AND workspace_id = $2::uuid RETURNING url', 'DELETE FROM webhook_endpoints WHERE id = $1::uuid AND ($2::uuid IS NULL OR true) RETURNING url', _I, 'OnlyReceivesItsOwn'),
+    ("webhooks: events go to every workspace's endpoints", _WH + 'events.go', 'WHERE workspace_id = $1::uuid AND enabled AND $2 = ANY(event_types)', 'WHERE ($1::uuid IS NOT NULL) AND enabled AND $2 = ANY(event_types)', _I, 'OnlyReceivesItsOwn'),
+    ("webhooks: the environment filter is ignored", _WH + 'events.go', "		  AND (environment_id IS NULL OR environment_id = NULLIF($3, '')::uuid)\n", "		  AND ($3::text IS NOT NULL)\n", _I, 'EventTypeAndEnvironmentFilters'),
+    ("webhooks: the event type filter is ignored", _WH + 'events.go', 'AND enabled AND $2 = ANY(event_types)', 'AND enabled AND ($2 = ANY(event_types) OR true)', _I, 'EventTypeAndEnvironmentFilters'),
+    ("webhooks: a disabled endpoint still gets events queued", _WH + 'events.go', 'AND enabled AND $2', 'AND $2', _I, 'KeepsFailingIsDisabled'),
+    ("webhooks: an endpoint is never disabled automatically", _WH + 'sender.go', 'if failures < AutoDisableAfterFailures && !long {', 'if true {', _I, 'KeepsFailingIsDisabled'),
+    ("webhooks: a test ping counts toward health", _WH + 'sender.go', 'if d.EventType == EventPing || o.Internal {', 'if o.Internal {', _I, 'PingAndAResend'),
+    ("webhooks: a promotion also sends flag.updated", 'backend/internal/controlplane/flags/change.go', '	if opts.PromotedFrom != "" {\n		typ = webhooks.EventPromotionApplied', '	if opts.PromotedFrom != "" && false {\n		typ = webhooks.EventPromotionApplied', _I, 'EveryEventIsEmitted'),
+    ("webhooks: targeting rule contents travel in flag.updated", 'backend/internal/controlplane/flags/events.go', 'webhooks.Change{Before: map[string]int{"ruleCount": countRules(before.TargetingRules)}, After: map[string]int{"ruleCount": countRules(after.TargetingRules)}}', 'webhooks.Change{Before: before.TargetingRules, After: after.TargetingRules}', _I, 'EveryEventIsEmitted'),
+    ("webhooks: an API token's edit is attributed to the person", _WH + 'events.go', 'if tok, ok := auth.APITokenFrom(ctx); ok {', 'if tok, ok := auth.APITokenFrom(ctx); ok && false {', _I, 'EveryEventIsEmitted'),
+    ("webhooks: scheduled change outcomes are not announced", 'backend/internal/controlplane/scheduling/run.go', '	return rw.emit(ctx, tx, action, extra)\n}', '	return nil\n}', _I, 'EveryEventIsEmitted'),
+    ("webhooks: the flag edit event is not queued with the edit", 'backend/internal/controlplane/flags/change.go', '	if err := emit(ctx, tx, env, typ, eventActor(ctx, actor, opts.ScheduledChangeID), data); err != nil {\n		return View{}, err\n	}', '', _I, 'ADeliveryIsSigned|EveryEventIsEmitted'),
+    ("webhooks: the endpoint's URL is checked only syntactically at creation", _WH + 'handlers.go', 'u, err := h.guard.Check(ctx, strings.TrimSpace(raw))', 'u, err := h.guard.ValidateURL(strings.TrimSpace(raw))', _I, 'HostileEndpointURLs'),
+    ("webhooks: a failed delivery's stored error names the URL", _WH + 'sender.go', '	return "could not connect"\n}', '	return "could not connect: " + err.Error()\n}', _I, 'NeitherTheSecretNorTheURL'),
+    ("webhooks: a successful receiver's body is kept", _WH + 'sender.go', '		out.Hint = "" // a successful receiver\'s body is of no interest', '		_ = out.Hint', _I, 'NeitherTheSecretNorTheURL'),
+    ("webhooks: the signing secret is stored in the clear", _WH + 'handlers.go', 'sealed, err := h.box.Seal([]byte(secret), []byte(id))\n		if err != nil {\n			return err\n		}\n		if _, err := tx.Exec(ctx, `\n			INSERT INTO webhook_endpoints', 'sealed, err := []byte(secret), error(nil)\n		if err != nil {\n			return err\n		}\n		if _, err := tx.Exec(ctx, `\n			INSERT INTO webhook_endpoints', _I, 'ManagementNeedsAnAdmin'),
+
+    ("ssrf: a URL with credentials is accepted", _NG, "	if u.User != nil {", "	if false && u.User != nil {", _NGP, 'EncodingsAndFormsAreRefused'),
+    ("ssrf: numeric spellings of an address are accepted", _NG, "		if looksNumeric(host) {", "		if false && looksNumeric(host) {", _NGP, 'EncodingsAndFormsAreRefused'),
+    ("ssrf: plain http is accepted", _NG, '	default:\n		return nil, blocked("only https is allowed")', '	default:\n		return u, nil', _NGP, 'EncodingsAndFormsAreRefused'),
+    ("ssrf: any port is accepted", _NG, "		if !allowedPort(port, g.p.AllowLocalHTTP && local) {", "		if false && !allowedPort(port, g.p.AllowLocalHTTP && local) {", _NGP, 'EncodingsAndFormsAreRefused'),
+    ("ssrf: localhost is accepted", _NG, "			if !g.p.AllowLocalHTTP {\n				return nil, blocked(\"localhost is not allowed\")\n			}\n			local = true", "			local = false", _NGP, 'EncodingsAndFormsAreRefused'),
+    ("ssrf: IPv4-mapped IPv6 addresses are judged as IPv6", _NG, "	if ip.Is4In6() {\n		ip = ip.Unmap()\n	}\n	if ip.Is6() {", "	if ip.Is6() {", _NGP, 'EveryBlockedRangeIsRefused'),
+    ("ssrf: 6to4 addresses embedding a private IPv4 are accepted", _NG, "		if b[0] == 0x20 && b[1] == 0x02 {", "		if false && b[0] == 0x20 && b[1] == 0x02 {", _NGP, 'EveryBlockedRangeIsRefused'),
+    ("ssrf: the cloud metadata address is accepted", _NG, ['	case ip.IsLinkLocalUnicast():\n		return "link-local address"\n', '		"169.254.0.0/16",  // link-local, cloud metadata\n'], ['', ''], _NGP, 'EveryBlockedRangeIsRefused|DevelopmentSwitchAllowsOnlyLoopback'),
+    ("ssrf: RFC 1918 private ranges are accepted", _NG, ['	case ip.IsPrivate():\n		return "private address"\n', '		"10.0.0.0/8",      // RFC 1918\n', '		"172.16.0.0/12",   // RFC 1918\n', '		"192.168.0.0/16",  // RFC 1918\n'], ['', '', '', ''], _NGP, 'EveryBlockedRangeIsRefused'),
+    ("ssrf: carrier-grade NAT addresses are accepted", _NG, '		"100.64.0.0/10",   // CGNAT\n', '', _NGP, 'EveryBlockedRangeIsRefused'),
+    ("ssrf: unique-local IPv6 addresses are accepted", _NG, ['		"fc00::/7",        // unique local\n', '	case ip.IsPrivate():\n		return "private address"\n'], ['', ''], _NGP, 'EveryBlockedRangeIsRefused'),
+    ("ssrf: a name resolving partly inside is accepted (only the first record is checked)", _NG, "	for _, a := range addrs {\n		if why := Blocked(a); why != \"\" && !(g.p.AllowLocalHTTP && isLoopback(a)) {\n			return nil, blocked(\"the host resolves to a %s\", why)", "	for _, a := range addrs[:1] {\n		if why := Blocked(a); why != \"\" && !(g.p.AllowLocalHTTP && isLoopback(a)) {\n			return nil, blocked(\"the host resolves to a %s\", why)", _NGP, 'ResolvesToABlockedAddress'),
+    ("ssrf: the connect-time hook does not check the address", _NG, '	if why := Blocked(ip); why != "" && !(g.p.AllowLocalHTTP && isLoopback(ip)) {\n		return blocked("%s", why)\n	}\n	return nil\n}', '	return nil\n}', _NGP, 'ControlHookChecks'),
+    ("ssrf: the name is resolved again after it was checked (rebinding)", _NG, "		c, err := d.DialContext(ctx, network, net.JoinHostPort(a.WithZone(\"\").String(), port))", "		c, err := d.DialContext(ctx, network, net.JoinHostPort(host, port))", _NGP, 'DNSRebinding'),
+    ("ssrf: redirects are followed", _NG, "CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },", "CheckRedirect: func(*http.Request, []*http.Request) error { return nil },", _NGP, 'RedirectsAreNotFollowed'),
+    ("ssrf: the environment proxy is used", _NG, "		Proxy:                 nil,", "		Proxy:                 http.ProxyFromEnvironment,", _NGP, 'DoesNotUseAnEnvironmentProxy'),
+
+    ("secrets: a signing secret is encrypted with a fixed nonce", 'backend/internal/platform/secretbox/secretbox.go', "	if _, err := rand.Read(nonce); err != nil {", "	if false {", './internal/platform/secretbox', 'FreshNonces'),
+    ("secrets: ciphertext is not bound to its row", 'backend/internal/platform/secretbox/secretbox.go', ['return b.current.aead.Seal(out, nonce, plaintext, aad), nil', 'pt, err := k.aead.Open(nil, sealed[4:4+n], sealed[4+n:], aad)'], ['return b.current.aead.Seal(out, nonce, plaintext, nil), nil', 'pt, err := k.aead.Open(nil, sealed[4:4+n], sealed[4+n:], nil)'], './internal/platform/secretbox', 'BoundToItsRow'),
+    ("secrets: a sealed value under an unknown key is opened with the current one", 'backend/internal/platform/secretbox/secretbox.go', "	if k == nil {\n		return nil, ErrUnknownKey\n	}", "	if k == nil {\n		k = b.current\n	}", './internal/platform/secretbox', 'Rotation'),
+
+    ("email: the subject is not cleaned or encoded", 'backend/internal/platform/mail/mail.go', ['	subject := CleanHeader(msg.Subject, 200)\n', '	w("Subject", mime.QEncoding.Encode("utf-8", subject))\n'], ['	subject := msg.Subject\n', '	w("Subject", subject)\n'], _MAIL, 'HostileSubjects'),
+    ("email: a recipient with a line break is accepted", 'backend/internal/platform/mail/mail.go', "	if strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) || r == '<' || r == '>' || r == ',' || r == ';' || r == '\"' || r == ' ' }) {", "	if false {", _MAIL, 'AddressesAreStrict'),
+    ("email: bodies are not quoted-printable", 'backend/internal/platform/mail/mail.go', 'Content-Transfer-Encoding: quoted-printable', 'Content-Transfer-Encoding: 8bit', _MAIL, 'QuotedPrintable'),
+    ("email: the sink logs the full recipient", 'backend/internal/platform/mail/sink.go', 'Redact(msg.To)', 'msg.To', _MAIL, 'SinkSendsNothingAndLogsOnly'),
+    ("email: the SMTP client sends over a connection with no TLS", 'backend/internal/platform/mail/smtp.go', '		if ok, _ := c.Extension("STARTTLS"); !ok {', '		if ok, _ := c.Extension("STARTTLS"); !ok && false {', _MAIL, 'NeverDowngradesStartTLS'),
+    ("email: plaintext SMTP needs no development flag", 'backend/internal/platform/mail/smtp.go', '		if !c.AllowInsecure {', '		if false {', _MAIL, 'PlaintextUnlessTheDevelopmentFlag'),
+    ("email: names are not HTML-escaped", 'backend/internal/controlplane/invitemail/invitemail.go', '	e := html.EscapeString\n', '	e := func(s string) string { return s }\n', './internal/controlplane/invitemail', 'EscapesEveryUserSuppliedField'),
+    ("email: the invite token stays in the outbox after delivery", 'backend/internal/controlplane/invitemail/invitemail.go', "`UPDATE outbox SET payload = payload - 'token' WHERE id", "`UPDATE outbox SET payload = payload WHERE id", _I, 'InviteEmailIsQueued|DeadInviteEmail|RevokedOrAccepted'),
+    ("email: a revoked invite is still emailed", 'backend/internal/controlplane/invitemail/invitemail.go', '	if !open {', '	if !open && false {', _I, 'RevokedOrAcceptedInvite'),
+    ("email: an email queued before a resend is sent with the old token", 'backend/internal/controlplane/invitemail/invitemail.go', '	if !current {', '	if !current && false {', _I, 'EmailStillQueued'),
+    ("email: a resend keeps the old link alive", 'backend/internal/controlplane/workspaces/invite_email.go', 'UPDATE workspace_invites SET token_hash = $2 WHERE id = $1::uuid', "UPDATE workspace_invites SET token_hash = CASE WHEN $2 = '' THEN $2 ELSE token_hash END WHERE id = $1::uuid", _I, 'ResendIssuesANewLink'),
+    ("email: no cooldown between resends", 'backend/internal/controlplane/workspaces/invite_email.go', '		if last != nil && now.Sub(*last) < ResendCooldown {', '		if false {', _I, 'ResendIssuesANewLink'),
+    ("email: no per-address daily limit in a workspace", 'backend/internal/controlplane/quota/quota.go', '	if perRecipient >= MaxInviteEmailsPerRecipientPerDay {', '	if false {', _I, 'InviteEmailLimits'),
+    ("email: no per-workspace daily limit", 'backend/internal/controlplane/quota/quota.go', '	if perWorkspace >= MaxInviteEmailsPerWorkspacePerDay {', '	if false {', _I, 'InviteEmailLimits'),
+    ("email: the cross-workspace limit is reported as an error", 'backend/internal/controlplane/quota/quota.go', '	return anywhere >= MaxInviteEmailsPerRecipientAnywherePerDay, nil', '	if anywhere >= MaxInviteEmailsPerRecipientAnywherePerDay {\n		return false, Exceeded{Resource: "invite emails to one address", Limit: 6, Per: "all workspaces per day"}\n	}\n	return false, nil', _I, 'PerAddressLimitAcrossWorkspaces'),
+    ("email: the cross-workspace limit is not applied", 'backend/internal/controlplane/quota/quota.go', '	return anywhere >= MaxInviteEmailsPerRecipientAnywherePerDay, nil', '	return false, nil', _I, 'PerAddressLimitAcrossWorkspaces'),
+    ("email: the default mail sender sends for real", 'backend/internal/delivery/delivery.go', '	case "", "sink":', '	case "sink":', './internal/delivery ' + _I, 'SinkIsTheDefault'),
+]
+
+FRONTEND += [
+    ("webhooks ui: a delivered delivery can be resent", 'frontend/src/lib/webhooks.ts', "d.status === 'failed' || d.status === 'dead'", "d.status === 'failed' || d.status === 'dead' || d.status === 'delivered'", 'e2e/unit/webhooks.spec.tsx'),
+    ("webhooks ui: a failing delivery does not say it will retry", 'frontend/src/lib/webhooks.ts', "label: 'Failed, will retry'", "label: 'Failed'", 'e2e/unit/webhooks.spec.tsx'),
+    ("webhooks ui: a disabled endpoint is not explained", 'frontend/src/lib/webhooks.ts', "if (!e.enabled) return e.health.disabledReason ?? 'Disabled'", "if (!e.enabled) return 'Disabled'", 'e2e/unit/webhooks.spec.tsx'),
+    ("webhooks ui: the colour is the only difference between states", 'frontend/src/lib/webhooks.ts', "failed: { mark: '!', label: 'Failed, will retry'", "failed: { mark: '', label: 'Failed, will retry'", 'e2e/unit/webhooks.spec.tsx'),
+    ("webhooks ui: the URL check accepts an empty URL", 'frontend/src/lib/webhooks.ts', "if (v === '') return 'URL is required.'", "if (v === '') return null", 'e2e/unit/webhooks.spec.tsx'),
+]
+
+UI += [
+    ("webhooks ui: the secret dialog can be dismissed by accident", 'frontend/src/components/webhooks/ShowSecretDialog.tsx', 'onClose={() => undefined} busy wide>', 'onClose={onDone} wide>', 'file:e2e/webhooks.spec.ts'),
+    ("webhooks ui: Done works before the secret is stored", 'frontend/src/components/webhooks/ShowSecretDialog.tsx', 'disabled={!stored}', 'disabled={false}', 'file:e2e/webhooks.spec.ts'),
+    ("webhooks ui: members below admin are offered Add webhook", 'frontend/src/pages/WebhooksPage.tsx', '              {canManage && (\n                <div className="flex gap-2">', '              {(\n                <div className="flex gap-2">', 'file:e2e/webhooks.spec.ts'),
+    ("webhooks ui: delete does not ask first", 'frontend/src/pages/WebhooksPage.tsx', "setConfirm({ kind: 'delete', endpoint: e })", "void deleteWebhook(workspace!.id, e.id).then(() => reload())", 'file:e2e/webhooks.spec.ts'),
+    ("webhooks ui: the dev mail sink is not disclosed", 'frontend/src/components/settings/InvitesSection.tsx', '      {mail && !mail.sent && (\n        <p role="note"', '      {mail && !mail.sent && false && (\n        <p role="note"', 'file:e2e/webhooks.spec.ts'),
+    ("webhooks ui: an invite email's status is not shown", 'frontend/src/components/settings/InvitesSection.tsx', 'Email: {EMAIL_MARK[inv.emailStatus].label.toLowerCase()}', '{EMAIL_MARK[inv.emailStatus].mark}', 'file:e2e/webhooks.spec.ts'),
+    ("webhooks ui: a delivered delivery shows a resend button in the log", 'frontend/src/components/webhooks/DeliveryLog.tsx', '{canResend(d) && (', '{(true || canResend(d)) && (', 'file:e2e/webhooks.spec.ts'),
+]
