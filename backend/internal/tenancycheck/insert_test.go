@@ -31,6 +31,7 @@ var tenantTables = map[string]bool{
 	"events":                 true, // 0008
 	"segments":               true, // 0010
 	"segment_members":        true, // 0010
+	"scheduled_changes":      true, // 0011
 }
 
 var insertRE = regexp.MustCompile(`(?is)INSERT\s+INTO\s+([a-z_][a-z0-9_]*)\s*(\(([^)]*)\))?`)

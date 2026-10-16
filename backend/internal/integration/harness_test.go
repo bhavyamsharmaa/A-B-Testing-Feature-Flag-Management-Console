@@ -4,7 +4,7 @@
 //
 //	HELIOS_TEST_DATABASE_URL='postgres://helios@127.0.0.1:55432/postgres?sslmode=disable' go test ./internal/integration
 //
-// Each test creates its own database, applies every migration (0001-0010), and
+// Each test creates its own database, applies every migration (0001-0011), and
 // drops it afterwards. It refuses any non-local host.
 package integration
 
@@ -45,6 +45,7 @@ type harness struct {
 	routes []server.Route
 	deps   server.Deps
 	authn  func(http.Handler) http.Handler
+	dbURL  string // this test's own throwaway database
 }
 
 type user struct {
@@ -86,8 +87,8 @@ func newHarnessWith(t *testing.T, adjust func(*server.Deps)) *harness {
 		_ = admin.Close(ctx)
 	})
 	files, err := filepath.Glob(filepath.Join("..", "..", "db", "migrations", "0*.sql"))
-	if err != nil || len(files) < 10 {
-		t.Fatalf("expected migrations 0001-0010, found %v (%v)", files, err)
+	if err != nil || len(files) < 11 {
+		t.Fatalf("expected migrations 0001-0011, found %v (%v)", files, err)
 	}
 	sort.Strings(files)
 	for _, f := range files {
@@ -134,7 +135,7 @@ func newHarnessWith(t *testing.T, adjust func(*server.Deps)) *harness {
 	router := server.New(deps)
 	srv := httptest.NewServer(router.Mux)
 	t.Cleanup(srv.Close)
-	return &harness{t: t, srv: srv, pool: pool, bus: bus, routes: router.Routes, deps: deps, authn: authn}
+	return &harness{t: t, srv: srv, pool: pool, bus: bus, routes: router.Routes, deps: deps, authn: authn, dbURL: u.String()}
 }
 
 // newUser inserts a user into the (stand-in) auth.users table.

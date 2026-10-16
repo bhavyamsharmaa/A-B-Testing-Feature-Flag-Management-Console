@@ -205,3 +205,37 @@ SHARE ROW EXCLUSIVE on `workspaces` (and `auth.users`) for milliseconds, which b
 writes to those tables (workspace create/rename), not reads. **Rollback:** deploy a backend
 without segments first, then the commented `DROP TABLE` block in the migration (it discards
 every segment; back up first with `backend/scripts/backup_db.sh`).
+
+## Rehearsing 0011 (scheduled changes) — AFTER the multi-tenancy release
+
+0011 is a separate, later change (see `docs/ROLLOUT.md`, release 4). It adds one new, empty
+table, `scheduled_changes`, and changes nothing that exists. On the rehearsal database (never
+production), once 0001-0010 are in place:
+
+```bash
+psql "$REHEARSAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0011_scheduled_changes.sql
+psql "$REHEARSAL_DATABASE_URL" -f backend/db/verify_0011.sql      # every row PASS
+```
+
+Then run the backend (with `SCHEDULER_SECRET` set to a throwaway value) and check, with a
+rehearsal workspace and a rehearsal flag:
+
+1. Schedule an `enable` for two minutes ahead in dev; run `DATABASE_URL=... go run ./cmd/scheduler`
+   before it is due (nothing happens), and again after (the flag is enabled, the audit log shows
+   `flag.update` "… via schedule" and `scheduled_change.succeeded`).
+2. Schedule one for production as an editor (refused 403), then as an owner; demote the owner
+   to editor before it is due; the run fails it with `CREATOR_NOT_AUTHORIZED` and nothing changes.
+3. Leave a change overdue past the grace window (default 15 minutes): the run marks it `missed`.
+4. Call `POST /internal/scheduler/run` with the header `X-Helios-Scheduler-Secret` from a terminal:
+   counts only come back; without the header or with a wrong value, 401 with no detail.
+5. `verify_0011.sql` again (read-only).
+
+Negative rehearsals: `ALTER TABLE scheduled_changes DISABLE ROW LEVEL SECURITY`, or dropping
+`scheduled_changes_flag_workspace_fkey`, must turn the matching `verify_0011.sql` row to FAIL
+(restore them afterwards, on the throwaway copy only).
+
+**Lock impact:** a new, empty table, so nothing is rewritten or scanned. The foreign keys take
+SHARE ROW EXCLUSIVE on `workspaces`, `flags`, `environments` and `auth.users` for milliseconds
+each while created: writes to those tables wait, reads do not. **Rollback:** deploy a backend
+without scheduling first, then the commented `DROP TABLE` block (discards every scheduled change
+and its history; back up first with `backend/scripts/backup_db.sh`).
