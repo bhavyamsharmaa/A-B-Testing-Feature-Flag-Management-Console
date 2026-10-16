@@ -801,3 +801,11 @@ BACKEND += [
      'backend/internal/controlplane/scheduling/scheduling.go',
      'now, tokenID(ctx)).Scan(&id)', 'now, "").Scan(&id)', _I, 'RevokingATokenCancels'),
 ]
+BACKEND += [
+    ("openapi: a route allowed for tokens but unmarked in the spec",
+     'backend/internal/server/tokenaccess.go',
+     '"GET /workspaces/{wsId}/api-tokens":              false,', '"GET /workspaces/{wsId}/api-tokens":              true,', _I, 'OpenAPITokenMarksMatch'),
+    ("openapi: a spec operation marked token-accessible that the router denies",
+     'backend/internal/server/tokenaccess.go',
+     '"GET /workspaces/{wsId}/segments":                                true,', '"GET /workspaces/{wsId}/segments":                                false,', _I, 'OpenAPITokenMarksMatch'),
+]
