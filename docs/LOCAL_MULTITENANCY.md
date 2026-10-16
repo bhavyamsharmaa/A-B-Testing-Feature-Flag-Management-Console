@@ -111,7 +111,10 @@ environments, 50 flags, 10 active SDK keys, and 20 members plus open invites.
 
 ## 6. Invites
 
-Helios does not send email. An admin creates an invite and gets a one-time link
-(`/invite/<token>`) to share; it works once, only for the invited address, for 7 days.
-The invitee can also accept from the banner shown in the console when they sign in with
-that address.
+An admin creates an invite and gets a one-time link (`/invite/<token>`); an email with the same
+link is queued in the same transaction and sent by the outbox worker (`go run ./cmd/outbox`, see
+`docs/OUTBOX.md`). **Locally the default mail mode is a sink that sends nothing**: the console says so
+("Emails are not actually sent in this environment") and the link can still be copied. Set `MAIL_SINK_DIR`
+to also write each message to a file you can open. The link works once, only for the invited address, for
+7 days. The invitee can also accept from the banner shown in the console when they sign in with that
+address. "Resend" sends a new email with a NEW link (the old one stops working).

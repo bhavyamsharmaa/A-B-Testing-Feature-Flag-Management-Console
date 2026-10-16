@@ -144,3 +144,18 @@ the channel (re)starts it clears its cache, since announcements may have been mi
   gone is audited as `api_token.rejected` (at most once an hour per token and reason). Scheduled changes
   made through a token run later as their creator "via schedule" (see `docs/SCHEDULING.md`), with the
   creator's authority re-checked then.
+
+## Scheduled changes made with a token
+
+A scheduled change created through a token records which token created it (`created_by_token_id`). The change
+does not outlive its token:
+
+- **Revoking** the token cancels its pending changes in the same transaction, with the reason on each row
+  (`TOKEN_NO_LONGER_VALID`) and an audit entry per change.
+- **Expiry** is swept at the start of every scheduler run: a pending change whose token has expired is cancelled
+  before it is due.
+- **The executor refuses** a change whose token is revoked or expired even if both of the above were missed (a
+  crash, a revocation made directly in the database): it cancels it with the same reason instead of running it.
+
+A change made by a person stays the person's: revoking an unrelated token does not touch it, and the usual
+re-check of the creator's own role at execution still applies to both.

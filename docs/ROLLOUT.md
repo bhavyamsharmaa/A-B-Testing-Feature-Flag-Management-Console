@@ -54,7 +54,11 @@ The history is strictly linear (each branch contains the one before it; checked 
 `git merge-base --is-ancestor`). A bundle of all local branches is kept in
 `~/helios-backups/` (outside the repository).
 
-## Migrations 0004-0012
+**A sixth release comes after the fifth: webhooks and invite email on one shared outbox**
+(`feature/webhooks-email`, section "Release 6" below). It adds one migration, 0013, and needs release 5's
+`api_tokens` (one column on `scheduled_changes` references it) and release 4's `scheduled_changes`.
+
+## Migrations 0004-0013
 
 All files are in `backend/db/migrations/`; verify scripts in `backend/db/`. Every
 migration runs in its own transaction (no `psql -1`). Lock notes come from each file's
@@ -75,6 +79,8 @@ restored copy gives the real numbers.
 | 0011 scheduled changes | **4** | after release 3 (or on its own after release 1: it needs only `workspaces`, `flags`, `environments`) | one NEW table, `scheduled_changes` (`workspace_id`, composite FKs, RLS on, indexes lead with `workspace_id` except the two partial claim indexes); no existing table changes | none on existing data: a new empty table. The foreign keys take `SHARE ROW EXCLUSIVE` on `workspaces`, `flags`, `environments` and `auth.users` for milliseconds while created (blocks writes to those tables, not reads) | commented block: `DROP TABLE` (deploy a backend without scheduling first; discards scheduled changes) | `verify_0011.sql` |
 
 | 0012 api tokens | **5** | after release 4 (or on its own after release 1: it needs `workspaces`, `environments`, `audit_logs`) | two NEW tables (`api_tokens`, `api_token_environments`; `workspace_id`, composite FKs, RLS on) and two columns on `audit_logs` (`actor_type` default `user`, `actor_detail`) | new tables: none on existing data (FKs take `SHARE ROW EXCLUSIVE` on `workspaces`, `environments`, `auth.users` for milliseconds). `audit_logs`: `ADD COLUMN ... DEFAULT <constant>` is catalog-only on PostgreSQL 11+ (no rewrite, no row updated, the append-only trigger does not fire) with a brief `ACCESS EXCLUSIVE` that queues behind running inserts; the CHECK is added NOT VALID then validated (`SHARE UPDATE EXCLUSIVE`, inserts continue) | commented block: drop the tables and the two audit columns (deploy a backend without tokens first; discards tokens) | `verify_0012.sql` |
+
+| 0013 webhooks, email, outbox | **6** | after release 5 (it references `api_tokens` and `scheduled_changes`) | two NEW tables (`webhook_endpoints`, `outbox`; `workspace_id`, composite FKs, RLS on, indexes lead with `workspace_id` except the claim, lease, purge and recipient indexes that look across workspaces by time or recipient); `scheduled_changes.created_by_token_id` (nullable, FK added NOT VALID then validated); `UNIQUE (id, workspace_id)` on `workspace_invites` | new tables: none on existing data (FKs take `SHARE ROW EXCLUSIVE` on `workspaces`, `environments`, `auth.users`, `api_tokens` for milliseconds). `scheduled_changes`: one nullable column, catalog-only, brief `ACCESS EXCLUSIVE`. `workspace_invites`: the unique index build takes a `SHARE` lock (invite writes wait, reads do not; milliseconds on a table this small) | commented block: drop both tables, the constraint, the index and the column (deploy a backend without webhooks and invite email first; discards endpoints, secrets and queued deliveries) | `verify_0013.sql` |
 
 `verify_0005.sql` is expected to FAIL until 0005 is applied.
 
@@ -104,6 +110,21 @@ Names only for secrets. "Recommended" is for production on day one of that relea
 | `HELIOS_EVENT_RETENTION_DAYS` | new, read only by the `purgeevents` command, not the API | `90` |
 
 Vercel (console), release 2: no new variables. Supabase auth settings: not changed by either release.
+
+**Release 6 (webhooks and invite email):** all optional; with none set, webhooks are unavailable (endpoints cannot be
+created: fail closed) and invite email goes to a sink that sends nothing. See `docs/WEBHOOKS.md`, `docs/OUTBOX.md`.
+
+| Name | New | Recommended production value |
+|---|---|---|
+| `WEBHOOK_SECRET_KEY` | **secret**, 32 random bytes, base64 (`openssl rand -base64 32`), the same on every instance and on the outbox job | set it before announcing webhooks; secret store only; back it up with the database backups (without it, stored webhook secrets cannot be read) |
+| `WEBHOOK_SECRET_KEY_PREVIOUS` | **secret**, rotation only | unset |
+| `WEBHOOK_ALLOW_INSECURE_LOCAL` | development switch (http and loopback endpoints) | **unset** |
+| `OUTBOX_SECRET` | **secret**, at least 32 characters; enables `POST /internal/outbox/run` | optional: set it if a Cloud Scheduler HTTP job will run the worker, otherwise use `cmd/outbox` |
+| `MAIL_MODE` | `sink` (default) or `smtp` | `smtp` when real invite email is wanted |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` (**secret**), `SMTP_FROM`, `SMTP_TLS` | SMTP provider settings (`starttls` default, or `implicit`) | provider's submission settings |
+| `MAIL_ALLOW_INSECURE_SMTP`, `MAIL_SINK_DIR` | development only | **unset** |
+| `PUBLIC_CONSOLE_URL` | the console's origin, for the link in invite emails; required with `MAIL_MODE=smtp` | the Vercel URL |
+| `RATE_LIMITS` | new classes `webhook_write`, `webhook_test`, `outbox_run` | unset |
 
 **Release 5 (API tokens):** no new variables in the backend or the console. Three rate-limit classes,
 overridable through `RATE_LIMITS`: `api_token` (per token, default burst 200 then 20/s), `token_invalid` (failed
@@ -306,6 +327,49 @@ block in the file, after a backup.
 **Dependency on the earlier releases:** `segments.workspace_id` references `workspaces` (0004);
 the every-route test, the tenant checks and the workspace guard of release 1 are assumed. It
 does not need 0008 or 0009, so it could ship without release 2, but this plan keeps the order.
+
+## Release 6 - webhooks and invite email
+
+Do not start until release 5 is finished and observed.
+
+**What it adds:** one outbox and one delivery worker for everything sent outside the system: signed webhooks
+(nine event types, endpoint management in the console, delivery log, test and resend, SSRF protection,
+encrypted signing secrets) and invite emails (SMTP over TLS or a development sink, status and resend in the
+console, daily limits). Also two fixes from release 5: a scheduled change made through an API token is
+cancelled when the token is revoked or expires, and the executor refuses it if the token is gone; and a test
+that fails when `openapi.yaml`'s token-accessible marks differ from the router's allowlist.
+
+**Schema:** one migration, 0013 (lock impact in the table above). The previous backend keeps running against
+the migrated database: it does not read the new tables or column. Nothing is sent until something runs the
+worker (`cmd/outbox` or `POST /internal/outbox/run`) **and** an endpoint exists or an invite is created, so
+deploying the backend alone sends nothing.
+
+**Safety to confirm before enabling:** `WEBHOOK_SECRET_KEY` is set identically everywhere and backed up;
+`WEBHOOK_ALLOW_INSECURE_LOCAL` and `MAIL_ALLOW_INSECURE_SMTP` are unset; real mail needs `MAIL_MODE=smtp`
+(until then the console says plainly that emails are not actually sent); the SSRF guard has its own tests
+(`internal/platform/netguard`) and the delivery path re-validates the destination on every attempt.
+
+**Sequence (each step on "go", with a report; never chained):**
+
+1. **W0 Preflight** (read-only): the checks under "After each merge" on the merged branch.
+2. **W1 Backup** (`backend/scripts/backup_db.sh`, via `PGSERVICE` only) and restore into a throwaway database.
+3. **W2 Rehearsal** on the restored copy: 0013, `verify_0013.sql`, the backend with a throwaway
+   `WEBHOOK_SECRET_KEY` and `WEBHOOK_ALLOW_INSECURE_LOCAL=true` and a local receiver, the Playwright suite, and
+   the steps in `backend/db/rehearsal.md` ("Migration 0013").
+4. **W3 Migrate:** 0013, `verify_0013.sql`. The running backend is unaffected.
+5. **W4 Deploy** backend and console together **without** `MAIL_MODE=smtp` and without any outbox job. Smoke: add
+   a webhook to a public test receiver (a request-bin you control), send a test; create an invite and see the
+   console say emails are not sent.
+6. **W5 Run the worker by hand once:** `DATABASE_URL=… WEBHOOK_SECRET_KEY=… go run ./cmd/outbox` after a flag edit:
+   the receiver gets one signed POST; the audit log has no secret.
+7. **W6 Turn on the schedule** (on "go"): a Cloud Scheduler job or Render cron running `cmd/outbox` every minute,
+   as in `docs/OUTBOX.md`; then, separately, real email (`MAIL_MODE=smtp` with the provider's settings and a test
+   invite to an address you own).
+
+**Rollback:** stop the outbox job first (nothing is sent; rows wait), then redeploy the previous backend and
+console. Queued webhook deliveries and invite emails are not undone by a rollback: delete the endpoints in the
+console first if nothing should be sent when the job returns. Undoing 0013 itself is the commented block at
+the end of the file, after a backup; it discards endpoints, secrets and the delivery log.
 
 ## Release 5 - API tokens
 
