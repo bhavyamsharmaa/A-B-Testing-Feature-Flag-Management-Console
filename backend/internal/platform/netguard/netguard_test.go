@@ -252,3 +252,19 @@ func TestADevelopmentReceiverOnLoopbackWorks(t *testing.T) {
 		t.Error("loopback reachable without the switch")
 	}
 }
+
+// resolve refuses a name whole if ANY of its records is blocked: one private record among public ones
+// cannot slip through just because it is not the first.
+func TestAMixedAnswerIsRefusedWhole(t *testing.T) {
+	for _, set := range [][]string{{"93.184.216.34", "10.0.0.5"}, {"93.184.216.34", "93.184.216.35", "169.254.169.254"}, {"2606:2800:220:1::1", "fd00::1"}} {
+		set := set
+		g := New(Policy{Resolver: &fakeResolver{answer: func(int, string) []netip.Addr { return addrs(set...) }}})
+		if _, err := g.resolve(context.Background(), "mixed.example.com"); !errors.Is(err, ErrBlocked) {
+			t.Errorf("%v: %v", set, err)
+		}
+	}
+	g := New(Policy{Resolver: &fakeResolver{answer: func(int, string) []netip.Addr { return addrs("93.184.216.34", "2606:2800:220:1::1") }}})
+	if got, err := g.resolve(context.Background(), "fine.example.com"); err != nil || len(got) != 2 {
+		t.Errorf("a clean answer: %v %v", got, err)
+	}
+}
