@@ -782,3 +782,22 @@ UI = [('ui: segment rules offer the segment operators (nesting)',
   "e.actorType === 'api_token' ? (",
   'false ? (',
   'file:e2e/tokens.spec.ts')]
+
+
+# ---- webhooks, email and the outbox (feature/webhooks-email) -------------------------------------
+_I = './internal/integration'
+BACKEND += [
+    ("scheduled by token: revoking does not cancel the token's pending changes",
+     'backend/internal/controlplane/apitokens/apitokens.go',
+     'if _, err := scheduling.CancelForToken(ctx, tx, ws.WorkspaceID, id,', 'if _, err := scheduling.CancelForToken(ctx, tx, ws.WorkspaceID, "00000000-0000-0000-0000-000000000000",',
+     _I, 'RevokingATokenCancels'),
+    ("scheduled by token: the executor runs a change whose token is gone",
+     'backend/internal/controlplane/scheduling/run.go',
+     'if rw.tokenGone(now) {', 'if false && rw.tokenGone(now) {', _I, 'ExecutorRefusesAChange'),
+    ("scheduled by token: expired tokens' pending changes are not swept",
+     'backend/internal/controlplane/scheduling/run.go',
+     'if err := r.cancelDeadTokenChanges(ctx, &st); err != nil {', 'if err := error(nil); err != nil {', _I, 'ExpiredTokensPending'),
+    ("scheduled by token: the creating token is not recorded",
+     'backend/internal/controlplane/scheduling/scheduling.go',
+     'now, tokenID(ctx)).Scan(&id)', 'now, "").Scan(&id)', _I, 'RevokingATokenCancels'),
+]
