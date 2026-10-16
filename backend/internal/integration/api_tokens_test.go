@@ -16,6 +16,7 @@ import (
 
 	"helios/backend/internal/controlplane/quota"
 	"helios/backend/internal/platform/apitoken"
+	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/ratelimit"
 	"helios/backend/internal/platform/redisx"
 	"helios/backend/internal/server"
@@ -1269,4 +1270,18 @@ func TestExpiredAndRevokedUseIsAuditedOncePerHour(t *testing.T) {
 	if h.count(`SELECT count(*) FROM audit_logs WHERE action = 'api_token.rejected'`) != 3 {
 		t.Error("an unknown token was audited")
 	}
+}
+
+// A revocation takes effect at once on the instance that handled it, even when
+// no broadcast ever arrives and the cache would otherwise keep the token for an hour.
+func TestRevocationIsImmediateOnTheInstanceThatHandledItEvenWithoutABroadcast(t *testing.T) {
+	w := newTokWorld(t, nil, func(d *server.Deps) {
+		d.APITokenCacheTTL = time.Hour
+		d.Subscriber = deafToRevocations{events.NewMemoryBus()}
+	})
+	tok := w.mint(t, w.a, w.wsA.ID, "local-drop", "viewer")
+	path := "/environments/" + w.devA + "/flags"
+	w.tokExpect(t, 200, tok.Plaintext, "GET", path, nil)
+	w.h.expect(204, w.a, "DELETE", "/workspaces/"+w.wsA.ID+"/api-tokens/"+tok.ID, nil)
+	w.tokExpect(t, 401, tok.Plaintext, "GET", path, nil)
 }

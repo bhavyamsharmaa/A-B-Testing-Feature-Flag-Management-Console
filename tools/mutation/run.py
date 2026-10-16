@@ -44,13 +44,18 @@ def dirty(files):
 
 
 def apply(path, old, new, check):
+    """old/new may be lists of equal length: several edits in one file, all of which must match."""
     full = os.path.join(ROOT, path)
     with open(full) as f:
         src = f.read()
-    if old not in src:
-        return None, 'PATTERN NOT FOUND (the code changed; update mutations.py)'
+    olds, news = (old, new) if isinstance(old, (list, tuple)) else ([old], [new])
+    mutated = src
+    for o, n in zip(olds, news):
+        if o not in mutated:
+            return None, 'PATTERN NOT FOUND (the code changed; update mutations.py)'
+        mutated = mutated.replace(o, n, 1)
     with open(full, 'w') as f:
-        f.write(src.replace(old, new, 1))
+        f.write(mutated)
     try:
         return src, check()
     finally:
@@ -127,7 +132,7 @@ def main():
     if a.which in ('frontend', 'all'):
         rows += run_playwright('frontend', mutations.FRONTEND, a.only, lambda e: [e[4] if len(e) > 4 else 'e2e/unit/segments.spec.tsx'])
     if a.which in ('ui', 'all'):
-        rows += run_playwright('ui', mutations.UI, a.only, lambda e: ['e2e/scheduling.spec.ts' if e[4] == '' else 'e2e/segments.spec.ts'] + (['-g', e[4]] if e[4] else []))
+        rows += run_playwright('ui', mutations.UI, a.only, lambda e: [e[4][5:] if e[4].startswith('file:') else ('e2e/scheduling.spec.ts' if e[4] == '' else 'e2e/segments.spec.ts')] + (['-g', e[4]] if e[4] and not e[4].startswith('file:') else []))
 
     bad = [r for r in rows if r[2] != 'CAUGHT']
     caught = len(rows) - len(bad)
