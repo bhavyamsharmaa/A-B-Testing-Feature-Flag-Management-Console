@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -122,6 +124,29 @@ func TestEveryDevFlagIsListed(t *testing.T) {
 	for _, want := range []string{"WEBHOOK_ALLOW_INSECURE_LOCAL", "RATE_LIMIT_DISABLED=true", "EMAIL_CONFIRMATION=off", "MAIL_SINK_DIR", "MAIL_MODE=sink"} {
 		if !names[want] {
 			t.Errorf("DevFlags lacks %q", want)
+		}
+	}
+}
+
+// The list of settings a deployment must never have on is written in docs/DEPLOYMENT.md and enforced here; they must
+// not drift apart.
+func TestTheDeploymentGuideNamesEveryDevOnlySetting(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "docs", "DEPLOYMENT.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(b)
+	for _, f := range DevFlags {
+		for _, part := range strings.Split(f.Name, " / ") {
+			name := strings.SplitN(strings.Fields(part)[0], "=", 2)[0]
+			if !strings.Contains(doc, name) {
+				t.Errorf("docs/DEPLOYMENT.md does not mention %s (%s)", name, f.Name)
+			}
+		}
+	}
+	for _, want := range []string{"HELIOS_ENV=production", "refuses to start", "DB_MAX_CONNS", "SHUTDOWN_TIMEOUT", "per instance"} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("docs/DEPLOYMENT.md lacks %q", want)
 		}
 	}
 }

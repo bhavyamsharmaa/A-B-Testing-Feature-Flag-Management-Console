@@ -5,12 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"helios/backend/internal/controlplane/outbox"
 	"helios/backend/internal/controlplane/rbac"
+	"helios/backend/internal/controlplane/scheduling"
+	"helios/backend/internal/controlplane/wspurge"
 	"helios/backend/internal/dataplane/track"
 	"helios/backend/internal/platform/events"
 	"helios/backend/internal/server"
@@ -312,4 +317,41 @@ func (h *harness) sdkPost(sdkKey, path string, body any) []byte {
 	var buf bytes.Buffer
 	_, _ = buf.ReadFrom(res.Body)
 	return buf.Bytes()
+}
+
+// Every machine-to-machine route the router registers is in the operations runbook with its secret header, so no
+// endpoint can be added that nobody knows to schedule or to protect.
+func TestEveryInternalRouteIsInTheRunbookWithItsSecretHeader(t *testing.T) {
+	h := newHarness(t)
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "OPERATIONS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(b)
+	headers := map[string]string{
+		"/internal/scheduler/run":    scheduling.SecretHeader,
+		"/internal/outbox/run":       outbox.SecretHeader,
+		"/internal/workspaces/purge": wspurge.SecretHeader,
+	}
+	seen := 0
+	for _, rt := range h.routes {
+		if rt.Scope != server.ScopeInternal {
+			continue
+		}
+		seen++
+		if !strings.Contains(doc, rt.Path) {
+			t.Errorf("%s %s is not in docs/OPERATIONS.md", rt.Method, rt.Path)
+		}
+		hd, known := headers[rt.Path]
+		if !known {
+			t.Errorf("internal route %s has no secret header registered in this test: add it (and to the runbook)", rt.Path)
+			continue
+		}
+		if !strings.Contains(doc, hd) {
+			t.Errorf("the runbook does not name the header %s for %s", hd, rt.Path)
+		}
+	}
+	if seen != len(headers) {
+		t.Errorf("%d internal routes registered, %d expected", seen, len(headers))
+	}
 }
