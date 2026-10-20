@@ -381,7 +381,7 @@ func methodNotes() []string {
 		"Subjects are the unit. A subject belongs to the variation in their $exposure event (one per subject and experiment).",
 		"Only events from exposed subjects, at or after their own exposure and inside the run window (started_at to stopped_at, or now), are counted.",
 		"Conversion: a subject converts if they have at least one matching event. Count: matching events per subject. Value: the sum of matching events' values per subject. Subjects with no event count as 0.",
-		"Control is the first variation of the flag. Every other variation is compared with it.",
+		"Control is the variation designated as the experiment's control, chosen when it was created (by default the flag's first variation). Every other variation is compared with it.",
 		"Conversion metrics: pooled two-proportion z-test (two-sided); interval on the difference is the unpooled Wald interval; interval on the relative lift is the delta method on the log rate ratio.",
 		"Count and value metrics: Welch's unequal-variance t-test with Welch-Satterthwaite degrees of freedom; interval on the difference of means from the t distribution; interval on the relative lift from a first-order delta method on the ratio of means, defined only for a positive control mean.",
 		"With more than one comparison, each is tested at alpha / comparisons (Bonferroni); adjustedPValue is pValue times the number of comparisons, capped at 1, and the intervals use the matching confidence level.",

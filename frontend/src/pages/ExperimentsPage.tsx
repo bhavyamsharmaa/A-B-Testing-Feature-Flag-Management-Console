@@ -1,16 +1,20 @@
+import { useState } from 'react'
 import { AccessGate } from '../components/AccessGate'
 import { ConsoleCard } from '../components/ConsoleCard'
 import { ConsoleHeader } from '../components/ConsoleHeader'
+import { CreateExperimentDialog } from '../components/CreateExperimentDialog'
 import { EnvSwitcher } from '../components/EnvSwitcher'
 import { ExperimentCard } from '../components/ExperimentCard'
 import { ProductionStrip } from '../components/ProductionStrip'
+import { canCreate } from '../lib/permissions'
 import { useConsoleEnv } from '../lib/useConsoleEnv'
 import { useExperiments } from '../lib/useExperiments'
 import { SLOW_HINT, useSlowHint } from '../lib/useSlowHint'
 
 /** Experiments of the active environment and the data arriving for each. Read-only; results come later. */
 export default function ExperimentsPage() {
-  const { email, me, meLoading, meError, reloadMe, signOut, workspace, roles, env, selectEnv, prod } = useConsoleEnv()
+  const { email, me, meLoading, meError, reloadMe, signOut, workspace, roles, env, selectEnv, prod, role } = useConsoleEnv()
+  const [creating, setCreating] = useState(false)
   const { experiments, loading, error, reload } = useExperiments(env, workspace?.id ?? null)
   const slow = useSlowHint(loading)
 
@@ -26,11 +30,21 @@ export default function ExperimentsPage() {
           <div className="space-y-4">
             <EnvSwitcher roles={roles} selected={env} onSelect={selectEnv} onRefresh={() => void reload()} refreshing={loading} />
 
-            <div>
-              <h2 className="text-xs font-medium uppercase tracking-wider text-zinc-500">
-                Experiments in <span className={prod ? 'text-red-300' : 'text-zinc-300'}>{env}</span>
-              </h2>
-              <p className="mt-1 text-xs text-zinc-500">Data collected so far. Results and statistics are not shown yet.</p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xs font-medium uppercase tracking-wider text-zinc-500">
+                  Experiments in <span className={prod ? 'text-red-300' : 'text-zinc-300'}>{env}</span>
+                </h2>
+                <p className="mt-1 text-xs text-zinc-500">Data collected so far, and a link to each experiment&rsquo;s results.</p>
+              </div>
+              {canCreate(role) && (
+                <button
+                  onClick={() => setCreating(true)}
+                  className="rounded-lg bg-gradient-to-r from-accent to-indigo-500 px-3.5 py-1.5 text-sm font-medium text-white transition hover:brightness-110"
+                >
+                  Create experiment
+                </button>
+              )}
             </div>
 
             {error && (
@@ -60,13 +74,23 @@ export default function ExperimentsPage() {
             {experiments !== null && experiments.length > 0 && (
               <div className="space-y-3">
                 {experiments.map((x) => (
-                  <ExperimentCard key={x.id} experiment={x} env={env} link />
+                  <ExperimentCard key={x.id} experiment={x} env={env} link canEdit={canCreate(role)} onChanged={() => void reload()} />
                 ))}
               </div>
             )}
           </div>
         )}
       </ConsoleCard>
+      {creating && env && (
+        <CreateExperimentDialog
+          env={env}
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            setCreating(false)
+            void reload()
+          }}
+        />
+      )}
     </main>
   )
 }

@@ -44,6 +44,10 @@ type experimentView struct {
 	StartedAt   *time.Time   `json:"startedAt"`
 	StoppedAt   *time.Time   `json:"stoppedAt"`
 	Metrics     []metricView `json:"metrics"`
+	// Variations are the flag's variations in the flag's order, with the one that is the control marked. The
+	// control is what results compare every other variation with (see migration 0014).
+	Variations         []variationView `json:"variations"`
+	ControlVariationID string          `json:"controlVariationId"`
 	// ConfigChangedSinceStart is true when the flag's targeting, rollout or
 	// fallthrough in this environment differs from when the experiment
 	// started (or, once stopped, from when it stopped). Informational only.
@@ -133,6 +137,50 @@ func attachMetrics(ctx context.Context, q querier, views []experimentView, where
 	return nil
 }
 
+type variationView struct {
+	ID        string `json:"id"`
+	IsControl bool   `json:"isControl"`
+}
+
+// attachVariations fills Variations and ControlVariationID on views.
+func attachVariations(ctx context.Context, q querier, views []experimentView) error {
+	ids := make([]string, len(views))
+	for i, v := range views {
+		ids[i] = v.ID
+	}
+	rows, err := q.Query(ctx, `
+		SELECT experiment_id::text, variation_id, is_control FROM experiment_variations
+		WHERE experiment_id = ANY($1::uuid[]) ORDER BY experiment_id, position`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	by := map[string][]variationView{}
+	for rows.Next() {
+		var id string
+		var v variationView
+		if err := rows.Scan(&id, &v.ID, &v.IsControl); err != nil {
+			return err
+		}
+		by[id] = append(by[id], v)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range views {
+		views[i].Variations = by[views[i].ID]
+		if views[i].Variations == nil {
+			views[i].Variations = []variationView{}
+		}
+		for _, v := range views[i].Variations {
+			if v.IsControl {
+				views[i].ControlVariationID = v.ID
+			}
+		}
+	}
+	return nil
+}
+
 // loadOne returns the experiment with its metrics.
 func loadOne(ctx context.Context, q querier, env rbac.Environment, key string) (experimentView, error) {
 	v, err := scanExperiment(q.QueryRow(ctx, selectExperiment+` AND x.key = $2`, env.ID, key), env.Key)
@@ -141,6 +189,9 @@ func loadOne(ctx context.Context, q querier, env rbac.Environment, key string) (
 	}
 	views := []experimentView{v}
 	if err := attachMetrics(ctx, q, views, `experiment_id = $1::uuid`, v.ID); err != nil {
+		return v, err
+	}
+	if err := attachVariations(ctx, q, views); err != nil {
 		return v, err
 	}
 	return views[0], nil
@@ -214,18 +265,34 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 
 	var view experimentView
 	err := pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
-		var flagID string
+		var flagID, variationsText string
 		var variationCount int
 		if err := tx.QueryRow(ctx,
-			`SELECT id::text, jsonb_array_length(variations) FROM flags WHERE key = $1 AND workspace_id = $2::uuid`,
+			`SELECT id::text, jsonb_array_length(variations), variations::text FROM flags WHERE key = $1 AND workspace_id = $2::uuid`,
 			req.FlagKey, access.Env.WorkspaceID,
-		).Scan(&flagID, &variationCount); errors.Is(err, pgx.ErrNoRows) {
+		).Scan(&flagID, &variationCount, &variationsText); errors.Is(err, pgx.ErrNoRows) {
 			return errFlagNotFound{}
 		} else if err != nil {
 			return err
 		}
 		if err := checkVariationCount(req.FlagKey, variationCount); err != nil {
 			return validationError{err}
+		}
+		var flagVariations []struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(variationsText), &flagVariations); err != nil || len(flagVariations) == 0 {
+			return fmt.Errorf("flag variations: %v", err)
+		}
+		if req.ControlVariationID == "" {
+			req.ControlVariationID = flagVariations[0].ID
+		}
+		known := false
+		for _, v := range flagVariations {
+			known = known || v.ID == req.ControlVariationID
+		}
+		if !known {
+			return validationError{fmt.Errorf("controlVariationId %q is not a variation of flag %s", req.ControlVariationID, req.FlagKey)}
 		}
 
 		var id string
@@ -236,6 +303,14 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 			access.Env.WorkspaceID, access.Env.ID, flagID, req.Key, req.Name, req.Hypothesis, access.User.ID,
 		).Scan(&id); err != nil {
 			return err
+		}
+		// Every variation of the flag, the chosen one as the control: exactly one (the database refuses two).
+		for i, v := range flagVariations {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO experiment_variations (experiment_id, workspace_id, variation_id, position, is_control)
+				VALUES ($1::uuid, $2::uuid, $3, $4, $5)`, id, access.Env.WorkspaceID, v.ID, i, v.ID == req.ControlVariationID); err != nil {
+				return err
+			}
 		}
 		for _, m := range req.Metrics {
 			if _, err := tx.Exec(ctx, `
@@ -322,6 +397,10 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 			WHERE x.environment_id = $1::uuid AND ($2 = '' OR x.status::text = $2) AND ($3 = '' OR f.key = $3)
 			ORDER BY x.created_at DESC, x.id LIMIT %d)`, maxListResults),
 			access.Env.ID, status, flagKey); err != nil {
+			httpx.WriteInternal(w, r, err)
+			return
+		}
+		if err := attachVariations(ctx, h.pool, views); err != nil {
 			httpx.WriteInternal(w, r, err)
 			return
 		}
@@ -506,3 +585,95 @@ func (h *Handlers) Stop(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusOK, view)
 }
+
+// SetControl handles PATCH /environments/{envId}/experiments/{key} with {"controlVariationId"}: choose which variation is
+// the control. Allowed until the experiment has any exposure; after that the comparison would change under the data
+// already collected, so it is refused (409 CONTROL_FROZEN). Editors and above, like creating an experiment.
+func (h *Handlers) SetControl(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	access := rbac.AccessFrom(ctx)
+	key := r.PathValue("key")
+	var req struct {
+		ControlVariationID string `json:"controlVariationId"`
+	}
+	if err := httpx.DecodeJSON(w, r, &req); err != nil || req.ControlVariationID == "" {
+		httpx.BadRequest(w, "controlVariationId is required")
+		return
+	}
+	var view experimentView
+	err := pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		var expID, current string
+		if err := tx.QueryRow(ctx, `
+			SELECT x.id::text, COALESCE((SELECT v.variation_id FROM experiment_variations v WHERE v.experiment_id = x.id AND v.is_control), '')
+			FROM experiments x WHERE x.environment_id = $1::uuid AND x.key = $2 FOR UPDATE OF x`, access.Env.ID, key).Scan(&expID, &current); err != nil {
+			return err
+		}
+		var known bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM experiment_variations WHERE experiment_id = $1::uuid AND variation_id = $2)`, expID, req.ControlVariationID).Scan(&known); err != nil {
+			return err
+		}
+		if !known {
+			return validationError{fmt.Errorf("controlVariationId %q is not a variation of this experiment's flag", req.ControlVariationID)}
+		}
+		if current == req.ControlVariationID {
+			var err error
+			view, err = loadOne(ctx, tx, access.Env, key)
+			return err
+		}
+		frozen := func() (bool, error) {
+			var has bool
+			err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM events WHERE workspace_id = $1::uuid AND experiment_id = $2::uuid AND event_name = '$exposure')`,
+				access.Env.WorkspaceID, expID).Scan(&has)
+			return has, err
+		}
+		if has, err := frozen(); err != nil || has {
+			if err != nil {
+				return err
+			}
+			return errControlFrozen{}
+		}
+		// Two statements in this transaction: the old control off, then the new one on. The partial unique index
+		// is checked row by row, so a single UPDATE could briefly show two controls; nothing outside the
+		// transaction ever sees zero or two.
+		if _, err := tx.Exec(ctx, `UPDATE experiment_variations SET is_control = false WHERE experiment_id = $1::uuid AND is_control`, expID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE experiment_variations SET is_control = true WHERE experiment_id = $1::uuid AND variation_id = $2`, expID, req.ControlVariationID); err != nil {
+			return err
+		}
+		// An exposure that committed while we were deciding still wins: look once more before committing.
+		if has, err := frozen(); err != nil || has {
+			if err != nil {
+				return err
+			}
+			return errControlFrozen{}
+		}
+		if err := audit.Write(ctx, tx, audit.Entry{
+			WorkspaceID: access.Env.WorkspaceID, ActorID: access.User.ID, ActorEmail: access.User.Email, EnvironmentID: access.Env.ID,
+			Action: "experiment.control_change", ResourceType: "experiment", ResourceID: key,
+			Before: map[string]string{"controlVariationId": current}, After: map[string]string{"controlVariationId": req.ControlVariationID},
+		}); err != nil {
+			return err
+		}
+		var err error
+		view, err = loadOne(ctx, tx, access.Env, key)
+		return err
+	})
+	var invalid validationError
+	switch {
+	case errors.As(err, new(errControlFrozen)):
+		httpx.WriteError(w, http.StatusConflict, "CONTROL_FROZEN", "this experiment already has exposures, so its control can no longer be changed; create a new experiment to compare against a different control")
+	case errors.As(err, &invalid):
+		httpx.BadRequest(w, invalid.Error())
+	case errors.Is(err, pgx.ErrNoRows):
+		writeLifecycleError(w, r, key, errNotFound{})
+	case err != nil:
+		httpx.WriteInternal(w, r, err)
+	default:
+		httpx.WriteJSON(w, http.StatusOK, view)
+	}
+}
+
+type errControlFrozen struct{}
+
+func (errControlFrozen) Error() string { return "control frozen" }

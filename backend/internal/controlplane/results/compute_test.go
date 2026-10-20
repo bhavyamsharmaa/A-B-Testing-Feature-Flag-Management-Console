@@ -285,3 +285,17 @@ func TestEveryWarningHasStructuredDetail(t *testing.T) {
 		t.Error("a warning serialises a null detail")
 	}
 }
+
+func TestControlFirstMovesOnlyTheControl(t *testing.T) {
+	ids := []string{"a", "b", "c", "d"}
+	cases := map[string][]string{"": {"a", "b", "c", "d"}, "a": {"a", "b", "c", "d"}, "c": {"c", "a", "b", "d"}, "d": {"d", "a", "b", "c"}, "zzz": {"a", "b", "c", "d"}}
+	for control, want := range cases {
+		got := controlFirst(ids, control)
+		if strings.Join(got, "") != strings.Join(want, "") {
+			t.Errorf("control %q: %v, want %v", control, got, want)
+		}
+	}
+	if strings.Join(ids, "") != "abcd" {
+		t.Error("the input was modified")
+	}
+}

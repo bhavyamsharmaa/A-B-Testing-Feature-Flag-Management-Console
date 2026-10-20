@@ -252,6 +252,9 @@ export interface Experiment {
   metrics: { name: string; eventName: string; type: 'conversion' | 'value'; isPrimary: boolean }[]
   configChangedSinceStart: boolean
   createdAt: string
+  /** The flag's variations in its order; exactly one is the control everything is compared with. */
+  variations: { id: string; isControl: boolean }[]
+  controlVariationId: string
 }
 
 /** Raw data arriving for an experiment. Not results: no rates, no significance. */

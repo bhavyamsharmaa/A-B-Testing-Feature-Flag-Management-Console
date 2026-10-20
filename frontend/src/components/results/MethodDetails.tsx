@@ -27,7 +27,7 @@ export function MethodDetails({ data }: { data: ExperimentResults }) {
         <div>
           <h4 className="font-medium text-zinc-100">The comparison</h4>
           <p>
-            Every variation is compared with the control, which is the flag&apos;s first variation. For conversions the test compares two rates; for counts and
+            Every variation is compared with the control, which is the one chosen when the experiment was created (by default the flag&apos;s first variation). For conversions the test compares two rates; for counts and
             values it compares two averages (Welch&apos;s t-test, which does not assume equal spread). The p-value is the chance of seeing a difference at least this
             large if there were really none. A small p-value is not proof, and a large one is not proof of no effect.
           </p>

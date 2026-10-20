@@ -430,6 +430,7 @@ func New(d Deps) *Router {
 	env("GET /environments/{envId}/experiments", rbac.Min(rbac.Viewer), ex.List)
 	env("GET /environments/{envId}/experiments/{key}", rbac.Min(rbac.Viewer), ex.Get)
 	env("POST /environments/{envId}/experiments", rbac.Min(rbac.Editor), ex.Create)
+	env("PATCH /environments/{envId}/experiments/{key}", rbac.Min(rbac.Editor), ex.SetControl)
 	env("POST /environments/{envId}/experiments/{key}/start", rbac.Min(rbac.Editor), ex.Start)
 	env("POST /environments/{envId}/experiments/{key}/stop", rbac.Min(rbac.Approver), ex.Stop)
 	// Live counts of the data arriving (not results): any role reads.

@@ -31,7 +31,7 @@ export function VariationsTable({ metric }: { metric: ResultsMetric }) {
                 {v.isControl && (
                   <span
                     className="ml-2 rounded border border-white/25 px-1.5 py-0.5 text-[11px] uppercase tracking-wider text-zinc-200"
-                    title="The control is the flag's first variation; every other variation is compared with it."
+                    title="The control is the variation chosen as this experiment's control; every other variation is compared with it."
                   >
                     Control
                   </span>
@@ -57,7 +57,7 @@ export function VariationsTable({ metric }: { metric: ResultsMetric }) {
           ))}
         </tbody>
       </table>
-      <p className="mt-1 px-3 text-xs text-zinc-400">The control is the flag's first variation. Exposures are subjects, counted once each.</p>
+      <p className="mt-1 px-3 text-xs text-zinc-400">The control is the one this experiment was set up to compare against (by default the flag's first variation). Exposures are subjects, counted once each.</p>
     </div>
   )
 }

@@ -41,6 +41,9 @@ type createRequest struct {
 	Name       string          `json:"name"`
 	Hypothesis string          `json:"hypothesis"`
 	Metrics    []metricRequest `json:"metrics"`
+	// ControlVariationID names the variation everything is compared with. Omitted: the flag's first variation.
+	// It must be one of the flag's variations; once the experiment has exposures it cannot change.
+	ControlVariationID string `json:"controlVariationId"`
 }
 
 func (req createRequest) validate() error {

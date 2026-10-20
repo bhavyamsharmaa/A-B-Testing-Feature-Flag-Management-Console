@@ -36,6 +36,7 @@ const LABELS: Record<string, string> = {
   'workspace.delete_scheduled': 'Workspace scheduled for deletion',
   'workspace.restored': 'Workspace restored',
   'audit.export': 'Audit log exported',
+  'experiment.control_change': 'Experiment control changed',
   'member.upsert': 'Member role set',
   'member.remove': 'Member removed',
   'api_key.create': 'API key created',

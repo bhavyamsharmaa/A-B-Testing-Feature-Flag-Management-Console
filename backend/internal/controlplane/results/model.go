@@ -154,8 +154,8 @@ type Response struct {
 	Status        string    `json:"status"`
 	ReadAt        time.Time `json:"readAt"`
 	Window        Window    `json:"window"`
-	// Control is the variation everything is compared with: the first variation
-	// of the flag (variation order is the flag's own).
+	// Control is the variation everything is compared with: the experiment's designated control (by
+	// default the flag's first variation).
 	Control string `json:"control"`
 	// SampleSize is the total number of exposures at this reading.
 	SampleSize int64 `json:"sampleSize"`

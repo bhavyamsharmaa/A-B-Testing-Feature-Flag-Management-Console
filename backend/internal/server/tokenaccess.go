@@ -67,6 +67,7 @@ var tokenAccess = map[string]bool{
 	"POST /internal/workspaces/purge":                                              false,
 	"GET /environments/{envId}/audit-logs/export":                                  false,
 	"GET /environments/{envId}/flags/{key}/history":                                false,
+	"PATCH /environments/{envId}/experiments/{key}":                                false,
 	"POST /internal/outbox/run":                                                    false,
 	"DELETE /workspaces/{wsId}/api-tokens/{tokenId}":                               false,
 

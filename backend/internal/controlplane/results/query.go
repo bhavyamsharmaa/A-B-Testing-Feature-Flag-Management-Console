@@ -3,6 +3,7 @@ package results
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -76,6 +77,15 @@ func loadExperiment(ctx context.Context, q querier, workspaceID, envID, key stri
 	for _, v := range vs {
 		x.Variations = append(x.Variations, v.ID)
 	}
+	// The designated control (experiment_variations, migration 0014) goes first: results compare every other
+	// variation with Variations[0]. The others keep the flag's order. With no designation (an experiment that
+	// predates the table and was somehow missed by its backfill) the flag's first variation is the control, as before.
+	var control string
+	err = q.QueryRow(ctx, `SELECT variation_id FROM experiment_variations WHERE experiment_id = $1::uuid AND is_control`, x.ID).Scan(&control)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return x, err
+	}
+	x.Variations = controlFirst(x.Variations, control)
 	rows, err := q.Query(ctx, `
 		SELECT name, event_name, type::text, is_primary FROM experiment_metrics
 		WHERE experiment_id = $1::uuid ORDER BY is_primary DESC, name`, x.ID)
@@ -340,4 +350,29 @@ func unverifiedExposures(ctx context.Context, q querier, workspaceID, expID stri
 		WHERE workspace_id = $1::uuid AND experiment_id = $2::uuid AND exposure_verified = false`,
 		workspaceID, expID).Scan(&n)
 	return n, err
+}
+
+// controlFirst returns ids with the control moved to the front, the rest in their order. An unknown or empty
+// control leaves ids as they are.
+func controlFirst(ids []string, control string) []string {
+	if control == "" {
+		return ids
+	}
+	out := make([]string, 0, len(ids))
+	found := false
+	for _, id := range ids {
+		if id == control {
+			found = true
+		}
+	}
+	if !found {
+		return ids
+	}
+	out = append(out, control)
+	for _, id := range ids {
+		if id != control {
+			out = append(out, id)
+		}
+	}
+	return out
 }
