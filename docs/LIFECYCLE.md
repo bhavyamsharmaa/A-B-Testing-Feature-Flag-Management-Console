@@ -113,3 +113,17 @@ backfills every existing experiment with its flag's first variation as control, 
   instant as the change can still slip through; the audit entry `experiment.control_change` records what was changed).
 * Results compare every other variation with the designated control and list it first; the console marks it "Control" in text on the experiment card and in the results table.
   **Swap test:** the same data analysed with each variation as control gives the same p-value, the z statistic and the difference negated, and the interval's ends negated and swapped.
+
+
+## The audit log's delete exception (migration 0015)
+
+The audit log is append-only: `UPDATE`, `TRUNCATE` and `DELETE` are refused by a trigger. The one exception exists so the workspace purge can remove a purged workspace's own audit rows. It has TWO gates, both inside the trigger
+(`audit_logs_append_only()`):
+
+1. **Data:** the workspace named by the row is scheduled for deletion and past `purge_after` (the database's clock).
+2. **Who:** the deleting transaction declared itself with `set_config('helios.audit_purge', '<workspace id>:' || txid_current(), true)`: transaction-local (`is_local = true`), naming exactly one workspace, bound to that transaction's own id. A setting left on a pooled connection
+   never matches a later transaction; one workspace's declaration cannot delete another's rows. Only `internal/controlplane/wspurge` runs that statement (a test reads the source tree and fails if anything else mentions it or deletes from `audit_logs`).
+
+No request path declares it: no HTTP handler, API token, SDK key, the scheduler or the outbox runs it, and none of them contains a `DELETE FROM audit_logs`. Tests (`audit_gate_test.go`) try a plain delete of a due workspace, a declaration for another workspace, a
+made-up transaction id, a declaration without the id, a leaked session-level setting, a workspace that is not yet due, `UPDATE` and `TRUNCATE` with a correct declaration, and every route in the router's registry as the owner, a member, an API token and an SDK key with the scheduler and outbox
+running: none removes a row. A positive test shows the one correct way works, for that workspace only.

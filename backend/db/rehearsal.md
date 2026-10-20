@@ -328,3 +328,22 @@ Negative rehearsals: dropping `one_control_per_experiment` or `one_pending_offer
 
 **Lock impact:** `workspaces` takes a brief `ACCESS EXCLUSIVE` for the three nullable `ADD COLUMN`s (catalog only, no rewrite); its CHECK is added NOT VALID then validated. `audit_logs` and `events`
 are not altered. **Rollback:** the commented block at the end of the migration, after a backup.
+
+
+## Migration 0015: the audit gate (release 8)
+
+Replaces one function; no table is altered. On the rehearsal database (never production), once 0001-0014 are in place:
+
+```bash
+psql "$REHEARSAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0015_audit_gate.sql
+psql "$REHEARSAL_DATABASE_URL" -f backend/db/verify_0015.sql      # every row PASS
+```
+
+Then:
+
+1. `DELETE FROM audit_logs WHERE workspace_id = '<any workspace>'` must fail with "append-only", **including** for a workspace whose purge date has passed (that is what 0015 adds: being due is no longer enough).
+2. Make a THROWAWAY workspace, schedule its deletion, `UPDATE workspaces SET purge_after = now() - interval '1 minute' WHERE id = '<throwaway>'`, run `go run ./cmd/purgeworkspaces`: `SELECT count(*) FROM audit_logs WHERE workspace_id = '<throwaway>'` is 0 and
+   `workspace_tombstones` has one row (the purge works through the declaration).
+3. In `psql`, inside one transaction: `SELECT set_config('helios.audit_purge', '<throwaway id>:' || txid_current(), true); DELETE FROM audit_logs WHERE workspace_id = '<another workspace>';` must still fail (the declaration names one workspace).
+
+**Lock impact:** none beyond the catalog entry for the function (`CREATE OR REPLACE FUNCTION`); `audit_logs` is not touched. **Rollback:** the commented block at the end of the migration.

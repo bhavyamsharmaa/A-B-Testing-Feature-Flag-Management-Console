@@ -62,7 +62,11 @@ The history is strictly linear (each branch contains the one before it; checked 
 14-day grace period and a purge job, audit export and per-flag history, an explicit experiment control, and `LISTEN_ADDR`. One migration, 0014. It needs only
 release 1's schema for the code; the migration needs 0011-0013 only in that it is numbered after them.
 
-## Migrations 0004-0014
+**An eighth release comes after the seventh: operations readiness** (`feature/ops-readiness`, section "Release 8" below): the audit log's delete exception gated on the purge's own
+transaction, a flag configuration cache, a bound on `/track` writers, graceful shutdown with `/healthz` and `/readyz`, a container image, a production mode that refuses development
+settings, and the operations and deployment guides. One migration, 0015, which replaces one function.
+
+## Migrations 0004-0015
 
 All files are in `backend/db/migrations/`; verify scripts in `backend/db/`. Every
 migration runs in its own transaction (no `psql -1`). Lock notes come from each file's
@@ -87,6 +91,7 @@ restored copy gives the real numbers.
 | 0013 webhooks, email, outbox | **6** | after release 5 (it references `api_tokens` and `scheduled_changes`) | two NEW tables (`webhook_endpoints`, `outbox`; `workspace_id`, composite FKs, RLS on, indexes lead with `workspace_id` except the claim, lease, purge and recipient indexes that look across workspaces by time or recipient); `scheduled_changes.created_by_token_id` (nullable, FK added NOT VALID then validated); `UNIQUE (id, workspace_id)` on `workspace_invites` | new tables: none on existing data (FKs take `SHARE ROW EXCLUSIVE` on `workspaces`, `environments`, `auth.users`, `api_tokens` for milliseconds). `scheduled_changes`: one nullable column, catalog-only, brief `ACCESS EXCLUSIVE`. `workspace_invites`: the unique index build takes a `SHARE` lock (invite writes wait, reads do not; milliseconds on a table this small) | commented block: drop both tables, the constraint, the index and the column (deploy a backend without webhooks and invite email first; discards endpoints, secrets and queued deliveries) | `verify_0013.sql` |
 
 | 0014 lifecycle | **7** | after release 6 (or on its own after release 1: it needs `workspaces`, `workspace_members`, `experiments`, `flags`) | three nullable columns and a CHECK on `workspaces`; NEW tables `ownership_offers`, `workspace_tombstones`, `experiment_variations` (backfilled from existing experiments); `audit_logs_append_only()` replaced so a delete is allowed only for a workspace past its purge date | `workspaces`: `ADD COLUMN` nullable (catalog only, no rewrite), brief `ACCESS EXCLUSIVE`; the CHECK is added NOT VALID then validated (the table is small). `audit_logs` and `events` are **not altered** (the function body is replaced; no lock on the table). New tables: none on existing data (FKs take `SHARE ROW EXCLUSIVE` on `workspaces`, `experiments`, `auth.users` for milliseconds). The backfill inserts one row per experiment variation: a few rows | commented block at the end of the file (back up first: discards offers, tombstones and control designations; pending deletions become ordinary workspaces again) | `verify_0014.sql` |
+| 0015 audit gate | **8** | after 0014 (it replaces the function 0014 made) | **no table is altered**: `audit_logs_append_only()` is replaced so a delete is allowed only inside a transaction that declared the one workspace and its own id (`set_config('helios.audit_purge', …, true)`) AND for a workspace past its purge date | none: `CREATE OR REPLACE FUNCTION` takes no lock on `audit_logs` or anything else; the change is catalog-only and instant | the commented block at the end of the file restores 0014's body | `verify_0015.sql` |
 
 `verify_0005.sql` is expected to FAIL until 0005 is applied.
 
@@ -116,6 +121,21 @@ Names only for secrets. "Recommended" is for production on day one of that relea
 | `HELIOS_EVENT_RETENTION_DAYS` | new, read only by the `purgeevents` command, not the API | `90` |
 
 Vercel (console), release 2: no new variables. Supabase auth settings: not changed by either release.
+
+**Release 8 (operations readiness):** all optional; the image sets `HELIOS_ENV=production`, which makes the startup checks mandatory (docs/DEPLOYMENT.md, 4.4).
+
+| Name | New | Recommended production value |
+|---|---|---|
+| `HELIOS_ENV` | `production` turns on the refusal to start with development settings; unset means development | `production` (already in the image) |
+| `CONFIG_CACHE_TTL`, `CONFIG_CACHE_MAX_ENTRIES`, `CONFIG_CACHE_MAX_MB` | the flag configuration cache (`off` disables it) | unset (10 s, 1000 environments, 32 MiB) |
+| `DB_MAX_CONNS` | connections this instance may hold | set it: instances x this must fit the pooler (docs/DEPLOYMENT.md, 4.3) |
+| `TRACK_MAX_WRITERS`, `TRACK_MAX_WAIT` | bound on concurrent `/track` writers; wait before a fast 503 | unset (pool minus 2; 500 ms) |
+| `SHUTDOWN_TIMEOUT`, `SHUTDOWN_READY_DELAY` | graceful-shutdown budget (8 s) and the not-ready lead (1 s) | unset; keep the budget under the platform's grace period |
+| `READY_REQUIRE_REDIS` | `true` makes `/readyz` fail when Redis is down | unset (Redis down is "degraded", still ready) |
+| `PPROF_ADDR` | profiling endpoints on a loopback address | **unset** |
+
+**Behaviour changes to know about before deploying:** `/healthz` no longer touches the database (it only says the process is alive); the readiness check is the new `/readyz`. On Render the health check path
+stays `/healthz`. `/track` can now answer `503 TRACK_BUSY` with a `Retry-After`; SDKs already retry with the same event ids. Starting or stopping an experiment now publishes to the flag channel.
 
 **Release 7 (lifecycle):** all optional.
 
@@ -344,6 +364,27 @@ block in the file, after a backup.
 **Dependency on the earlier releases:** `segments.workspace_id` references `workspaces` (0004);
 the every-route test, the tenant checks and the workspace guard of release 1 are assumed. It
 does not need 0008 or 0009, so it could ship without release 2, but this plan keeps the order.
+
+## Release 8 - operations readiness
+
+Do not start until release 7 is finished and observed. What it adds: `docs/PERFORMANCE.md` (measurements and the cache), `docs/DEPLOYMENT.md`, `docs/OPERATIONS.md`, the audit gate in `docs/LIFECYCLE.md`.
+
+**Schema:** one migration, 0015 (a function replaced; no lock, instant). The previous backend keeps running against the migrated database: the old function body is a superset of what it needs, and it never deletes audit rows.
+Apply 0015 **before** deploying this release's backend: the purge declares itself with a statement that only the new function understands (against 0014's function the declaration is harmless and the purge still works, because
+being due was enough there; against no migration at all, the purge still works the same way). Rehearse: `backend/db/rehearsal.md`, "Migration 0015".
+
+**No other migration, no index.** The load test (docs/PERFORMANCE.md) found no slow query: every statement on the hot paths is an index lookup. If one is ever added for a large table, build it with `CREATE INDEX CONCURRENTLY`
+outside a transaction as its own documented step.
+
+**Sequence (each step on "go", with a report; never chained):**
+
+1. **O0 Preflight** (read-only): the checks under "After each merge"; `tools/image/stage.sh && tools/image/smoke.py` on the merged commit.
+2. **O1 Migrate:** 0015, `verify_0015.sql`. The running backend is unaffected.
+3. **O2 Deploy one instance** with the new image or build, `HELIOS_ENV=production` and the settings in docs/DEPLOYMENT.md, 4.4. If it refuses to start, the log names every setting; fix and retry. Watch `/readyz`, the startup lines, and the cache hit rate.
+4. **O3 Scale** to the intended instance count after setting `DB_MAX_CONNS` and the rate limits for it (docs/DEPLOYMENT.md, 4.1, 4.3).
+5. **O4 Schedule the jobs** from docs/OPERATIONS.md if they are not scheduled yet (the purge and the outbox in particular).
+
+**Rollback:** redeploy the previous backend (nothing it reads changed). Undoing 0015 is the commented block (restores 0014's data-only gate). Turn the cache off without a deploy with `CONFIG_CACHE_TTL=off`.
 
 ## Release 7 - lifecycle
 
