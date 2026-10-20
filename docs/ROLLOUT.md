@@ -91,7 +91,7 @@ restored copy gives the real numbers.
 | 0013 webhooks, email, outbox | **6** | after release 5 (it references `api_tokens` and `scheduled_changes`) | two NEW tables (`webhook_endpoints`, `outbox`; `workspace_id`, composite FKs, RLS on, indexes lead with `workspace_id` except the claim, lease, purge and recipient indexes that look across workspaces by time or recipient); `scheduled_changes.created_by_token_id` (nullable, FK added NOT VALID then validated); `UNIQUE (id, workspace_id)` on `workspace_invites` | new tables: none on existing data (FKs take `SHARE ROW EXCLUSIVE` on `workspaces`, `environments`, `auth.users`, `api_tokens` for milliseconds). `scheduled_changes`: one nullable column, catalog-only, brief `ACCESS EXCLUSIVE`. `workspace_invites`: the unique index build takes a `SHARE` lock (invite writes wait, reads do not; milliseconds on a table this small) | commented block: drop both tables, the constraint, the index and the column (deploy a backend without webhooks and invite email first; discards endpoints, secrets and queued deliveries) | `verify_0013.sql` |
 
 | 0014 lifecycle | **7** | after release 6 (or on its own after release 1: it needs `workspaces`, `workspace_members`, `experiments`, `flags`) | three nullable columns and a CHECK on `workspaces`; NEW tables `ownership_offers`, `workspace_tombstones`, `experiment_variations` (backfilled from existing experiments); `audit_logs_append_only()` replaced so a delete is allowed only for a workspace past its purge date | `workspaces`: `ADD COLUMN` nullable (catalog only, no rewrite), brief `ACCESS EXCLUSIVE`; the CHECK is added NOT VALID then validated (the table is small). `audit_logs` and `events` are **not altered** (the function body is replaced; no lock on the table). New tables: none on existing data (FKs take `SHARE ROW EXCLUSIVE` on `workspaces`, `experiments`, `auth.users` for milliseconds). The backfill inserts one row per experiment variation: a few rows | commented block at the end of the file (back up first: discards offers, tombstones and control designations; pending deletions become ordinary workspaces again) | `verify_0014.sql` |
-| 0015 audit gate | **8** | after 0014 (it replaces the function 0014 made) | **no table is altered**: `audit_logs_append_only()` is replaced so a delete is allowed only inside a transaction that declared the one workspace and its own id (`set_config('helios.audit_purge', …, true)`) AND for a workspace past its purge date | none: `CREATE OR REPLACE FUNCTION` takes no lock on `audit_logs` or anything else; the change is catalog-only and instant | the commented block at the end of the file restores 0014's body | `verify_0015.sql` |
+| 0015 audit gate | **8** | after 0014 (it replaces the function 0014 made) | **no table is altered**: `audit_logs_append_only()` is replaced so a delete is allowed only inside a transaction that declared the one workspace and its own id (`set_config('helios.audit_purge', …, true)`) AND for a workspace past its purge date | none: `CREATE OR REPLACE FUNCTION` takes no lock on `audit_logs` or anything else; the change is catalog-only and instant | the commented block at the end of the file restores 0014's body; **do this together with rolling the backend back to release 7** (its purge cannot delete audit rows under 0015) | `verify_0015.sql` |
 
 `verify_0005.sql` is expected to FAIL until 0005 is applied.
 
@@ -369,9 +369,10 @@ does not need 0008 or 0009, so it could ship without release 2, but this plan ke
 
 Do not start until release 7 is finished and observed. What it adds: `docs/PERFORMANCE.md` (measurements and the cache), `docs/DEPLOYMENT.md`, `docs/OPERATIONS.md`, the audit gate in `docs/LIFECYCLE.md`.
 
-**Schema:** one migration, 0015 (a function replaced; no lock, instant). The previous backend keeps running against the migrated database: the old function body is a superset of what it needs, and it never deletes audit rows.
-Apply 0015 **before** deploying this release's backend: the purge declares itself with a statement that only the new function understands (against 0014's function the declaration is harmless and the purge still works, because
-being due was enough there; against no migration at all, the purge still works the same way). Rehearse: `backend/db/rehearsal.md`, "Migration 0015".
+**Schema:** one migration, 0015 (a function replaced; no lock, instant). Apply it before or together with this release's backend; either order works for the new backend (it declares the purge to the new function; the old
+function ignores the declaration and allows the delete as before). The **previous** (release 7) backend runs against the migrated database in every way but one: its workspace purge deletes audit rows without declaring itself,
+which 0015 refuses, so the purge would stop at that step with an error (nothing is deleted wrongly, and every other part of the purge is idempotent). So: never leave 0015 applied under a release-7 backend while the purge job is
+scheduled; roll the migration back with the backend (below) or pause the purge job. Rehearse: `backend/db/rehearsal.md`, "Migration 0015".
 
 **No other migration, no index.** The load test (docs/PERFORMANCE.md) found no slow query: every statement on the hot paths is an index lookup. If one is ever added for a large table, build it with `CREATE INDEX CONCURRENTLY`
 outside a transaction as its own documented step.
@@ -384,7 +385,8 @@ outside a transaction as its own documented step.
 4. **O3 Scale** to the intended instance count after setting `DB_MAX_CONNS` and the rate limits for it (docs/DEPLOYMENT.md, 4.1, 4.3).
 5. **O4 Schedule the jobs** from docs/OPERATIONS.md if they are not scheduled yet (the purge and the outbox in particular).
 
-**Rollback:** redeploy the previous backend (nothing it reads changed). Undoing 0015 is the commented block (restores 0014's data-only gate). Turn the cache off without a deploy with `CONFIG_CACHE_TTL=off`.
+**Rollback:** pause the purge job, redeploy the previous backend, then undo 0015 (the commented block at the end of the file, which restores 0014's data-only gate) and resume the purge. Turn the cache off without a deploy
+with `CONFIG_CACHE_TTL=off`.
 
 ## Release 7 - lifecycle
 
