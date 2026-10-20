@@ -21,6 +21,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"helios/backend/internal/platform/lifecycle"
@@ -35,6 +36,38 @@ type Options struct {
 	ReadyDelay time.Duration // step 2; default 1 s
 }
 
+// newConns tracks connections that were accepted but have not sent a request yet. net/http treats such a connection as
+// ACTIVE for its first five seconds, so a load balancer's pre-opened connection would hold Shutdown for five seconds
+// (the real-binary test caught exactly that). They carry no request, so closing them is safe.
+type newConns struct {
+	mu sync.Mutex
+	m  map[net.Conn]struct{}
+}
+
+func (n *newConns) track(prev func(net.Conn, http.ConnState)) func(net.Conn, http.ConnState) {
+	return func(c net.Conn, s http.ConnState) {
+		n.mu.Lock()
+		if s == http.StateNew {
+			n.m[c] = struct{}{}
+		} else {
+			delete(n.m, c)
+		}
+		n.mu.Unlock()
+		if prev != nil {
+			prev(c, s)
+		}
+	}
+}
+
+func (n *newConns) closeAll() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for c := range n.m {
+		_ = c.Close()
+		delete(n.m, c)
+	}
+}
+
 // Serve runs srv on ln until it fails or ctx ends (the signal), then shuts down. A nil error means a clean, in-budget exit.
 func Serve(ctx context.Context, srv *http.Server, ln net.Listener, o Options) error {
 	if o.Timeout <= 0 {
@@ -43,6 +76,8 @@ func Serve(ctx context.Context, srv *http.Server, ln net.Listener, o Options) er
 	if o.ReadyDelay < 0 {
 		o.ReadyDelay = 0
 	}
+	fresh := &newConns{m: map[net.Conn]struct{}{}}
+	srv.ConnState = fresh.track(srv.ConnState)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
 	select {
@@ -62,7 +97,21 @@ func Serve(ctx context.Context, srv *http.Server, ln net.Listener, o Options) er
 	}
 	sctx, cancel := context.WithDeadline(context.Background(), start.Add(o.Timeout))
 	defer cancel()
+	stopSweep := make(chan struct{})
+	go func() { // connections that have said nothing are closed as they appear, until the drain is over
+		t := time.NewTicker(25 * time.Millisecond)
+		defer t.Stop()
+		for {
+			fresh.closeAll()
+			select {
+			case <-stopSweep:
+				return
+			case <-t.C:
+			}
+		}
+	}()
 	err := srv.Shutdown(sctx)
+	close(stopSweep)
 	if err != nil {
 		_ = srv.Close() // the budget is spent: cut off what is left
 		<-errc
