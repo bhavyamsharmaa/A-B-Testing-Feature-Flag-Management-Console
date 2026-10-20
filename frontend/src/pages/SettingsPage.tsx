@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AccessGate } from '../components/AccessGate'
 import { ConsoleCard } from '../components/ConsoleCard'
 import { ConsoleHeader } from '../components/ConsoleHeader'
+import { DeleteWorkspaceSection } from '../components/settings/DeleteWorkspaceSection'
 import { InvitesSection } from '../components/settings/InvitesSection'
 import { MembersSection } from '../components/settings/MembersSection'
 import { OwnershipSection } from '../components/settings/OwnershipSection'
@@ -33,6 +34,7 @@ export default function SettingsPage() {
             <OwnershipSection workspace={workspace} reloadKey={membersKey} />
             <InvitesSection workspace={workspace} onChanged={() => setMembersKey((k) => k + 1)} />
             <SdkKeysSection workspace={workspace} />
+            <DeleteWorkspaceSection workspace={workspace} />
           </div>
         )}
       </ConsoleCard>

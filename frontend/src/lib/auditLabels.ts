@@ -33,6 +33,8 @@ const LABELS: Record<string, string> = {
   'ownership.cancel': 'Ownership offer cancelled',
   'ownership.decline': 'Ownership offer declined',
   'ownership.expire': 'Ownership offer expired',
+  'workspace.delete_scheduled': 'Workspace scheduled for deletion',
+  'workspace.restored': 'Workspace restored',
   'member.upsert': 'Member role set',
   'member.remove': 'Member removed',
   'api_key.create': 'API key created',

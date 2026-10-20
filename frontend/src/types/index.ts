@@ -47,6 +47,14 @@ export interface OwnershipOffer {
   expiresAt: string
 }
 
+/** A workspace the caller owns that is scheduled for deletion and can still be restored. */
+export interface PendingDeletion {
+  id: string
+  name: string
+  deletedAt: string
+  purgeAfter: string
+}
+
 export interface Me {
   id: string
   email: string
@@ -54,6 +62,7 @@ export interface Me {
   workspaces: Workspace[]
   invites: PendingInvite[]
   ownershipOffers: OwnershipOffer[]
+  pendingDeletion: PendingDeletion[]
 }
 
 export interface Member {

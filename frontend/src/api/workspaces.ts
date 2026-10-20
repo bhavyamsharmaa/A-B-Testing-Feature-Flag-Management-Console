@@ -4,6 +4,13 @@ import { envPath } from './envPath'
 
 const ws = (id: string) => `/workspaces/${encodeURIComponent(id)}`
 
+/** Hides the workspace and starts the 14-day grace period. Owners only; the name must be typed exactly. */
+export const scheduleWorkspaceDeletion = (id: string, confirmName: string) =>
+  apiClient.post<{ workspace: { id: string; name: string; deletedAt: string; purgeAfter: string } }>(`${ws(id)}/schedule-deletion`, { confirmName })
+
+/** Brings a workspace back during its grace period. */
+export const restoreWorkspace = (workspaceId: string) => apiClient.post<{ workspaceId: string }>('/workspaces/restore', { workspaceId })
+
 export const createWorkspace = (name: string) => apiClient.post<Workspace>('/workspaces', { name })
 
 export const switchWorkspace = (id: string) =>

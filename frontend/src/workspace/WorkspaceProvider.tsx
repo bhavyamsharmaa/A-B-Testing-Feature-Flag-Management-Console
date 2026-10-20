@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
 import { setActiveEnvironments } from '../api/envPath'
 import { createWorkspace as apiCreateWorkspace, switchWorkspace } from '../api/workspaces'
 import { useAuth } from '../auth/AuthProvider'
-import type { OwnershipOffer, PendingInvite, Workspace } from '../types'
+import type { OwnershipOffer, PendingDeletion, PendingInvite, Workspace } from '../types'
 
 interface WorkspaceState {
   workspaces: Workspace[]
@@ -10,6 +10,8 @@ interface WorkspaceState {
   active: Workspace | null
   invites: PendingInvite[]
   ownershipOffers: OwnershipOffer[]
+  /** Workspaces the caller owns that are scheduled for deletion (restorable until the date shown). */
+  pendingDeletion: PendingDeletion[]
   /** Makes a workspace the active one (remembered server-side, so it survives a reload). */
   activate: (id: string) => Promise<void>
   /** Creates a workspace owned by the caller and switches to it. */
@@ -21,6 +23,7 @@ const WorkspaceContext = createContext<WorkspaceState | null>(null)
 const NONE: Workspace[] = []
 const NO_INVITES: PendingInvite[] = []
 const NO_OFFERS: OwnershipOffer[] = []
+const NO_PENDING: PendingDeletion[] = []
 
 /**
  * The active workspace comes from /me (the server's most recently used one);
@@ -35,6 +38,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const workspaces = me?.workspaces ?? NONE
   const invites = me?.invites ?? NO_INVITES
   const ownershipOffers = me?.ownershipOffers ?? NO_OFFERS
+  const pendingDeletion = me?.pendingDeletion ?? NO_PENDING
   const active =
     workspaces.find((w) => w.id === chosen) ?? workspaces.find((w) => w.id === me?.activeWorkspaceId) ?? workspaces[0] ?? null
 
@@ -59,8 +63,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   )
 
   const value = useMemo<WorkspaceState>(
-    () => ({ workspaces, active, invites, ownershipOffers, activate, create }),
-    [workspaces, active, invites, ownershipOffers, activate, create],
+    () => ({ workspaces, active, invites, ownershipOffers, pendingDeletion, activate, create }),
+    [workspaces, active, invites, ownershipOffers, pendingDeletion, activate, create],
   )
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>
 }
