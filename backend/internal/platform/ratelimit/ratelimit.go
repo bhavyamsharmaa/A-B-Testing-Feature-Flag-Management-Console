@@ -278,6 +278,23 @@ func (l *Limiter) TakeN(class, key string, n int) (bool, time.Duration) {
 	return false, retryAfterFor(b, r, need)
 }
 
+// Refund gives n tokens back (never beyond the burst): for a request that was charged and then refused for a reason
+// that is not the client's doing, such as the server being too busy, so its retry is not charged twice.
+func (l *Limiter) Refund(class, key string, n int) {
+	if l.cfg.Disabled || n <= 0 {
+		return
+	}
+	r := l.rules[class]
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b := l.get(class, key, r, now)
+	b.tokens += float64(n)
+	if max := float64(r.Burst); b.tokens > max {
+		b.tokens = max
+	}
+}
+
 // Peek is Take without spending: is there a token right now?
 func (l *Limiter) Peek(class, key string) (bool, time.Duration) {
 	if l.cfg.Disabled {

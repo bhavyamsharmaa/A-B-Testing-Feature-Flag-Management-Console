@@ -16,12 +16,39 @@ import (
 // before returning, so a bad DATABASE_URL fails fast at startup instead of
 // on the first request.
 func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	return ConnectWith(ctx, databaseURL, Options{})
+}
+
+// Options tune the pool. The zero value keeps the driver's default size.
+type Options struct {
+	// MaxConns caps the connections this process holds open to Postgres. Every instance has its own pool, so
+	// (instances x MaxConns) plus the job processes must stay under the pooler's limit (docs/DEPLOYMENT.md).
+	MaxConns int32
+}
+
+// DefaultMaxConns is the pool size when DB_MAX_CONNS is not set: the machine's CPU count, between 4 and 10.
+func DefaultMaxConns(cpus int) int32 {
+	n := int32(cpus)
+	if n < 4 {
+		n = 4
+	}
+	if n > 10 {
+		n = 10
+	}
+	return n
+}
+
+// ConnectWith is Connect with pool settings.
+func ConnectWith(ctx context.Context, databaseURL string, opt Options) (*pgxpool.Pool, error) {
 	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, redact(fmt.Errorf("db: parse config: %w", err), databaseURL)
+	}
+	if opt.MaxConns > 0 {
+		cfg.MaxConns = opt.MaxConns
 	}
 	// Supabase's transaction pooler (port 6543) doesn't support the named
 	// prepared statements pgx uses by default; queries fail there even though

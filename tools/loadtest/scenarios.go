@@ -110,6 +110,11 @@ func scenario(o options, name string) ([]Result, error) {
 	if st.API != o.api {
 		fmt.Fprintf(os.Stderr, "note: seeded against %s, running against %s\n", st.API, o.api)
 	}
+	if res, err := httpc.Get(o.api + "/healthz"); err != nil || res.StatusCode != 200 {
+		return nil, fmt.Errorf("the API at %s does not answer /healthz (tools/loadtest/run.sh up): %v", o.api, err)
+	} else {
+		res.Body.Close()
+	}
 	pid := apiPid(o)
 	fmt.Printf("== %s: %s for %s (api pid %d)\n", name, o.api, o.duration, pid)
 	// A short warm-up so connections, caches and the JIT-less runtime are in their steady state.

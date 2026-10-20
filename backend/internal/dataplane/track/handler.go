@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -48,6 +49,8 @@ type Deps struct {
 	Tokens *exposuretoken.Keyring
 	// Mode is what to do with an exposure whose token does not verify.
 	Mode exposuretoken.Mode
+	// Gate bounds concurrent database work and sheds load with a fast 503 when it is saturated; nil means no bound.
+	Gate *Gate
 }
 
 // Handler serves POST /track. It must run behind apikey's middleware: the
@@ -126,6 +129,26 @@ func Handler(d Deps) http.HandlerFunc {
 				expIDs = append(expIDs, ev.ExperimentID)
 			}
 		}
+		// From here on the batch uses the database. Take a turn (bounded concurrency); if none comes within the wait,
+		// say so at once: nothing was written, and the client retries the same ids. The turn is held until the INSERT
+		// has returned (an event is never acknowledged before it is stored) and given back right after, not when a
+		// slow client has finished reading the answer.
+		releaseTurn := func() {}
+		if d.Gate != nil && len(valid) > 0 {
+			rel, err := d.Gate.Acquire(r.Context())
+			if err != nil {
+				if errors.Is(err, ErrBusy) {
+					if d.Limiter != nil { // the retry must not be charged twice
+						d.Limiter.Refund(ratelimit.ClassSDKTrackEvents, sc.Prefix, len(req.Events))
+					}
+					writeBusy(w)
+				}
+				return // otherwise the client left while it waited
+			}
+			var once sync.Once
+			releaseTurn = func() { once.Do(rel) }
+			defer releaseTurn()
+		}
 		known := map[string]Experiment{}
 		if len(expIDs) > 0 {
 			var err error
@@ -168,6 +191,7 @@ func Handler(d Deps) http.HandlerFunc {
 
 		if len(store) > 0 {
 			inserted, err := d.Writer.Insert(r.Context(), sc, store)
+			releaseTurn()
 			if err != nil {
 				unavailable(w, "insert", err)
 				return
@@ -181,6 +205,7 @@ func Handler(d Deps) http.HandlerFunc {
 			}
 		}
 
+		releaseTurn() // (a batch with nothing to store reached here without an insert)
 		var accepted, duplicates, rejected int
 		for _, res := range results {
 			switch res.Status {
@@ -209,6 +234,7 @@ func unavailable(w http.ResponseWriter, step string, err error) {
 	} else {
 		log.Printf("track: %s failed: %T", step, err)
 	}
+	w.Header().Set("Retry-After", retryAfterSeconds())
 	httpx.WriteError(w, http.StatusServiceUnavailable, "TRACK_UNAVAILABLE", "events could not be stored; retry with the same ids")
 }
 

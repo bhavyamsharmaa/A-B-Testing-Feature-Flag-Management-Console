@@ -1,0 +1,154 @@
+[
+  {
+    "label": "cache",
+    "scenario": "evaluate",
+    "seconds": 20.006132875,
+    "concurrency": 32,
+    "requests": 841587,
+    "errors": 0,
+    "errorRate": 0,
+    "statuses": {
+      "200": 841587
+    },
+    "requestsPerSecond": 42066.45058584317,
+    "p50ms": 0.695,
+    "p95ms": 1.141,
+    "p99ms": 1.731,
+    "maxMs": 22.707,
+    "rssStartMB": 83.8,
+    "rssPeakMB": 84.6,
+    "apiCpuAvgPct": 354.8,
+    "dbConnectionsMax": 11,
+    "goroutinesMax": 93
+  },
+  {
+    "label": "cache",
+    "scenario": "track",
+    "seconds": 20.006835667,
+    "concurrency": 32,
+    "requests": 93549,
+    "errors": 0,
+    "errorRate": 0,
+    "statuses": {
+      "200": 93549
+    },
+    "requestsPerSecond": 4675.851871683192,
+    "eventsPerSecond": 116896.29679207981,
+    "p50ms": 6.591,
+    "p95ms": 8.405,
+    "p99ms": 10.28,
+    "maxMs": 48.685,
+    "rssStartMB": 84.8,
+    "rssPeakMB": 85.3,
+    "apiCpuAvgPct": 224.1,
+    "dbConnectionsMax": 11,
+    "goroutinesMax": 93
+  },
+  {
+    "label": "cache",
+    "scenario": "stream",
+    "seconds": 21.05629775,
+    "concurrency": 500,
+    "requests": 500,
+    "errors": 0,
+    "errorRate": 0,
+    "statuses": {
+      "200": 500
+    },
+    "requestsPerSecond": 25,
+    "p50ms": 3.061,
+    "p95ms": 4.798,
+    "p99ms": 5.963,
+    "maxMs": 8.087,
+    "rssStartMB": 84.5,
+    "rssPeakMB": 122.3,
+    "apiCpuAvgPct": 7.3,
+    "dbConnectionsMax": 12,
+    "goroutinesMax": 2530,
+    "extra": {
+      "editToStreamP50ms": "6.9",
+      "editToStreamP95ms": "9.8",
+      "editToStreamP99ms": "12.5",
+      "edits": 20,
+      "eventsReceived": 10000,
+      "streamsFailed": 0,
+      "streamsOpened": 500
+    }
+  },
+  {
+    "label": "cache",
+    "scenario": "mixed: evaluate",
+    "seconds": 20.0095935,
+    "concurrency": 32,
+    "requests": 509106,
+    "errors": 0,
+    "errorRate": 0,
+    "statuses": {
+      "200": 509106
+    },
+    "requestsPerSecond": 25443.095583126164,
+    "p50ms": 1.15,
+    "p95ms": 1.908,
+    "p99ms": 3.037,
+    "maxMs": 28.851,
+    "rssStartMB": 128.2,
+    "rssPeakMB": 141.6,
+    "apiCpuAvgPct": 271.6,
+    "dbConnectionsMax": 12,
+    "goroutinesMax": 1363
+  },
+  {
+    "label": "cache",
+    "scenario": "mixed: track",
+    "seconds": 20.004712125,
+    "concurrency": 8,
+    "requests": 44127,
+    "errors": 0,
+    "errorRate": 0,
+    "statuses": {
+      "200": 44127
+    },
+    "requestsPerSecond": 2205.830292596625,
+    "eventsPerSecond": 55145.75731491562,
+    "p50ms": 3.287,
+    "p95ms": 4.79,
+    "p99ms": 8.886,
+    "maxMs": 88.88,
+    "rssStartMB": 128.2,
+    "rssPeakMB": 141.6,
+    "apiCpuAvgPct": 271.6,
+    "dbConnectionsMax": 12,
+    "goroutinesMax": 1363
+  },
+  {
+    "label": "cache",
+    "scenario": "mixed: streams+edits",
+    "seconds": 21.05593525,
+    "concurrency": 250,
+    "requests": 250,
+    "errors": 0,
+    "errorRate": 0,
+    "statuses": {
+      "200": 250
+    },
+    "requestsPerSecond": 12.5,
+    "p50ms": 4.15,
+    "p95ms": 7.728,
+    "p99ms": 9.459,
+    "maxMs": 10.27,
+    "rssStartMB": 128.2,
+    "rssPeakMB": 141.6,
+    "apiCpuAvgPct": 271.6,
+    "dbConnectionsMax": 12,
+    "goroutinesMax": 1363,
+    "extra": {
+      "editToStreamP50ms": "6.1",
+      "editToStreamP95ms": "12.3",
+      "editToStreamP99ms": "13.1",
+      "edits": 20,
+      "eventsReceived": 5000,
+      "streamsFailed": 0,
+      "streamsOpened": 250
+    }
+  }
+]

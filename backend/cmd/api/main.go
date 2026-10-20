@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -47,11 +48,20 @@ func main() {
 
 	startPprof(appCtx, cfg.PprofAddr)
 
-	pool, err := db.Connect(appCtx, cfg.DatabaseURL)
+	poolSize, err := config.ParseDBMaxConns(cfg.DBMaxConns)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if poolSize == 0 {
+		poolSize = db.DefaultMaxConns(runtime.NumCPU())
+	}
+	pool, err := db.ConnectWith(appCtx, cfg.DatabaseURL, db.Options{MaxConns: poolSize})
 	if err != nil {
 		log.Fatalf("could not connect to database: %v", err)
 	}
 	defer pool.Close()
+	// Every instance holds its own pool: (instances x this) + the job processes must stay under the pooler's limit.
+	log.Printf("database pool: at most %d connections from this instance (set DB_MAX_CONNS; instances x this must stay under the pooler's limit)", poolSize)
 
 	verifier, err := auth.NewVerifier(appCtx, cfg.SupabaseURL)
 	if err != nil {
@@ -191,7 +201,14 @@ func main() {
 		log.Printf("flag configuration cache: on, entries live at most %s, at most %d environments / %d MiB", cacheSettings.TTL, cacheSettings.MaxEntries, cacheSettings.MaxBytes>>20)
 	}
 
+	trackSettings, err := config.ParseTrack(cfg.TrackMaxWriters, cfg.TrackMaxWait)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	router := server.New(server.Deps{
+		TrackMaxWriters:       trackSettings.MaxWriters,
+		TrackMaxWait:          trackSettings.MaxWait,
 		ConfigCacheTTL:        cacheSettings.TTL,
 		ConfigCacheMaxEntries: cacheSettings.MaxEntries,
 		ConfigCacheMaxBytes:   cacheSettings.MaxBytes,

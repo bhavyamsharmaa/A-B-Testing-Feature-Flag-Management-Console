@@ -102,6 +102,11 @@ type Deps struct {
 	ConfigCacheTTL        time.Duration
 	ConfigCacheMaxEntries int
 	ConfigCacheMaxBytes   int64
+	// TrackMaxWriters bounds how many /track batches use the database at once (zero: half the pool, at least 2);
+	// TrackMaxWait is how long a batch waits for a turn before a fast 503 (zero: no bound, used by tests that
+	// want the pre-gate behaviour; the binary sets 500 ms).
+	TrackMaxWriters int
+	TrackMaxWait    time.Duration
 }
 
 // Scope says how a route is tied to a tenant.
@@ -147,6 +152,8 @@ type Router struct {
 	// ConfigCache is this instance's flag configuration cache (disabled when Deps.ConfigCacheTTL is zero); exposed so
 	// tests can look at what it holds.
 	ConfigCache *configcache.Cache
+	// TrackGate bounds /track's database work (nil when off); exposed for tests.
+	TrackGate *track.Gate
 }
 
 func (r *Router) add(pattern string, scope Scope, min rbac.WorkspaceRole, limits []string, h http.Handler) {
@@ -472,7 +479,16 @@ func New(d Deps) *Router {
 	// /evaluate, with buckets of its own: batches per key here, events per key
 	// inside the handler (it needs the batch size).
 	store := track.NewPgStore(d.Pool)
-	sdkAlso("POST /track", track.Handler(track.Deps{Writer: store, Experiments: store, Limiter: lim, Tokens: d.ExposureTokens, Mode: d.ExposureMode}),
+	var trackGate *track.Gate
+	if d.TrackMaxWait > 0 {
+		writers := d.TrackMaxWriters
+		if writers <= 0 {
+			writers = int(d.Pool.Config().MaxConns) / 2
+		}
+		trackGate = track.NewGate(max(writers, 2), d.TrackMaxWait)
+	}
+	rt.TrackGate = trackGate
+	sdkAlso("POST /track", track.Handler(track.Deps{Writer: store, Experiments: store, Limiter: lim, Tokens: d.ExposureTokens, Mode: d.ExposureMode, Gate: trackGate}),
 		[]string{ratelimit.ClassSDKTrackEvents}, ratelimit.ClassSDKTrack)
 	sdk("GET /sdk/stream", stream.Handler(d.Subscriber, sdkKeys, recheck, lim), ratelimit.ClassSDKKey, ratelimit.ClassStream)
 

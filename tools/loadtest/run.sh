@@ -38,9 +38,11 @@ case "$cmd" in
     export DATABASE_URL="$PG/$DB?sslmode=disable"
     nohup "$BIN/load-devauth" -addr "$AUTH" -public-url "http://$AUTH" >> "$LOG/load-devauth.log" 2>&1 & echo $! > "$RUN/load-devauth.pid"
     sleep 1
+    # LOADTEST_API_ENV adds settings to the API under test, e.g. LOADTEST_API_ENV="CONFIG_CACHE_TTL=off"
+    # shellcheck disable=SC2086
     SUPABASE_URL="http://$AUTH" REDIS_URL="redis://127.0.0.1:56379/1" RATE_LIMIT_DISABLED=true STREAMS_PER_KEY=100000 \
-      LISTEN_ADDR="$API" PPROF_ADDR="$PPROF" HELIOS_ENV=development ${LOADTEST_API_ENV:-} \
-      nohup "$BIN/load-api" >> "$LOG/load-api.log" 2>&1 & echo $! > "$RUN/load-api.pid"
+      LISTEN_ADDR="$API" PPROF_ADDR="$PPROF" HELIOS_ENV=development \
+      nohup env ${LOADTEST_API_ENV:-} "$BIN/load-api" >> "$LOG/load-api.log" 2>&1 & echo $! > "$RUN/load-api.pid"
     for _ in $(seq 1 60); do curl -fsS -o /dev/null "http://$API/healthz" 2>/dev/null && break; sleep 0.5; done
     curl -fsS -o /dev/null "http://$API/healthz" || { echo "load API did not start; see $LOG/load-api.log" >&2; exit 1; }
     echo "load API up on http://$API (pid $(cat "$RUN/load-api.pid")), pprof http://$PPROF, database $DB"

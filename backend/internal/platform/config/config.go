@@ -76,6 +76,12 @@ type Config struct {
 	ConfigCacheTTL        string
 	ConfigCacheMaxEntries string
 	ConfigCacheMaxMB      string
+	// DBMaxConns (DB_MAX_CONNS) caps this process's Postgres pool; empty means the CPU count between 4 and 10.
+	DBMaxConns string
+	// TrackMaxWriters (TRACK_MAX_WRITERS) bounds how many /track batches touch the database at once; empty means
+	// half the pool. TrackMaxWait (TRACK_MAX_WAIT) is how long a batch waits for a turn before a fast 503.
+	TrackMaxWriters string
+	TrackMaxWait    string
 }
 
 // Load reads configuration from the environment, applying defaults that match
@@ -122,6 +128,9 @@ func Load() Config {
 		ConfigCacheTTL:            os.Getenv("CONFIG_CACHE_TTL"),
 		ConfigCacheMaxEntries:     os.Getenv("CONFIG_CACHE_MAX_ENTRIES"),
 		ConfigCacheMaxMB:          os.Getenv("CONFIG_CACHE_MAX_MB"),
+		DBMaxConns:                os.Getenv("DB_MAX_CONNS"),
+		TrackMaxWriters:           os.Getenv("TRACK_MAX_WRITERS"),
+		TrackMaxWait:              os.Getenv("TRACK_MAX_WAIT"),
 	}
 }
 
@@ -279,6 +288,48 @@ func ParseConfigCache(ttl, entries, mb string) (ConfigCacheSettings, error) {
 			return out, fmt.Errorf("CONFIG_CACHE_MAX_MB must be a whole number from 1 to 4096 (got %q)", v)
 		}
 		out.MaxBytes = int64(n) << 20
+	}
+	return out, nil
+}
+
+// ParseDBMaxConns validates DB_MAX_CONNS (1-100); empty means "use the default" and returns 0.
+func ParseDBMaxConns(v string) (int32, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > 100 {
+		return 0, fmt.Errorf("DB_MAX_CONNS must be a whole number from 1 to 100 (got %q)", v)
+	}
+	return int32(n), nil
+}
+
+// TrackSettings bound /track's database work.
+type TrackSettings struct {
+	MaxWriters int           // 0: half the pool
+	MaxWait    time.Duration // how long a batch waits for a turn before a fast 503
+}
+
+// DefaultTrackMaxWait is how long a /track batch queues for a database turn.
+const DefaultTrackMaxWait = 500 * time.Millisecond
+
+// ParseTrack validates TRACK_MAX_WRITERS (1-200) and TRACK_MAX_WAIT (10ms-30s).
+func ParseTrack(writers, wait string) (TrackSettings, error) {
+	out := TrackSettings{MaxWait: DefaultTrackMaxWait}
+	if v := strings.TrimSpace(writers); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 200 {
+			return out, fmt.Errorf("TRACK_MAX_WRITERS must be a whole number from 1 to 200 (got %q)", v)
+		}
+		out.MaxWriters = n
+	}
+	if v := strings.TrimSpace(wait); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 10*time.Millisecond || d > 30*time.Second {
+			return out, fmt.Errorf("TRACK_MAX_WAIT must be a duration from 10ms to 30s (got %q)", v)
+		}
+		out.MaxWait = d
 	}
 	return out, nil
 }
