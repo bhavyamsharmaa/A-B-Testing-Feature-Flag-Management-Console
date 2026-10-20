@@ -55,6 +55,25 @@ export interface PendingDeletion {
   purgeAfter: string
 }
 
+export interface FlagHistoryChange {
+  field: string
+  label: string
+  before: string[]
+  after: string[]
+}
+
+export interface FlagHistoryEntry {
+  id: number
+  /** RFC 3339, UTC. */
+  createdAt: string
+  action: string
+  summary: string
+  severity: string
+  actor: { type: 'user' | 'api_token' | 'schedule'; label: string; onBehalfOf?: string }
+  changes: FlagHistoryChange[]
+  source?: string
+}
+
 export interface Me {
   id: string
   email: string

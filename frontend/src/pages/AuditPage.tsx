@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NO_FILTERS, type AuditFilters as Filters } from '../api/audit'
 import { AccessGate } from '../components/AccessGate'
+import { AuditExport } from '../components/AuditExport'
 import { AuditFilters } from '../components/AuditFilters'
 import { AuditTable } from '../components/AuditTable'
 import { ConsoleCard } from '../components/ConsoleCard'
@@ -8,12 +9,13 @@ import { ConsoleHeader } from '../components/ConsoleHeader'
 import { EnvSwitcher } from '../components/EnvSwitcher'
 import { ProductionStrip } from '../components/ProductionStrip'
 import { KNOWN_ACTIONS } from '../lib/auditLabels'
+import { canManageWorkspace } from '../lib/permissions'
 import { useAuditLog } from '../lib/useAuditLog'
 import { useConsoleEnv } from '../lib/useConsoleEnv'
 import { SLOW_HINT, useSlowHint } from '../lib/useSlowHint'
 
 export default function AuditPage() {
-  const { email, me, meLoading, meError, reloadMe, signOut, workspace, roles, env, selectEnv, prod } = useConsoleEnv()
+  const { email, me, meLoading, meError, reloadMe, signOut, workspace, workspaceRole, roles, env, selectEnv, prod } = useConsoleEnv()
   const [filters, setFilters] = useState<Filters>(NO_FILTERS)
   const { entries, nextCursor, loading, loadingMore, error, moreError, reload, loadMore } = useAuditLog(env, workspace?.id ?? null, filters)
   const slow = useSlowHint(loading || loadingMore)
@@ -52,6 +54,8 @@ export default function AuditPage() {
               </h2>
               <p className="mt-1 text-xs text-zinc-500">Audit entries are append-only and cannot be edited or deleted.</p>
             </div>
+
+            {canManageWorkspace(workspaceRole) && <AuditExport env={env} />}
 
             <AuditFilters value={filters} actions={actions} onChange={setFilters} />
 

@@ -79,6 +79,26 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 }
 
+/** Downloads a file from an authenticated endpoint (a plain link cannot carry the bearer token). */
+export async function downloadFile(path: string): Promise<{ blob: Blob; filename: string }> {
+  const { data } = await supabase.auth.getSession()
+  const headers = new Headers()
+  if (data.session?.access_token) headers.set('Authorization', `Bearer ${data.session.access_token}`)
+  let res: Response
+  try {
+    res = await fetch(`${config.apiBaseUrl}${path}`, { headers })
+  } catch {
+    throw new ApiError(0, 'NETWORK', 'Could not reach the server. Check your connection and try again.')
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { code?: string; message?: string } | null
+    const retryAfter = Number(res.headers.get('Retry-After'))
+    throw new ApiError(res.status, body?.code ?? 'HTTP_ERROR', body?.message ?? `Request failed (${res.status})`, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined)
+  }
+  const m = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')
+  return { blob: await res.blob(), filename: m?.[1] ?? 'download' }
+}
+
 export const apiClient = {
   get: <T>(path: string, opts?: { signal?: AbortSignal }) => request<T>(path, { signal: opts?.signal }),
   post: <T>(path: string, body?: unknown) =>

@@ -35,6 +35,7 @@ const LABELS: Record<string, string> = {
   'ownership.expire': 'Ownership offer expired',
   'workspace.delete_scheduled': 'Workspace scheduled for deletion',
   'workspace.restored': 'Workspace restored',
+  'audit.export': 'Audit log exported',
   'member.upsert': 'Member role set',
   'member.remove': 'Member removed',
   'api_key.create': 'API key created',

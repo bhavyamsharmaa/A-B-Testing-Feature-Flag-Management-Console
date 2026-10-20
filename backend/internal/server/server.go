@@ -421,6 +421,10 @@ func New(d Deps) *Router {
 
 	// Same requirement as listing flags: any role in {envId}.
 	env("GET /environments/{envId}/audit-logs", rbac.Min(rbac.Viewer), al.List)
+	// Exporting is for admins and owners, session only, and rate limited; the export is itself audited.
+	env("GET /environments/{envId}/audit-logs/export", rbac.Min(rbac.Admin), al.Export, perUser(ratelimit.ClassAuditExport))
+	// One flag's history (the flag drawer's History tab): any role that can see the flag.
+	env("GET /environments/{envId}/flags/{key}/history", rbac.Min(rbac.Viewer), al.History)
 
 	// Editors create and start; stopping needs an approver; any role reads.
 	env("GET /environments/{envId}/experiments", rbac.Min(rbac.Viewer), ex.List)

@@ -14,6 +14,7 @@ import { SLOW_HINT, useSlowHint } from '../lib/useSlowHint'
 import type { EnvironmentRole, Flag, Role } from '../types'
 import { ConfirmDialog } from './ConfirmDialog'
 import { DeleteFlagSection, type DeleteState } from './DeleteFlagSection'
+import { FlagHistory } from './FlagHistory'
 import { ProductionStrip } from './ProductionStrip'
 import { RolloutControl } from './RolloutControl'
 import { ScheduleSection } from './schedule/ScheduleSection'
@@ -337,6 +338,8 @@ export function FlagDrawer({ flag, env, prod, role, email, roles, canEdit, onClo
             onSaved(updated)
           }}
         />
+
+        <FlagHistory env={env} flagKey={current.key} />
 
         <DeleteFlagSection
           flagKey={current.key}

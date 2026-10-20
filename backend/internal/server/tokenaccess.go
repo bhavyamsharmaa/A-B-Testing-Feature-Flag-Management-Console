@@ -65,6 +65,8 @@ var tokenAccess = map[string]bool{
 	"POST /ownership-offers/{offerId}/accept":                                      false,
 	"POST /ownership-offers/{offerId}/decline":                                     false,
 	"POST /internal/workspaces/purge":                                              false,
+	"GET /environments/{envId}/audit-logs/export":                                  false,
+	"GET /environments/{envId}/flags/{key}/history":                                false,
 	"POST /internal/outbox/run":                                                    false,
 	"DELETE /workspaces/{wsId}/api-tokens/{tokenId}":                               false,
 
