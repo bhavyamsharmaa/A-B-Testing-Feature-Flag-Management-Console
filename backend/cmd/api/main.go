@@ -45,6 +45,8 @@ func main() {
 	appCtx, stopBackground := context.WithCancel(context.Background())
 	defer stopBackground()
 
+	startPprof(appCtx, cfg.PprofAddr)
+
 	pool, err := db.Connect(appCtx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("could not connect to database: %v", err)

@@ -67,6 +67,9 @@ type Config struct {
 	SMTPTLS           string // starttls (default) | implicit | none
 	// PublicConsoleURL is the console's origin, used for the link in invite emails.
 	PublicConsoleURL string
+	// PprofAddr (PPROF_ADDR) turns on Go's profiling endpoints on a SEPARATE listener. It must be a loopback address
+	// (it exposes heap contents and goroutine stacks); empty (the default) means off.
+	PprofAddr string
 }
 
 // Load reads configuration from the environment, applying defaults that match
@@ -109,6 +112,7 @@ func Load() Config {
 		SMTPFrom:                  os.Getenv("SMTP_FROM"),
 		SMTPTLS:                   os.Getenv("SMTP_TLS"),
 		PublicConsoleURL:          strings.TrimRight(os.Getenv("PUBLIC_CONSOLE_URL"), "/"),
+		PprofAddr:                 strings.TrimSpace(os.Getenv("PPROF_ADDR")),
 	}
 }
 
@@ -205,4 +209,25 @@ func checkHost(h string) error {
 		return fmt.Errorf("the host must be an IP address or a host name")
 	}
 	return nil
+}
+
+// ResolvePprofAddr validates PPROF_ADDR: empty (off) or a loopback host:port. Profiles contain memory contents, so
+// anything that is not this machine is refused rather than exposed.
+func ResolvePprofAddr(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", nil
+	}
+	host, p, err := net.SplitHostPort(v)
+	if err != nil {
+		return "", fmt.Errorf("PPROF_ADDR must be host:port, such as 127.0.0.1:6060 (got %q)", v)
+	}
+	if err := checkPort(p); err != nil {
+		return "", fmt.Errorf("PPROF_ADDR %q: %w", v, err)
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return "", fmt.Errorf("PPROF_ADDR must be a loopback address (127.0.0.1, [::1] or localhost): profiles expose memory contents")
+	}
+	return net.JoinHostPort(host, p), nil
 }

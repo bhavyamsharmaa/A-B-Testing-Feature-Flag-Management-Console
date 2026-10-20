@@ -72,3 +72,16 @@ func TestLoadReadsBothFromTheEnvironment(t *testing.T) {
 		t.Errorf("Config.Port is no longer the PORT: %q", Load().Port)
 	}
 }
+
+func TestPprofAddressMustBeLoopback(t *testing.T) {
+	for _, ok := range []string{"", "127.0.0.1:6060", "localhost:6060", "[::1]:6060"} {
+		if _, err := ResolvePprofAddr(ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"0.0.0.0:6060", ":6060", "10.0.0.5:6060", "example.com:6060", "6060", "127.0.0.1:0", "127.0.0.1:99999"} {
+		if _, err := ResolvePprofAddr(bad); err == nil {
+			t.Errorf("%q accepted: profiles would be exposed", bad)
+		}
+	}
+}
