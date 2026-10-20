@@ -714,8 +714,15 @@ func TestTheAuditLogStaysAppendOnlyExceptForADuePurge(t *testing.T) {
 	if err := h.rawExec(`UPDATE audit_logs SET severity = 'info' WHERE workspace_id = $1::uuid`, ws); err == nil {
 		t.Error("updated during a due purge: only deletion is allowed")
 	}
-	if err := h.rawExec(`DELETE FROM audit_logs WHERE workspace_id = $1::uuid`, ws); err != nil {
-		t.Errorf("a due purge could not delete: %v", err)
+	// being due is no longer enough (migration 0015): only the purge's own transaction can delete
+	if err := h.rawExec(`DELETE FROM audit_logs WHERE workspace_id = $1::uuid`, ws); err == nil {
+		t.Error("a plain DELETE worked for a due workspace: the gate is open to anyone with SQL")
+	}
+	if _, err := w.purger(wspurge.Config{}).Run(context.Background()); err != nil {
+		t.Errorf("the purge could not delete: %v", err)
+	}
+	if n := h.count(`SELECT count(*) FROM audit_logs WHERE workspace_id = $1::uuid`, ws); n != 0 {
+		t.Errorf("%d audit rows left after the purge", n)
 	}
 	if err := h.rawExec(`DELETE FROM audit_logs WHERE workspace_id = $1::uuid`, w.wsB.ID); err == nil {
 		t.Error("B's audit rows deletable")

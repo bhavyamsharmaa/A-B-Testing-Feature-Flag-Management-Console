@@ -11,7 +11,7 @@
 //     whose cascade then has almost nothing left to remove.
 //   - Order is dependency order: children before parents. events (which point at environments and
 //     experiments), then the outbox (endpoints, invites), then segment members (segments), then the audit
-//     log (which has no foreign key and whose delete trigger only permits this very case), and last the
+//     log (which has no foreign key; its delete trigger permits only this transaction, see AuditGateSQL), and last the
 //     workspace row, which cascades the rest and is replaced by a tombstone in the same transaction.
 //   - RESUMABLE AND IDEMPOTENT. Progress is the data itself: a crash between batches leaves the workspace
 //     scheduled with fewer rows, and the next run carries on; a finished workspace is simply not found.
@@ -196,14 +196,28 @@ func (p *Purger) deleteBatch(ctx context.Context, table, id string) (int, error)
 	}
 	return 0, errors.New("not a batched table")
 known:
-	tag, err := p.pool.Exec(ctx, fmt.Sprintf(`
-		DELETE FROM %[1]s WHERE ctid IN (
-			SELECT ctid FROM %[1]s WHERE workspace_id = $1::uuid LIMIT $2 FOR UPDATE SKIP LOCKED)`, table), id, p.cfg.BatchSize)
-	if err != nil {
-		return 0, err
-	}
-	return int(tag.RowsAffected()), nil
+	var n int
+	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		if table == "audit_logs" {
+			// The audit log's delete trigger (migration 0015) lets a row go only inside a transaction that has
+			// declared, with this very statement, the one workspace it is purging and its own id. Nothing else
+			// in the code base runs it (TestOnlyThePurgeOpensTheAuditGate).
+			if _, err := tx.Exec(ctx, AuditGateSQL, id); err != nil {
+				return err
+			}
+		}
+		tag, err := tx.Exec(ctx, fmt.Sprintf(`
+			DELETE FROM %[1]s WHERE ctid IN (
+				SELECT ctid FROM %[1]s WHERE workspace_id = $1::uuid LIMIT $2 FOR UPDATE SKIP LOCKED)`, table), id, p.cfg.BatchSize)
+		n = int(tag.RowsAffected())
+		return err
+	})
+	return n, err
 }
+
+// AuditGateSQL declares, for the current transaction only (is_local), the one workspace whose audit rows may be
+// deleted. The value is bound to the transaction id, so it cannot be carried into another transaction.
+const AuditGateSQL = `SELECT set_config('helios.audit_purge', $1::text || ':' || txid_current()::text, true)`
 
 // finish removes the workspace row (cascading the small tables), and writes the tombstone and the platform audit
 // entry in the same transaction.

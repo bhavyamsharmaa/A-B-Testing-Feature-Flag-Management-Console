@@ -1042,3 +1042,16 @@ UI += [
     ("lifecycle ui: the control can be changed after exposures", 'frontend/src/components/ExperimentCard.tsx', "{canEdit && counts && counts.exposureTotal === 0 && experiment.variations.length > 1 && (", "{canEdit && counts && experiment.variations.length > 1 && (", 'file:e2e/lifecycle.spec.ts'),
     ("lifecycle ui: the ownership offer banner does not say what accepting does", 'frontend/src/components/OwnershipOfferBanner.tsx', "If you accept, you become its owner and they become an admin.", "If you accept, it is yours.", 'file:e2e/lifecycle.spec.ts'),
 ]
+
+# ---- ops readiness ----------------------------------------------------------------------------------
+_M15 = 'backend/db/migrations/0015_audit_gate.sql'
+_WP = 'backend/internal/controlplane/wspurge/wspurge.go'
+_IT = './internal/integration'
+
+BACKEND += [
+    ("audit gate: no declaration is needed (being due is enough again)", _M15, "       AND current_setting('helios.audit_purge', true) = OLD.workspace_id::text || ':' || txid_current()::text\n", "", _IT, 'AuditGate|AuditLogStays'),
+    ("audit gate: the declaration is not bound to the transaction id", _M15, "OLD.workspace_id::text || ':' || txid_current()::text\n       AND EXISTS", "OLD.workspace_id::text || ':' || split_part(current_setting('helios.audit_purge', true), ':', 2)\n       AND EXISTS", _IT, 'AuditGate'),
+    ("audit gate: the declaration is not bound to the workspace", _M15, "= OLD.workspace_id::text || ':' || txid_current()::text", "LIKE '%:' || txid_current()::text", _IT, 'AuditGate'),
+    ("audit gate: a workspace that is not due can be purged", _M15, "AND w.deleted_at IS NOT NULL AND w.purge_after <= now())\n    THEN", "AND true)\n    THEN", _IT, 'AuditGate|AuditLogStays'),
+    ("audit gate: the purge does not declare itself", _WP, "		if table == \"audit_logs\" {", "		if table == \"audit_logs\" && false {", _IT, 'ThePurgeLeaves|ACrashedPurge|AuditLogStays'),
+]
