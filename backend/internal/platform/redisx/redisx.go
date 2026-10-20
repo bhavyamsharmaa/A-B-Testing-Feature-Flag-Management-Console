@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"helios/backend/internal/platform/events"
 )
 
 // Connect parses a redis:// or rediss:// connection URL — rediss:// turns on
@@ -67,5 +69,26 @@ func (s Subscriber) Subscribe(ctx context.Context, channel string) (<-chan strin
 		}
 	}()
 
+	return out, pubsub.Close, nil
+}
+
+// SubscribePattern implements events.PatternSubscriber with one PSUBSCRIBE connection, confirmed live before it returns.
+func (s Subscriber) SubscribePattern(ctx context.Context, pattern string) (<-chan events.Message, func() error, error) {
+	pubsub := s.Client.PSubscribe(ctx, pattern)
+	if _, err := pubsub.Receive(ctx); err != nil {
+		_ = pubsub.Close()
+		return nil, nil, fmt.Errorf("redisx: psubscribe to %s: %w", pattern, err)
+	}
+	out := make(chan events.Message)
+	go func() {
+		defer close(out)
+		for msg := range pubsub.Channel() {
+			select {
+			case out <- events.Message{Channel: msg.Channel, Payload: msg.Payload}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	return out, pubsub.Close, nil
 }

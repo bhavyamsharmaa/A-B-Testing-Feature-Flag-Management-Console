@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds process configuration.
@@ -70,6 +71,11 @@ type Config struct {
 	// PprofAddr (PPROF_ADDR) turns on Go's profiling endpoints on a SEPARATE listener. It must be a loopback address
 	// (it exposes heap contents and goroutine stacks); empty (the default) means off.
 	PprofAddr string
+	// The per-instance flag configuration cache (docs/PERFORMANCE.md): CONFIG_CACHE_TTL ("10s" by default; "0" or "off"
+	// disables it), CONFIG_CACHE_MAX_ENTRIES (environments, default 1000) and CONFIG_CACHE_MAX_MB (default 32).
+	ConfigCacheTTL        string
+	ConfigCacheMaxEntries string
+	ConfigCacheMaxMB      string
 }
 
 // Load reads configuration from the environment, applying defaults that match
@@ -113,6 +119,9 @@ func Load() Config {
 		SMTPTLS:                   os.Getenv("SMTP_TLS"),
 		PublicConsoleURL:          strings.TrimRight(os.Getenv("PUBLIC_CONSOLE_URL"), "/"),
 		PprofAddr:                 strings.TrimSpace(os.Getenv("PPROF_ADDR")),
+		ConfigCacheTTL:            os.Getenv("CONFIG_CACHE_TTL"),
+		ConfigCacheMaxEntries:     os.Getenv("CONFIG_CACHE_MAX_ENTRIES"),
+		ConfigCacheMaxMB:          os.Getenv("CONFIG_CACHE_MAX_MB"),
 	}
 }
 
@@ -230,4 +239,46 @@ func ResolvePprofAddr(v string) (string, error) {
 		return "", fmt.Errorf("PPROF_ADDR must be a loopback address (127.0.0.1, [::1] or localhost): profiles expose memory contents")
 	}
 	return net.JoinHostPort(host, p), nil
+}
+
+// ConfigCacheSettings are the validated cache settings.
+type ConfigCacheSettings struct {
+	TTL        time.Duration // 0: off
+	MaxEntries int
+	MaxBytes   int64
+}
+
+// DefaultConfigCacheTTL is how long an environment's configuration may be served from memory when the broker is
+// unhealthy (with a healthy broker a change is seen within milliseconds).
+const DefaultConfigCacheTTL = 10 * time.Second
+
+// ParseConfigCache validates the three CONFIG_CACHE_* settings. A bad value is an error at startup, never a silent default.
+func ParseConfigCache(ttl, entries, mb string) (ConfigCacheSettings, error) {
+	out := ConfigCacheSettings{TTL: DefaultConfigCacheTTL, MaxEntries: 1000, MaxBytes: 32 << 20}
+	if v := strings.TrimSpace(ttl); v != "" {
+		if v == "0" || strings.EqualFold(v, "off") {
+			out.TTL = 0
+		} else {
+			d, err := time.ParseDuration(v)
+			if err != nil || d < 100*time.Millisecond || d > 5*time.Minute {
+				return out, fmt.Errorf("CONFIG_CACHE_TTL must be a duration from 100ms to 5m, or 0/off (got %q)", v)
+			}
+			out.TTL = d
+		}
+	}
+	if v := strings.TrimSpace(entries); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 100000 {
+			return out, fmt.Errorf("CONFIG_CACHE_MAX_ENTRIES must be a whole number from 1 to 100000 (got %q)", v)
+		}
+		out.MaxEntries = n
+	}
+	if v := strings.TrimSpace(mb); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 4096 {
+			return out, fmt.Errorf("CONFIG_CACHE_MAX_MB must be a whole number from 1 to 4096 (got %q)", v)
+		}
+		out.MaxBytes = int64(n) << 20
+	}
+	return out, nil
 }

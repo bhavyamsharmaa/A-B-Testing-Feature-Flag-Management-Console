@@ -11,11 +11,12 @@ import (
 type MemoryBus struct {
 	mu        sync.Mutex
 	subs      map[string]map[chan string]struct{}
+	patterns  map[chan Message]string // pattern subscribers
 	published []string
 }
 
 func NewMemoryBus() *MemoryBus {
-	return &MemoryBus{subs: map[string]map[chan string]struct{}{}}
+	return &MemoryBus{subs: map[string]map[chan string]struct{}{}, patterns: map[chan Message]string{}}
 }
 
 func (b *MemoryBus) Publish(_ context.Context, channel string, payload []byte) error {
@@ -28,7 +29,42 @@ func (b *MemoryBus) Publish(_ context.Context, channel string, payload []byte) e
 		default: // slow subscriber: drop, like a lossy broker
 		}
 	}
+	for ch, pattern := range b.patterns {
+		if matchPrefixGlob(pattern, channel) {
+			select {
+			case ch <- Message{Channel: channel, Payload: string(payload)}:
+			default:
+			}
+		}
+	}
 	return nil
+}
+
+// matchPrefixGlob supports exactly what the callers use: a literal name, or a literal prefix followed by "*".
+func matchPrefixGlob(pattern, name string) bool {
+	if n := len(pattern); n > 0 && pattern[n-1] == '*' {
+		prefix := pattern[:n-1]
+		return len(name) >= len(prefix) && name[:len(prefix)] == prefix
+	}
+	return pattern == name
+}
+
+// SubscribePattern is Subscribe for every channel matching pattern.
+func (b *MemoryBus) SubscribePattern(_ context.Context, pattern string) (<-chan Message, func() error, error) {
+	ch := make(chan Message, 256)
+	b.mu.Lock()
+	b.patterns[ch] = pattern
+	b.mu.Unlock()
+	var once sync.Once
+	return ch, func() error {
+		once.Do(func() {
+			b.mu.Lock()
+			delete(b.patterns, ch)
+			b.mu.Unlock()
+			close(ch)
+		})
+		return nil
+	}, nil
 }
 
 func (b *MemoryBus) Subscribe(_ context.Context, channel string) (<-chan string, func() error, error) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -15,15 +16,33 @@ import (
 	"helios/backend/internal/controlplane/audit"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/controlplane/webhooks"
+	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/httpx"
 )
 
 type Handlers struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	events events.Publisher
 }
 
-func NewHandlers(pool *pgxpool.Pool) *Handlers {
-	return &Handlers{pool: pool}
+// NewHandlers: publisher (nil is fine) hears about an experiment starting or stopping, because that changes what
+// /evaluate returns for the flag (the experiment id, the exposure token) and the configuration cache must drop it.
+func NewHandlers(pool *pgxpool.Pool, publisher events.Publisher) *Handlers {
+	return &Handlers{pool: pool, events: publisher}
+}
+
+// publishRunState is best-effort and runs after the transaction committed, like the flag events.
+func (h *Handlers) publishRunState(ctx context.Context, env rbac.Environment, action, experimentKey string) {
+	if h.events == nil {
+		return
+	}
+	payload, err := json.Marshal(map[string]string{"action": action, "experimentKey": experimentKey})
+	if err != nil {
+		return
+	}
+	if err := h.events.Publish(ctx, events.FlagsChannel(env.WorkspaceID, env.ID), payload); err != nil {
+		log.Printf("experiments: publish %s for %s: %v", action, experimentKey, err)
+	}
 }
 
 type metricView struct {
@@ -513,6 +532,7 @@ func (h *Handlers) Start(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, r, key, err)
 		return
 	}
+	h.publishRunState(ctx, access.Env, "experiment_started", key)
 	httpx.WriteJSON(w, http.StatusOK, view)
 }
 
@@ -583,6 +603,7 @@ func (h *Handlers) Stop(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, r, key, err)
 		return
 	}
+	h.publishRunState(ctx, access.Env, "experiment_stopped", key)
 	httpx.WriteJSON(w, http.StatusOK, view)
 }
 

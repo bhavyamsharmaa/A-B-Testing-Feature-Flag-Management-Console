@@ -30,6 +30,7 @@ import (
 	"helios/backend/internal/controlplane/webhooks"
 	"helios/backend/internal/controlplane/workspaces"
 	"helios/backend/internal/controlplane/wspurge"
+	"helios/backend/internal/dataplane/configcache"
 	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/dataplane/stream"
 	"helios/backend/internal/dataplane/track"
@@ -95,6 +96,12 @@ type Deps struct {
 	// StreamRecheck is how often an open /sdk/stream asks whether its key was
 	// revoked. Zero means 10 seconds.
 	StreamRecheck time.Duration
+	// ConfigCacheTTL is how long /evaluate may serve an environment's flag configuration from memory; zero turns
+	// the cache off (every request reads the database, which the tests rely on). The binary defaults it to 10 s.
+	// ConfigCacheMaxEntries and ConfigCacheMaxBytes bound its memory (zero: 1000 environments, 32 MiB).
+	ConfigCacheTTL        time.Duration
+	ConfigCacheMaxEntries int
+	ConfigCacheMaxBytes   int64
 }
 
 // Scope says how a route is tied to a tenant.
@@ -137,6 +144,9 @@ type Route struct {
 type Router struct {
 	Mux    *http.ServeMux
 	Routes []Route
+	// ConfigCache is this instance's flag configuration cache (disabled when Deps.ConfigCacheTTL is zero); exposed so
+	// tests can look at what it holds.
+	ConfigCache *configcache.Cache
 }
 
 func (r *Router) add(pattern string, scope Scope, min rbac.WorkspaceRole, limits []string, h http.Handler) {
@@ -227,26 +237,35 @@ func New(d Deps) *Router {
 	outboxWorker := delivery.NewWorker(d.Pool, del)
 	wh := webhooks.NewHandlers(d.Pool, del.Box, del.Guard, outboxWorker, del.Outbox.Now)
 	sdkKeys := apikey.NewVerifier(d.Pool, d.SDKKeyCacheTTL)
-	drops := &dropFan{sdk: sdkKeys} // the API token verifier joins it below, once it exists
-	ws := workspaces.NewHandlers(workspaces.NewService(d.Pool).WithMail(del.Mail.Mode(), del.Outbox.Now).WithRuntime(drops, d.Publisher), d.Email, d.InvitesByID)
-	fl := flags.NewHandlers(d.Pool, d.Publisher)
+	// The per-instance flag configuration cache. Everything that publishes goes through the invalidating publisher,
+	// so a change made on this instance is visible to its next request whether or not the broker is up.
+	cfgCache := configcache.New(func(ctx context.Context, ws, env string) (*evaluation.Snapshot, error) {
+		return evaluation.LoadSnapshot(ctx, d.Pool, ws, env)
+	}, configcache.Options{TTL: d.ConfigCacheTTL, MaxEntries: d.ConfigCacheMaxEntries, MaxBytes: d.ConfigCacheMaxBytes})
+	pub := events.Publisher(configcache.InvalidatingPublisher{Inner: d.Publisher, Cache: cfgCache})
+	drops := &dropFan{sdk: sdkKeys, configs: cfgCache} // the API token verifier joins it below, once it exists
+	ws := workspaces.NewHandlers(workspaces.NewService(d.Pool).WithMail(del.Mail.Mode(), del.Outbox.Now).WithRuntime(drops, pub), d.Email, d.InvitesByID)
+	fl := flags.NewHandlers(d.Pool, pub)
 	al := auditlog.NewHandlers(d.Pool)
-	sg := segments.NewHandlers(d.Pool, d.Publisher)
+	sg := segments.NewHandlers(d.Pool, pub)
 	var clock func() time.Time
 	if d.Clock != nil {
 		clock = d.Clock
 	}
 	sc := scheduling.NewHandlers(d.Pool, d.Clock)
-	runner := scheduling.NewRunner(d.Pool, d.Publisher, d.Clock, d.Scheduler)
-	ex := experiments.NewHandlers(d.Pool)
+	runner := scheduling.NewRunner(d.Pool, pub, d.Clock, d.Scheduler)
+	ex := experiments.NewHandlers(d.Pool, pub)
 	res := results.NewHandlers(d.Pool)
-	keys := sdkkeys.NewHandlers(d.Pool, sdkKeys, d.Publisher)
+	keys := sdkkeys.NewHandlers(d.Pool, sdkKeys, pub)
 	ctx := d.Context
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	// Hear about revocations made on other instances (no-op without a broker).
 	go sdkKeys.Watch(ctx, d.Subscriber)
+	if cfgCache.Enabled() {
+		go cfgCache.Run(ctx, d.Subscriber) // flag changes and workspace drops made on other instances
+	}
 	recheck := d.StreamRecheck
 	if recheck == 0 {
 		recheck = 10 * time.Second
@@ -265,7 +284,7 @@ func New(d Deps) *Router {
 	tokens := apitoken.NewVerifier(d.Pool, lim, d.APITokenCacheTTL, clock)
 	tokens.OnRejected = apitokens.AuditRejection(d.Pool)
 	drops.tokens = tokens
-	tk := apitokens.NewHandlers(d.Pool, tokens, d.Publisher)
+	tk := apitokens.NewHandlers(d.Pool, tokens, pub)
 	go tokens.Watch(ctx, d.Subscriber) // revocations announced by other instances
 	// authn is the authentication of a control-plane route: the user JWT, or an API
 	// token when the bearer starts with "hlt_" and the route is classified token-allowed.
@@ -370,7 +389,7 @@ func New(d Deps) *Router {
 	workspace("POST /workspaces/{wsId}/webhooks/{endpointId}/test", rbac.WorkspaceAdmin, wh.Test, perUser(ratelimit.ClassWebhookTest))
 	workspace("GET /workspaces/{wsId}/webhooks/{endpointId}/deliveries", rbac.WorkspaceAdmin, wh.Deliveries)
 	workspace("POST /workspaces/{wsId}/webhooks/{endpointId}/deliveries/{deliveryId}/resend", rbac.WorkspaceAdmin, wh.Resend, perUser(ratelimit.ClassWebhookTest))
-	purger := wspurge.New(d.Pool, wspurge.Config{Pub: d.Publisher})
+	purger := wspurge.New(d.Pool, wspurge.Config{Pub: pub})
 	internal("POST /internal/workspaces/purge", wspurge.InternalHandler(d.PurgeSecret, purger.Run), ratelimit.ClassPurgeRun)
 	internal("POST /internal/outbox/run", outbox.InternalHandler(d.OutboxSecret, outboxWorker.Run), ratelimit.ClassOutboxRun)
 
@@ -443,7 +462,12 @@ func New(d Deps) *Router {
 	env("POST /environments/{envId}/sdk-keys", rbac.Min(rbac.Admin), keys.Create, perUser(ratelimit.ClassKeyCreate))
 	env("DELETE /environments/{envId}/sdk-keys/{keyId}", rbac.Min(rbac.Admin), keys.Revoke)
 
-	sdk("POST /evaluate", evaluation.Handler(d.Pool, d.ExposureTokens), ratelimit.ClassSDKKey)
+	var cfgSource evaluation.Source // nil: every request reads the database
+	if cfgCache.Enabled() {
+		cfgSource = cfgCache
+	}
+	rt.ConfigCache = cfgCache
+	sdk("POST /evaluate", evaluation.HandlerWith(d.Pool, d.ExposureTokens, cfgSource), ratelimit.ClassSDKKey)
 	// Event ingestion: the same SDK-key authentication (and revocation) as
 	// /evaluate, with buckets of its own: batches per key here, events per key
 	// inside the handler (it needs the batch size).
@@ -457,12 +481,16 @@ func New(d Deps) *Router {
 
 // dropFan forgets a workspace in every verifier of this instance: its SDK keys (and their streams) and its API tokens.
 type dropFan struct {
-	sdk    *apikey.Verifier
-	tokens *apitoken.Verifier
+	sdk     *apikey.Verifier
+	tokens  *apitoken.Verifier
+	configs *configcache.Cache
 }
 
 func (f *dropFan) InvalidateWorkspace(workspaceID string) {
 	f.sdk.InvalidateWorkspace(workspaceID)
+	if f.configs != nil {
+		f.configs.InvalidateWorkspace(workspaceID)
+	}
 	if f.tokens != nil {
 		f.tokens.InvalidateWorkspace(workspaceID)
 	}

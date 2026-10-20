@@ -65,6 +65,16 @@ type Verifier struct {
 	cache    map[[sha256.Size]byte]cacheEntry
 	throttle Throttle
 
+	// flights: verifications in progress, by key digest. Argon2id costs 64 MiB and tens of milliseconds, so when a
+	// popular key's cache entry expires, ONE request verifies it and the others wait for that answer instead of each
+	// running its own hash (which, with a few dozen requests in flight, is gigabytes of transient memory).
+	flights map[[sha256.Size]byte]*flight
+	// verifyFn reads the key's row and checks its hash (v.verify; tests replace it).
+	verifyFn func(ctx context.Context, plaintext string) (Scope, error)
+	// epoch counts invalidations. A verification that began before one is not cached, so a key revoked while it was
+	// being verified cannot be put back in the cache by the verification that was already under way.
+	epoch uint64
+
 	watchMu  sync.Mutex
 	watchers map[string]map[chan struct{}]struct{} // key prefix -> open streams to wake
 
@@ -99,18 +109,64 @@ func (v *Verifier) cached(plaintext string) (Scope, bool) {
 }
 
 func NewVerifier(pool *pgxpool.Pool, ttl time.Duration) *Verifier {
-	return &Verifier{pool: pool, ttl: ttl, cache: map[[sha256.Size]byte]cacheEntry{}, watchers: map[string]map[chan struct{}]struct{}{}, prefixesOf: map[string]map[string]struct{}{}}
+	v := &Verifier{pool: pool, ttl: ttl, cache: map[[sha256.Size]byte]cacheEntry{}, flights: map[[sha256.Size]byte]*flight{}, watchers: map[string]map[chan struct{}]struct{}{}, prefixesOf: map[string]map[string]struct{}{}}
+	v.verifyFn = v.verify
+	return v
 }
 
 var errInvalidKey = errors.New("invalid key")
 
-func (v *Verifier) scopeFor(ctx context.Context, plaintext string) (Scope, error) {
-	digest := sha256.Sum256([]byte(plaintext))
-	now := time.Now()
+type flight struct {
+	done  chan struct{}
+	epoch uint64 // the invalidation count when it began: a request after a later invalidation must not join it
+	scope Scope
+	err   error
+}
 
+func (v *Verifier) scopeFor(ctx context.Context, plaintext string) (Scope, error) {
 	if sc, ok := v.cached(plaintext); ok {
 		return sc, nil
 	}
+	digest := sha256.Sum256([]byte(plaintext))
+	v.mu.Lock()
+	f := v.flights[digest]
+	leader := f == nil || f.epoch != v.epoch
+	if leader {
+		f = &flight{done: make(chan struct{}), epoch: v.epoch}
+		v.flights[digest] = f
+	}
+	v.mu.Unlock()
+	if leader {
+		// Detached from the caller: if the client that happened to be first goes away, the others still get an answer.
+		go func() {
+			lctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			f.scope, f.err = v.verifyFn(lctx, plaintext)
+			v.mu.Lock()
+			if f.err == nil && v.epoch == f.epoch { // nothing was invalidated while we were verifying
+				v.cache[digest] = cacheEntry{scope: f.scope, expires: time.Now().Add(v.ttl)}
+				if v.prefixesOf[f.scope.WorkspaceID] == nil {
+					v.prefixesOf[f.scope.WorkspaceID] = map[string]struct{}{}
+				}
+				v.prefixesOf[f.scope.WorkspaceID][f.scope.Prefix] = struct{}{}
+			}
+			if v.flights[digest] == f {
+				delete(v.flights, digest)
+			}
+			v.mu.Unlock()
+			close(f.done)
+		}()
+	}
+	select {
+	case <-f.done:
+		return f.scope, f.err
+	case <-ctx.Done():
+		return Scope{}, ctx.Err()
+	}
+}
+
+// verify reads the key's row and checks the hash. Only scopeFor's leader calls it, once per key at a time; the caller caches.
+func (v *Verifier) verify(ctx context.Context, plaintext string) (Scope, error) {
 
 	prefix, ok := Prefix(plaintext)
 	if !ok {
@@ -139,13 +195,6 @@ func (v *Verifier) scopeFor(ctx context.Context, plaintext string) (Scope, error
 		return Scope{}, errInvalidKey
 	}
 
-	v.mu.Lock()
-	v.cache[digest] = cacheEntry{scope: sc, expires: now.Add(v.ttl)}
-	if v.prefixesOf[sc.WorkspaceID] == nil {
-		v.prefixesOf[sc.WorkspaceID] = map[string]struct{}{}
-	}
-	v.prefixesOf[sc.WorkspaceID][sc.Prefix] = struct{}{}
-	v.mu.Unlock()
 	return sc, nil
 }
 
@@ -154,6 +203,7 @@ func (v *Verifier) scopeFor(ctx context.Context, plaintext string) (Scope, error
 // the key, and when another instance announces a revocation.
 func (v *Verifier) Invalidate(prefix string) {
 	v.mu.Lock()
+	v.epoch++
 	for digest, e := range v.cache {
 		if e.scope.Prefix == prefix {
 			delete(v.cache, digest)
@@ -176,6 +226,7 @@ func (v *Verifier) Invalidate(prefix string) {
 // announces that.
 func (v *Verifier) InvalidateWorkspace(workspaceID string) {
 	v.mu.Lock()
+	v.epoch++
 	for digest, e := range v.cache {
 		if e.scope.WorkspaceID == workspaceID {
 			delete(v.cache, digest)
@@ -202,6 +253,7 @@ func WorkspaceMessage(workspaceID string) string {
 // subscription was down: announcements may have been missed.
 func (v *Verifier) InvalidateAll() {
 	v.mu.Lock()
+	v.epoch++
 	v.cache = map[[sha256.Size]byte]cacheEntry{}
 	v.mu.Unlock()
 }

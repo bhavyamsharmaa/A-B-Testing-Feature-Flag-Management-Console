@@ -40,6 +40,7 @@ type harness struct {
 	bodies   [][]byte // every response body h.call has seen
 	t        *testing.T
 	srv      *httptest.Server
+	router   *server.Router
 	pool     *pgxpool.Pool
 	bus      *events.MemoryBus
 	routes   []server.Route
@@ -131,6 +132,10 @@ func newHarnessWith(t *testing.T, adjust func(*server.Deps)) *harness {
 		Context:        t.Context(),
 		InvitesByID:    true,
 	}
+	if os.Getenv("HELIOS_TEST_CONFIG_CACHE") != "" {
+		// Run the whole suite with the configuration cache on (a long TTL, so only invalidation can explain fresh data).
+		deps.ConfigCacheTTL = time.Hour
+	}
 	res, mm := newStubResolver(), &memMail{}
 	deps.Delivery = testDelivery(res, mm)
 	if adjust != nil {
@@ -139,7 +144,7 @@ func newHarnessWith(t *testing.T, adjust func(*server.Deps)) *harness {
 	router := server.New(deps)
 	srv := httptest.NewServer(router.Mux)
 	t.Cleanup(srv.Close)
-	return &harness{t: t, srv: srv, pool: pool, bus: bus, routes: router.Routes, deps: deps, authn: authn, dbURL: u.String(), resolver: res, mail: mm}
+	return &harness{t: t, srv: srv, router: router, pool: pool, bus: bus, routes: router.Routes, deps: deps, authn: authn, dbURL: u.String(), resolver: res, mail: mm}
 }
 
 // newUser inserts a user into the (stand-in) auth.users table.
@@ -324,13 +329,20 @@ func (u user) header() string {
 // router, SDK-key cache, limiter and revocation watcher. mod adjusts its
 // dependencies (typically the event bus it shares with the first instance).
 func (h *harness) newInstance(mod func(*server.Deps)) *httptest.Server {
+	srv, _ := h.newInstanceRouter(mod)
+	return srv
+}
+
+// newInstanceRouter is newInstance that also returns the instance's router (to look inside its cache).
+func (h *harness) newInstanceRouter(mod func(*server.Deps)) (*httptest.Server, *server.Router) {
 	h.t.Helper()
 	d := h.deps
 	d.Limiter = nil
 	if mod != nil {
 		mod(&d)
 	}
-	srv := httptest.NewServer(server.New(d).Mux)
+	router := server.New(d)
+	srv := httptest.NewServer(router.Mux)
 	h.t.Cleanup(srv.Close)
-	return srv
+	return srv, router
 }

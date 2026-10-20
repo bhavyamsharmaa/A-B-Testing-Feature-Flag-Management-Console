@@ -24,6 +24,23 @@ type Subscriber interface {
 	Subscribe(ctx context.Context, channel string) (msgs <-chan string, closeFn func() error, err error)
 }
 
+// Message is a published payload together with the channel it arrived on (pattern subscriptions need it).
+type Message struct {
+	Channel string
+	Payload string
+}
+
+// PatternSubscriber receives every message published to a channel that matches a glob pattern (the only pattern
+// used is a name prefix followed by "*", e.g. FlagsPattern). The per-instance configuration cache uses ONE of these
+// instead of one subscription per environment. Subscribers that cannot do it (the no-op one) simply do not
+// implement it; callers then fall back to their time-to-live.
+type PatternSubscriber interface {
+	SubscribePattern(ctx context.Context, pattern string) (msgs <-chan Message, closeFn func() error, err error)
+}
+
+// FlagsPattern matches every FlagsChannel.
+const FlagsPattern = "flags:*"
+
 // FlagsChannel is the single source of truth for how a flag-change channel
 // name is derived, so the publish side (flags package) and the subscribe side
 // (stream package) can't drift out of sync. The channel carries BOTH the

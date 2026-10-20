@@ -181,23 +181,36 @@ func main() {
 		log.Printf("outbox endpoint: enabled")
 	}
 
+	cacheSettings, err := config.ParseConfigCache(cfg.ConfigCacheTTL, cfg.ConfigCacheMaxEntries, cfg.ConfigCacheMaxMB)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if cacheSettings.TTL == 0 {
+		log.Printf("flag configuration cache: OFF (every /evaluate reads the database)")
+	} else {
+		log.Printf("flag configuration cache: on, entries live at most %s, at most %d environments / %d MiB", cacheSettings.TTL, cacheSettings.MaxEntries, cacheSettings.MaxBytes>>20)
+	}
+
 	router := server.New(server.Deps{
-		Delivery:        delOpts,
-		OutboxSecret:    cfg.OutboxSecret,
-		PurgeSecret:     cfg.PurgeSecret,
-		SchedulerSecret: cfg.SchedulerSecret,
-		Scheduler:       schedulerCfg,
-		ExposureTokens:  keyring,
-		ExposureMode:    exposureMode,
-		Context:         appCtx,
-		InvitesByID:     !strings.EqualFold(strings.TrimSpace(cfg.InvitesByID), "false"),
-		Limiter:         ratelimit.New(limits),
-		Email:           emailPolicy,
-		Pool:            pool,
-		Authn:           verifier.Middleware,
-		Publisher:       publisher,
-		Subscriber:      subscriber,
-		SDKKeyCacheTTL:  sdkKeyCacheTTL,
+		ConfigCacheTTL:        cacheSettings.TTL,
+		ConfigCacheMaxEntries: cacheSettings.MaxEntries,
+		ConfigCacheMaxBytes:   cacheSettings.MaxBytes,
+		Delivery:              delOpts,
+		OutboxSecret:          cfg.OutboxSecret,
+		PurgeSecret:           cfg.PurgeSecret,
+		SchedulerSecret:       cfg.SchedulerSecret,
+		Scheduler:             schedulerCfg,
+		ExposureTokens:        keyring,
+		ExposureMode:          exposureMode,
+		Context:               appCtx,
+		InvitesByID:           !strings.EqualFold(strings.TrimSpace(cfg.InvitesByID), "false"),
+		Limiter:               ratelimit.New(limits),
+		Email:                 emailPolicy,
+		Pool:                  pool,
+		Authn:                 verifier.Middleware,
+		Publisher:             publisher,
+		Subscriber:            subscriber,
+		SDKKeyCacheTTL:        sdkKeyCacheTTL,
 	})
 
 	listenAddr, err := cfg.ListenAddress()

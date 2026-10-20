@@ -40,10 +40,16 @@ type evaluationResult struct {
 // Handler serves POST /evaluate. It must run behind apikey's middleware,
 // which decides the environment from the SDK key.
 //
-// This reads flag configs from Postgres on every request: the naive,
-// DB-backed step of M1. The PRD's in-memory ruleset with Redis-driven swaps
-// replaces this load in M2; Evaluate itself doesn't change.
+// Without a Source this reads flag configs from Postgres on every request.
+// With one (HandlerWith) it reads them from the per-instance cache, which the
+// flag-change channel and a short TTL keep fresh; Evaluate itself doesn't change.
 func Handler(pool *pgxpool.Pool, tokens *exposuretoken.Keyring) http.HandlerFunc {
+	return HandlerWith(pool, tokens, nil)
+}
+
+// HandlerWith is Handler reading flag configuration from src (the per-instance cache) instead of the database for
+// every request. Segments are still read live (see loadSegments): membership is per subject and must never be stale.
+func HandlerWith(pool *pgxpool.Pool, tokens *exposuretoken.Keyring, src Source) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		scope, ok := apikey.ScopeFrom(r.Context())
 		if !ok {
@@ -64,7 +70,17 @@ func Handler(pool *pgxpool.Pool, tokens *exposuretoken.Keyring) http.HandlerFunc
 			return
 		}
 
-		configs, experiments, err := loadConfigs(r, pool, scope, req.FlagKeys)
+		var configs map[string]*FlagConfig
+		var experiments map[string]string
+		var err error
+		if src != nil {
+			var snap *Snapshot
+			if snap, err = src.Snapshot(r.Context(), scope.WorkspaceID, scope.EnvironmentID); err == nil {
+				configs, experiments = pick(snap, req.FlagKeys)
+			}
+		} else {
+			configs, experiments, err = loadConfigs(r, pool, scope, req.FlagKeys)
+		}
 		if err != nil {
 			// SDKs treat any non-200 as "serve fallback", so a DB outage
 			// degrades to fallbacks rather than breaking the caller.
@@ -106,6 +122,21 @@ func Handler(pool *pgxpool.Pool, tokens *exposuretoken.Keyring) http.HandlerFunc
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"evaluations": results})
 	}
+}
+
+// pick returns the requested flags' configs and running experiments out of a snapshot (never modifying it).
+func pick(snap *Snapshot, keys []string) (map[string]*FlagConfig, map[string]string) {
+	configs := make(map[string]*FlagConfig, len(keys))
+	experiments := map[string]string{}
+	for _, k := range keys {
+		if fc, ok := snap.Configs[k]; ok {
+			configs[k] = fc
+			if id, ok := snap.Experiments[k]; ok {
+				experiments[k] = id
+			}
+		}
+	}
+	return configs, experiments
 }
 
 // loadConfigs reads the flags of the key's own environment. The workspace
