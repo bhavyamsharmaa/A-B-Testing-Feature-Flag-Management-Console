@@ -16,6 +16,7 @@ import (
 	"helios/backend/internal/controlplane/scheduling"
 	"helios/backend/internal/controlplane/workspaces"
 	"helios/backend/internal/controlplane/wspurge"
+	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/ratelimit"
 	"helios/backend/internal/server"
 )
@@ -787,4 +788,59 @@ func firstDifferences(a, b string) string {
 		out = out[:8]
 	}
 	return strings.Join(out, "\n")
+}
+
+// With no broadcast at all (a deaf subscriber) and an hour-long cache, the instance that handled the request
+// still drops the workspace's keys at once, and does not need Redis to do it.
+func TestDropsTheKeysAtOnceEvenIfTheBroadcastNeverArrives(t *testing.T) {
+	clock := &liveClock{}
+	x := newTenantsWith(t, func(d *server.Deps) {
+		d.Clock = clock.now
+		d.SDKKeyCacheTTL = time.Hour
+		d.StreamRecheck = time.Hour
+		d.Subscriber = deafToRevocations{events.NewMemoryBus()}
+		d.Publisher = events.NoopPublisher{}
+	})
+	if x.h.evaluateStatus(x.sdkKeyA, secretFlag) != 200 {
+		t.Fatal("setup")
+	}
+	closed, _ := openStreamAt(t, x.h.srv.URL, x.sdkKeyA)
+	x.h.expect(200, x.a, "POST", "/workspaces/"+x.wsA.ID+"/schedule-deletion", map[string]any{"confirmName": x.wsA.Name})
+	if st := x.h.evaluateStatus(x.sdkKeyA, secretFlag); st != 401 {
+		t.Errorf("the cached key still works: %d", st)
+	}
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Error("the stream is still open")
+	}
+}
+
+// A user whose only workspace is one they created (not a personal one) and is pending deletion is not an
+// "empty" user: no personal workspace is created for them.
+func TestAUserWhoseOnlyWorkspaceIsNotPersonalIsNotGivenANewOne(t *testing.T) {
+	x := newDelWorld(t)
+	h := x.h
+	dana := h.newUser("dana")
+	var ws string
+	if err := h.pool.QueryRow(context.Background(), `INSERT INTO workspaces (name, slug, owner_id, is_personal) VALUES ('Dana Co', 'dana-co', $1::uuid, false) RETURNING id::text`, dana.id).Scan(&ws); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.rawExec(`INSERT INTO workspace_members (user_id, workspace_id, role) VALUES ($1::uuid, $2::uuid, 'owner')`, dana.id, ws); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.rawExec(`INSERT INTO environments (workspace_id, key, name) VALUES ($1::uuid, 'dev', 'Dev')`, ws); err != nil {
+		t.Fatal(err)
+	}
+	h.expect(200, dana, "POST", "/workspaces/"+ws+"/schedule-deletion", map[string]any{"confirmName": "Dana Co"})
+	me := decode[struct {
+		Workspaces      []struct{ ID string }
+		PendingDeletion []struct{ ID string }
+	}](t, h.expect(200, dana, "GET", "/me", nil))
+	if len(me.Workspaces) != 0 || len(me.PendingDeletion) != 1 {
+		t.Errorf("/me: %+v", me)
+	}
+	if n := h.count(`SELECT count(*) FROM workspaces WHERE owner_id = $1::uuid`, dana.id); n != 1 {
+		t.Errorf("dana owns %d workspaces: a personal one was created behind her back", n)
+	}
 }
