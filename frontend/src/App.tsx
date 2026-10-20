@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './auth/AuthProvider'
 import { RequireAuth } from './auth/RequireAuth'
 import { Background } from './components/Background'
 import { ConfirmEmailScreen } from './components/ConfirmEmailScreen'
+import { NoWorkspaceScreen } from './components/NoWorkspaceScreen'
 import { Splash } from './components/Splash'
 import AuditPage from './pages/AuditPage'
 import ConsolePage from './pages/ConsolePage'
@@ -29,8 +30,10 @@ function RootRedirect() {
  */
 function WorkspaceScope() {
   const { active } = useWorkspace()
-  const { emailUnconfirmed } = useAuth()
+  const { emailUnconfirmed, me } = useAuth()
   if (emailUnconfirmed) return <ConfirmEmailScreen />
+  // Signed in, /me loaded, and no workspace: never a blank console (see NoWorkspaceScreen).
+  if (me && !active) return <NoWorkspaceScreen />
   return <Outlet key={active?.id ?? 'none'} />
 }
 

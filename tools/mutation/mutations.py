@@ -1055,3 +1055,12 @@ BACKEND += [
     ("audit gate: a workspace that is not due can be purged", _M15, "AND w.deleted_at IS NOT NULL AND w.purge_after <= now())\n    THEN", "AND true)\n    THEN", _IT, 'AuditGate|AuditLogStays'),
     ("audit gate: the purge does not declare itself", _WP, "		if table == \"audit_logs\" {", "		if table == \"audit_logs\" && false {", _IT, 'ThePurgeLeaves|ACrashedPurge|AuditLogStays'),
 ]
+
+UI += [
+    ("dead end ui: a user with no workspace gets a blank console instead of the empty state", 'frontend/src/App.tsx', "if (me && !active) return <NoWorkspaceScreen />", "if (false) return <NoWorkspaceScreen />", 'file:e2e/lifecycle.spec.ts'),
+    ("dead end ui: the empty state offers no way to create a workspace", 'frontend/src/components/NoWorkspaceScreen.tsx', "{creating && <CreateWorkspaceModal", "{false && <CreateWorkspaceModal", 'file:e2e/lifecycle.spec.ts'),
+]
+BACKEND += [
+    ("dead end: the owned-workspaces message does not say pending deletions count", 'backend/internal/controlplane/quota/quota.go', "		if pending > 0 {", "		if pending > 1000 {", './internal/integration', 'PendingDeletion|OnlyPendingDeletion'),
+    ("dead end: the owned-workspaces limit forgets pending deletions", 'backend/internal/controlplane/quota/quota.go', "FROM workspaces WHERE owner_id = $1::uuid`, userID).Scan(&have, &pending)", "FROM workspaces WHERE owner_id = $1::uuid AND deleted_at IS NULL`, userID).Scan(&have, &pending)", './internal/integration', 'PendingDeletion|OnlyPendingDeletion'),
+]

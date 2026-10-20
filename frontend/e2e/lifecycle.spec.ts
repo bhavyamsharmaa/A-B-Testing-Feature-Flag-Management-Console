@@ -287,3 +287,43 @@ test('experiment control: chosen at creation, shown, changeable until the first 
   await api.dispose()
   await a.context.close()
 })
+
+test('a user whose only workspace is scheduled for deletion sees an empty state, can create a new workspace or restore the old one', async ({ browser }) => {
+  const api = await pwRequest.newContext()
+  const who = person('dead-end')
+  const u = await newUserPage(browser)
+  await signUp(u.page, who)
+  const t = await jwt(api, who)
+  const only = (await me(api, t)).workspaces[0]
+
+  // delete the only workspace from the console
+  await u.page.getByRole('navigation', { name: 'Console sections' }).getByRole('link', { name: 'Settings' }).click()
+  await u.page.getByTestId('delete-workspace').getByRole('button', { name: 'Delete workspace…' }).click()
+  await dialog(u.page).getByLabel('Workspace name').fill(only.name)
+  await dialog(u.page).getByRole('button', { name: 'Delete workspace' }).click()
+
+  // not a blank console: a clear empty state with the way out
+  const empty = u.page.getByTestId('no-workspace-screen')
+  await expect(empty).toBeVisible()
+  await expect(empty).toContainText("don't have a workspace")
+  await expect(empty.getByTestId('no-workspace-pending')).toContainText(only.name)
+  await shot(u.page, '62-no-workspace-empty-state.png', { fullPage: false })
+
+  // create a new one: it becomes the console
+  await empty.getByRole('button', { name: 'Create workspace' }).click()
+  await dialog(u.page).getByLabel('Workspace name').fill('Second start')
+  await dialog(u.page).getByRole('button', { name: 'Create workspace' }).click()
+  await expect(u.page.getByTestId('workspace-name')).toHaveText('Second start')
+  expect((await me(api, t)).pendingDeletion.map((p) => p.id)).toEqual([only.id])
+
+  // delete the new one too, then restore the first from the empty state (the owned limit that still counts the
+  // pending ones, and says so, is covered by the API tests: this flow stays under the workspace-write rate limit)
+  const fresh = (await me(api, t)).workspaces[0]
+  expect((await api.post(`${API}/workspaces/${fresh.id}/schedule-deletion`, { ...bearer(t), data: { confirmName: fresh.name } })).status()).toBe(200)
+  await u.page.reload()
+  await expect(u.page.getByTestId('no-workspace-screen')).toBeVisible()
+  await u.page.getByTestId('no-workspace-pending').getByRole('button', { name: `Restore ${only.name}` }).click()
+  await expect(u.page.getByTestId('workspace-name')).toHaveText(only.name)
+  await api.dispose()
+  await u.context.close()
+})

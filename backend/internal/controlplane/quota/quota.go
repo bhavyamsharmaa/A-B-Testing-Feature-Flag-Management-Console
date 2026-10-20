@@ -67,6 +67,7 @@ type Exceeded struct {
 	Resource string
 	Limit    int
 	Per      string
+	Note     string // extra explanation appended to the message, if any
 }
 
 func (e Exceeded) Error() string {
@@ -74,7 +75,11 @@ func (e Exceeded) Error() string {
 	if per == "" {
 		per = "workspace"
 	}
-	return fmt.Sprintf("limit reached: at most %d %s per %s", e.Limit, e.Resource, per)
+	msg := fmt.Sprintf("limit reached: at most %d %s per %s", e.Limit, e.Resource, per)
+	if e.Note != "" {
+		msg += ". " + e.Note
+	}
+	return msg
 }
 
 // check reports whether one more of something fits: have is the current count.
@@ -275,12 +280,16 @@ func CheckMember(ctx context.Context, tx pgx.Tx, workspaceID string) error {
 // creates for the same user (the workspaces package takes a per-user
 // advisory lock).
 func CheckOwnedWorkspaces(ctx context.Context, tx pgx.Tx, userID string) error {
-	var have int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM workspaces WHERE owner_id = $1::uuid`, userID).Scan(&have); err != nil {
+	var have, pending int
+	if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM workspaces WHERE owner_id = $1::uuid`, userID).Scan(&have, &pending); err != nil {
 		return err
 	}
 	if have >= MaxOwnedWorkspaces {
-		return Exceeded{Resource: "workspaces", Limit: MaxOwnedWorkspaces, Per: "user"}
+		ex := Exceeded{Resource: "workspaces", Limit: MaxOwnedWorkspaces, Per: "user"}
+		if pending > 0 {
+			ex.Note = fmt.Sprintf("workspaces scheduled for deletion still count until they are purged, 14 days after they were deleted (%d of yours %s); restore one or wait", pending, plural(pending, "is", "are"))
+		}
+		return ex
 	}
 	return nil
 }
@@ -294,4 +303,11 @@ func WriteError(w http.ResponseWriter, err error) bool {
 	}
 	httpx.WriteError(w, http.StatusConflict, "QUOTA_EXCEEDED", exceeded.Error())
 	return true
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }

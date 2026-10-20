@@ -457,7 +457,7 @@ func TestAPendingDeletionStillCountsTowardTheOwnedWorkspacesLimitUntilPurged(t *
 		}
 	}
 	w.h.expect(200, w.b, "POST", "/workspaces/"+extra.ID+"/schedule-deletion", map[string]any{"confirmName": extra.Name})
-	if st, b := w.h.call(w.b, "POST", "/workspaces", map[string]any{"name": "sixth"}); st != 409 || !bytes.Contains(b, []byte("QUOTA_EXCEEDED")) {
+	if st, b := w.h.call(w.b, "POST", "/workspaces", map[string]any{"name": "sixth"}); st != 409 || !bytes.Contains(b, []byte("QUOTA_EXCEEDED")) || !bytes.Contains(b, []byte("scheduled for deletion still count")) {
 		t.Fatalf("creating while one is pending deletion: %d %s", st, b)
 	}
 	// purged: the slot is free
@@ -849,5 +849,32 @@ func TestAUserWhoseOnlyWorkspaceIsNotPersonalIsNotGivenANewOne(t *testing.T) {
 	}
 	if n := h.count(`SELECT count(*) FROM workspaces WHERE owner_id = $1::uuid`, dana.id); n != 1 {
 		t.Errorf("dana owns %d workspaces: a personal one was created behind her back", n)
+	}
+}
+
+// A user whose every workspace is scheduled for deletion is not stuck: /me says so, and they can create a new one
+// (the owned-workspaces limit still counts the pending ones).
+func TestAUserWithOnlyPendingDeletionWorkspacesCanCreateANewOne(t *testing.T) {
+	w := newDelWorld(t)
+	h := w.h
+	w.schedule(t, 200)
+	me := decode[struct {
+		Workspaces      []struct{ ID string }
+		PendingDeletion []struct{ ID string }
+	}](t, h.expect(200, w.a, "GET", "/me", nil))
+	if len(me.Workspaces) != 0 || len(me.PendingDeletion) != 1 {
+		t.Fatalf("/me: %+v", me)
+	}
+	created := decode[struct{ ID, Name string }](t, h.expect(201, w.a, "POST", "/workspaces", map[string]any{"name": "Fresh start"}))
+	if got := h.me(w.a); len(got.Workspaces) != 1 || got.Workspaces[0].ID != created.ID {
+		t.Errorf("after creating: %+v", got.Workspaces)
+	}
+	// the limit still counts the pending one: fill up to it, then the message says why
+	for i := 0; i < 3; i++ {
+		h.expect(201, w.a, "POST", "/workspaces", map[string]any{"name": fmt.Sprintf("more %d", i)})
+	}
+	st, b := h.call(w.a, "POST", "/workspaces", map[string]any{"name": "one too many"})
+	if st != 409 || !bytes.Contains(b, []byte("scheduled for deletion still count")) {
+		t.Errorf("at the limit: %d %s", st, b)
 	}
 }
