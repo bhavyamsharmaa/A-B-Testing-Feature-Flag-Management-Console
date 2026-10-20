@@ -38,6 +38,7 @@ func main() {
 	defer cancel()
 
 	cfg := config.Load()
+	config.MustBeSafe(cfg, config.RoleJob)
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)

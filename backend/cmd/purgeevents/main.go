@@ -39,7 +39,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
 
-	pool, err := db.Connect(ctx, config.Load().DatabaseURL)
+	cfg := config.Load()
+	config.MustBeSafe(cfg, config.RoleJob)
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)
 	}

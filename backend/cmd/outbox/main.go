@@ -42,6 +42,7 @@ func main() {
 	defer cancel()
 
 	cfg := config.Load()
+	config.MustBeSafe(cfg, config.RoleOutbox)
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)

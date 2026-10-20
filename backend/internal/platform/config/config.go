@@ -89,6 +89,8 @@ type Config struct {
 	ShutdownTimeout    string
 	ShutdownReadyDelay string
 	ReadyRequireRedis  string
+	// Environment is HELIOS_ENV ("development" by default, or "production"): see production.go.
+	Environment string
 }
 
 // Load reads configuration from the environment, applying defaults that match
@@ -98,7 +100,7 @@ func Load() Config {
 		Port:                     getenv("PORT", "8080"),
 		listenAddr:               os.Getenv("LISTEN_ADDR"),
 		portEnv:                  os.Getenv("PORT"),
-		DatabaseURL:              getenv("DATABASE_URL", "postgres://helios:helios@localhost:5432/helios?sslmode=disable"),
+		DatabaseURL:              getenv("DATABASE_URL", defaultDatabaseURL),
 		RedisURL:                 os.Getenv("REDIS_URL"),
 		SupabaseURL:              os.Getenv("SUPABASE_URL"),
 		SupabaseAnonKey:          os.Getenv("SUPABASE_ANON_KEY"),
@@ -141,6 +143,7 @@ func Load() Config {
 		ShutdownTimeout:           os.Getenv("SHUTDOWN_TIMEOUT"),
 		ShutdownReadyDelay:        os.Getenv("SHUTDOWN_READY_DELAY"),
 		ReadyRequireRedis:         os.Getenv("READY_REQUIRE_REDIS"),
+		Environment:               os.Getenv("HELIOS_ENV"),
 	}
 }
 

@@ -1,0 +1,35 @@
+# The build context is backend/. Only go.mod, go.sum, cmd/ and internal/ are ever COPYed by the Dockerfile; this file makes
+# sure nothing else (and nothing sensitive inside those) is even sent to the builder.
+
+# secrets and local configuration
+.env
+.env.*
+**/.env
+**/.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.env
+**/secrets.env
+id_rsa*
+
+# tests and test data never ship
+**/*_test.go
+**/testdata
+**/testdata/**
+**/*.golden
+
+# everything that is not the Go source
+.git
+.gitignore
+.dockerignore
+Dockerfile
+db
+scripts
+bin
+dist
+*.test
+*.out
+*.log
+**/.DS_Store

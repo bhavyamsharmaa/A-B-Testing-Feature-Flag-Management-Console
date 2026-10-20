@@ -40,6 +40,7 @@ const sdkKeyCacheTTL = 15 * time.Second
 
 func main() {
 	cfg := config.Load()
+	config.MustBeSafe(cfg, config.RoleAPI)
 	if cfg.SupabaseURL == "" {
 		log.Fatal("SUPABASE_URL is required, e.g. https://<project-ref>.supabase.co")
 	}
