@@ -58,6 +58,13 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 	h.expect(200, ghost, "GET", "/environments/"+x.devA+"/flags", nil) // a member, for now
 	h.expect(204, x.a, "DELETE", "/workspaces/"+x.wsA.ID+"/members/"+ghost.id, nil)
 
+	// A's open ownership offer (to an admin), which routes take by id.
+	ada := h.newUser("ada")
+	h.me(ada)
+	at := decode[struct{ Token string }](t, h.expect(201, x.a, "POST", "/workspaces/"+x.wsA.ID+"/invites", map[string]any{"email": ada.email, "role": "admin"})).Token
+	h.expect(200, ada, "POST", "/invites/accept", map[string]any{"token": at})
+	offerID := decode[struct{ Offer struct{ ID string } }](t, h.expect(201, x.a, "POST", "/workspaces/"+x.wsA.ID+"/ownership-offers", map[string]any{"userId": ada.id})).Offer.ID
+
 	// A's segment, which routes take by key; its key, name and member are as secret as the flag.
 	h.expect(201, x.a, "POST", "/workspaces/"+x.wsA.ID+"/segments", map[string]any{
 		"key": secretSegment, "name": "Acme secret audience", "members": []string{"acme-secret-member"}})
@@ -87,14 +94,14 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	forbidden := []string{tokenID, "acme-secret-token", tokRes.Plaintext, changeID, "route-test", secretSegment, "Acme secret audience", "acme-secret-member", secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, endpointID, deliveryID, hook.Secret, "acme-secret.example", x.devA, x.wsA.Name, "alice key", keyID, inviteID, x.expID(), "someone@example.com", x.sdkKeyA[:12]}
+	forbidden := []string{offerID, tokenID, "acme-secret-token", tokRes.Plaintext, changeID, "route-test", secretSegment, "Acme secret audience", "acme-secret-member", secretFlag, "acme-secret-exp", x.a.email, x.a.id, x.wsA.ID, endpointID, deliveryID, hook.Secret, "acme-secret.example", x.devA, x.wsA.Name, "alice key", keyID, inviteID, x.expID(), "someone@example.com", x.sdkKeyA[:12]}
 	fill := func(path string) string {
 		key := secretFlag
 		if strings.Contains(path, "/experiments/") {
 			key = "acme-secret-exp"
 		}
 		return strings.NewReplacer("{envId}", x.devA, "{wsId}", x.wsA.ID, "{userId}", x.a.id,
-			"{inviteId}", inviteID, "{keyId}", keyID, "{segKey}", secretSegment, "{changeId}", changeID, "{tokenId}", tokenID, "{endpointId}", endpointID, "{deliveryId}", deliveryID, "{key}", key).Replace(path)
+			"{inviteId}", inviteID, "{keyId}", keyID, "{segKey}", secretSegment, "{changeId}", changeID, "{tokenId}", tokenID, "{offerId}", offerID, "{endpointId}", endpointID, "{deliveryId}", deliveryID, "{key}", key).Replace(path)
 	}
 	assertNoLeak := func(label string, body []byte) {
 		t.Helper()
@@ -122,8 +129,8 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 				if rt.Scope != server.ScopeWorkspace {
 					t.Errorf("%s: has {wsId} but is registered as %q", label, rt.Scope)
 				}
-			case "key", "userId", "inviteId", "keyId", "segKey", "changeId", "tokenId", "endpointId", "deliveryId":
-				if rt.Scope != server.ScopeEnv && rt.Scope != server.ScopeWorkspace {
+			case "key", "userId", "inviteId", "keyId", "segKey", "changeId", "tokenId", "endpointId", "deliveryId", "offerId":
+				if rt.Scope != server.ScopeEnv && rt.Scope != server.ScopeWorkspace && !(m[1] == "offerId" && rt.Scope == server.ScopeSelf) {
 					t.Errorf("%s: {%s} on a route that is not environment- or workspace-scoped", label, m[1])
 				}
 			default:
@@ -204,6 +211,13 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 			case "POST /workspaces":
 				// creates a workspace for the caller; nothing of A's comes back
 				assertNoLeak(label+" as B", h.expect(201, x.b, rt.Method, rt.Path, map[string]any{"name": "B's second"}))
+			case "POST /ownership-offers/{offerId}/accept", "POST /ownership-offers/{offerId}/decline":
+				// A's offer, addressed to someone else: B cannot see it, let alone take it
+				st, b := h.call(x.b, rt.Method, strings.ReplaceAll(rt.Path, "{offerId}", offerID), map[string]any{})
+				if st != 404 {
+					t.Errorf("%s as B: status %d, want 404", label, st)
+				}
+				assertNoLeak(label+" as B", b)
 			case "POST /invites/accept":
 				// A's open invite, by id, from someone it isn't addressed to; and a made-up token
 				for _, body := range []map[string]any{{"inviteId": inviteID}, {"token": "hinv_" + strings.Repeat("A", 43)}} {

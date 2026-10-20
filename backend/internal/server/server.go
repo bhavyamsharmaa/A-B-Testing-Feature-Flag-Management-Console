@@ -343,6 +343,12 @@ func New(d Deps) *Router {
 	workspace("GET /workspaces/{wsId}/invites", rbac.WorkspaceAdmin, ws.Invites)
 	workspace("POST /workspaces/{wsId}/invites", rbac.WorkspaceAdmin, ws.CreateInvite, perUser(ratelimit.ClassInvite))
 	workspace("DELETE /workspaces/{wsId}/invites/{inviteId}", rbac.WorkspaceAdmin, ws.RevokeInvite, perUser(ratelimit.ClassInvite))
+	// Ownership transfer: the owner offers to an admin, who accepts (session only: tokens are denied).
+	workspace("POST /workspaces/{wsId}/ownership-offers", rbac.WorkspaceOwner, ws.OfferOwnership, perUser(ratelimit.ClassInvite))
+	workspace("GET /workspaces/{wsId}/ownership-offers", rbac.WorkspaceOwner, ws.OpenOffer)
+	workspace("DELETE /workspaces/{wsId}/ownership-offers/{offerId}", rbac.WorkspaceOwner, ws.CancelOffer, perUser(ratelimit.ClassInvite))
+	self("POST /ownership-offers/{offerId}/accept", ws.AcceptOffer, perUser(ratelimit.ClassAccept))
+	self("POST /ownership-offers/{offerId}/decline", ws.DeclineOffer, perUser(ratelimit.ClassAccept))
 	workspace("POST /workspaces/{wsId}/invites/{inviteId}/resend", rbac.WorkspaceAdmin, ws.ResendInvite, perUser(ratelimit.ClassInvite))
 
 	// Webhooks (see docs/WEBHOOKS.md): admins and owners, session only (token-denied).

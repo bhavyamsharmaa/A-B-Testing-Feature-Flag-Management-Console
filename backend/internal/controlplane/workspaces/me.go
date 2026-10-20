@@ -73,6 +73,8 @@ type meResponse struct {
 	ActiveWorkspaceID string            `json:"activeWorkspaceId"`
 	Workspaces        []workspaceView   `json:"workspaces"`
 	Invites           []inviteForMeView `json:"invites"`
+	// OwnershipOffers are offers of ownership addressed to the caller (they are an admin there).
+	OwnershipOffers []offerView `json:"ownershipOffers"`
 }
 
 func viewOf(w Workspace) workspaceView {
@@ -92,7 +94,7 @@ func viewsOf(list []Workspace) []workspaceView {
 }
 
 func buildMe(user auth.User, list []Workspace, invites []PendingInvite) meResponse {
-	resp := meResponse{ID: user.ID, Email: user.Email, Workspaces: viewsOf(list), Invites: make([]inviteForMeView, 0, len(invites))}
+	resp := meResponse{ID: user.ID, Email: user.Email, Workspaces: viewsOf(list), Invites: make([]inviteForMeView, 0, len(invites)), OwnershipOffers: []offerView{}}
 	if len(list) > 0 {
 		resp.ActiveWorkspaceID = list[0].ID // load orders the most recently used first
 	}
@@ -130,8 +132,17 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	offers, err := h.svc.OffersFor(r.Context(), user.ID)
+	if err != nil {
+		httpx.WriteInternal(w, r, err)
+		return
+	}
+	resp := buildMe(user, list, invites)
+	for _, o := range offers {
+		resp.OwnershipOffers = append(resp.OwnershipOffers, offerOf(o))
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	httpx.WriteJSON(w, http.StatusOK, buildMe(user, list, invites))
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 // lower-cases a path id so it compares equal to the ids we store.

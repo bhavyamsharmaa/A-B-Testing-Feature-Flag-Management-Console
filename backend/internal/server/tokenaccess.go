@@ -57,6 +57,11 @@ var tokenAccess = map[string]bool{
 	"POST /workspaces/{wsId}/webhooks/{endpointId}/test":                           false,
 	"GET /workspaces/{wsId}/webhooks/{endpointId}/deliveries":                      false,
 	"POST /workspaces/{wsId}/webhooks/{endpointId}/deliveries/{deliveryId}/resend": false,
+	"POST /workspaces/{wsId}/ownership-offers":                                     false,
+	"GET /workspaces/{wsId}/ownership-offers":                                      false,
+	"DELETE /workspaces/{wsId}/ownership-offers/{offerId}":                         false,
+	"POST /ownership-offers/{offerId}/accept":                                      false,
+	"POST /ownership-offers/{offerId}/decline":                                     false,
 	"POST /internal/outbox/run":                                                    false,
 	"DELETE /workspaces/{wsId}/api-tokens/{tokenId}":                               false,
 

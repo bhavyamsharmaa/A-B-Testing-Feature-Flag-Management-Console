@@ -35,12 +35,25 @@ export interface PendingInvite {
   expiresAt: string
 }
 
+/** An offer of ownership addressed to the signed-in user (an admin of that workspace). */
+export interface OwnershipOffer {
+  id: string
+  workspaceId: string
+  workspaceName: string
+  fromEmail: string
+  toUserId: string
+  toEmail: string
+  createdAt: string
+  expiresAt: string
+}
+
 export interface Me {
   id: string
   email: string
   activeWorkspaceId: string
   workspaces: Workspace[]
   invites: PendingInvite[]
+  ownershipOffers: OwnershipOffer[]
 }
 
 export interface Member {

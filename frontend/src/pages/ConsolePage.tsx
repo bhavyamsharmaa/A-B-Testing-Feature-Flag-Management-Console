@@ -9,6 +9,7 @@ import { EnvSwitcher } from '../components/EnvSwitcher'
 import { FlagDrawer } from '../components/FlagDrawer'
 import { FlagTable } from '../components/FlagTable'
 import { OnboardingCard } from '../components/OnboardingCard'
+import { OwnershipOfferBanner } from '../components/OwnershipOfferBanner'
 import { PendingInvitesBanner } from '../components/PendingInvitesBanner'
 import { Notice, type NoticeState } from '../components/Notice'
 import { ProductionStrip } from '../components/ProductionStrip'
@@ -138,6 +139,7 @@ export default function ConsolePage() {
 
       <ConsoleCard prod={prod}>
         <PendingInvitesBanner />
+        <OwnershipOfferBanner />
         <AccessGate me={me} meLoading={meLoading} meError={meError} reloadMe={reloadMe} roleCount={roles.length} />
 
         {env && roles.length > 0 && (

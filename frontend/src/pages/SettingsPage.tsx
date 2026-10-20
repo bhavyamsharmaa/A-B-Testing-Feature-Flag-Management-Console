@@ -4,6 +4,7 @@ import { ConsoleCard } from '../components/ConsoleCard'
 import { ConsoleHeader } from '../components/ConsoleHeader'
 import { InvitesSection } from '../components/settings/InvitesSection'
 import { MembersSection } from '../components/settings/MembersSection'
+import { OwnershipSection } from '../components/settings/OwnershipSection'
 import { SdkKeysSection } from '../components/settings/SdkKeysSection'
 import { WorkspaceSection } from '../components/settings/WorkspaceSection'
 import { useConsoleEnv } from '../lib/useConsoleEnv'
@@ -29,6 +30,7 @@ export default function SettingsPage() {
             </div>
             <WorkspaceSection key={workspace.id + workspace.name} workspace={workspace} />
             <MembersSection workspace={workspace} reloadKey={membersKey} />
+            <OwnershipSection workspace={workspace} reloadKey={membersKey} />
             <InvitesSection workspace={workspace} onChanged={() => setMembersKey((k) => k + 1)} />
             <SdkKeysSection workspace={workspace} />
           </div>
