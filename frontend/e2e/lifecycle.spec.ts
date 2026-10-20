@@ -214,7 +214,7 @@ test('audit export for admins and a flag history with who, when and what', async
   await expect(first).toContainText('Configuration changed')
   await expect(first).toContainText(owner.email)
   await expect(first).toContainText('Person')
-  await expect(first.locator('time')).toHaveText(/\d.*(UTC|GMT|[A-Z]{2,5})/) // the zone is shown
+  await expect(first.locator('time')).toHaveText(/(UTC|GMT[+-]\d{1,2}(:\d{2})?|\b[A-Z]{3,5})$/) // the zone is shown (not just AM/PM)
   await expect(first.locator('time')).toHaveAttribute('title', /UTC$/)
   await expect(first).toContainText('Enabled')
   await expect(first).toContainText('Before')

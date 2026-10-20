@@ -927,3 +927,112 @@ UI += [
     ("webhooks ui: an invite email's status is not shown", 'frontend/src/components/settings/InvitesSection.tsx', 'Email: {EMAIL_MARK[inv.emailStatus].label.toLowerCase()}', '{EMAIL_MARK[inv.emailStatus].mark}', 'file:e2e/webhooks.spec.ts'),
     ("webhooks ui: a delivered delivery shows a resend button in the log", 'frontend/src/components/webhooks/DeliveryLog.tsx', '{canResend(d) && (', '{(true || canResend(d)) && (', 'file:e2e/webhooks.spec.ts'),
 ]
+
+
+# ---- lifecycle: ownership, deletion, export, history, LISTEN_ADDR, control (feature/lifecycle) -----------------------
+_WK = 'backend/internal/controlplane/workspaces/'
+_OWN = _WK + 'ownership.go'
+_DEL = _WK + 'deletion.go'
+_RB = 'backend/internal/controlplane/rbac/rbac.go'
+_PG = 'backend/internal/controlplane/wspurge/wspurge.go'
+_AL = 'backend/internal/controlplane/auditlog/'
+_EX = 'backend/internal/controlplane/experiments/handlers.go'
+_TA = 'backend/internal/server/tokenaccess.go'
+_SV = 'backend/internal/server/server.go'
+_M14 = 'backend/db/migrations/0014_lifecycle.sql'
+BACKEND += [
+    # ownership transfer
+    ("ownership: the member rows are not locked, so a concurrent demotion is not serialised", _WK + 'manage.go',
+     "WHERE workspace_id = $1::uuid FOR UPDATE`, workspaceID)", "WHERE workspace_id = $1::uuid`, workspaceID)", _I, 'ConcurrentDemotionDuringATransfer|AcceptanceChecks'),
+    ("ownership: acceptance does not check the target is still an admin", _OWN, "if role, member := roles[user.ID]; !member || role != rbac.WorkspaceAdmin {", "if role, member := roles[user.ID]; false && (!member || role != rbac.WorkspaceAdmin) {", _I, 'AcceptanceChecksEverythingAgain'),
+    ("ownership: acceptance does not check the offerer is still an owner", _OWN, "if roles[from] != rbac.WorkspaceOwner {", "if false && roles[from] != rbac.WorkspaceOwner {", _I, 'AcceptanceChecksEverythingAgain'),
+    ("ownership: an expired offer can be accepted", _OWN, "if !now.Before(expiresAt) {", "if false && !now.Before(expiresAt) {", _I, 'OfferExpires'),
+    ("ownership: an expired offer is never marked or audited", _OWN, "WHERE workspace_id = $1::uuid AND status = 'pending' AND expires_at <= $2", "WHERE workspace_id = $1::uuid AND status = 'pending' AND expires_at <= $2 - interval '100 years'", _I, 'OfferExpires'),
+    ("ownership: the owned-workspaces limit is not applied to the new owner", _OWN, "if err := quota.CheckOwnedWorkspaces(ctx, tx, user.ID); err != nil {", "if err := error(nil); err != nil {", _I, 'OwnedWorkspacesLimitApplies'),
+    ("ownership: workspaces.owner_id does not move with the ownership", _OWN, "`UPDATE workspaces SET owner_id = $2::uuid, is_personal = false WHERE id = $1::uuid`", "`UPDATE workspaces SET owner_id = (CASE WHEN $2::uuid IS NULL THEN $2::uuid ELSE owner_id END), is_personal = false WHERE id = $1::uuid`", _I, 'HandsAWorkspace'),
+    ("ownership: the previous owner stays an owner", _OWN, "`UPDATE workspace_members SET role = 'admin' WHERE workspace_id = $1::uuid AND user_id = $2::uuid`", "`UPDATE workspace_members SET role = 'owner' WHERE workspace_id = $1::uuid AND user_id = $2::uuid`", _I, 'HandsAWorkspace'),
+    ("ownership: an offer can be made to someone who is not an admin", _OWN, "case role != rbac.WorkspaceAdmin:", "case false:", _I, 'OnlyAnOwnerOffers'),
+    ("ownership: any admin can offer", _SV, 'workspace("POST /workspaces/{wsId}/ownership-offers", rbac.WorkspaceOwner,', 'workspace("POST /workspaces/{wsId}/ownership-offers", rbac.WorkspaceAdmin,', _I, 'OnlyAnOwnerOffers'),
+    ("ownership: a second open offer is not told apart from a server error", _OWN, 'if isUniqueViolation(err, "one_pending_offer_per_workspace") {', 'if false && isUniqueViolation(err, "one_pending_offer_per_workspace") {', _I, 'OnlyAnOwnerOffers'),
+    ("ownership: someone else can accept an offer", _OWN, "WHERE id = $1::uuid AND to_user_id = $2::uuid`, offerID, user.ID)", "WHERE id = $1::uuid AND ($2::uuid IS NOT NULL)`, offerID, user.ID)", _I, 'OnlyAnOwnerOffers|EveryRouteIsTenantScoped'),
+    ("ownership: API tokens may offer ownership", _TA, '"POST /workspaces/{wsId}/ownership-offers":', '"POST /workspaces/{wsId}/ownership-offers": true, //', _I + ' ./internal/server', 'OnlyAnOwnerOffers|ClassifiedForTokens|TokenAllowlistAcrossEveryRoute|OpenAPIToken'),
+    # soft delete
+    ("deletion: environment routes still resolve a workspace scheduled for deletion", _RB, "JOIN workspaces w ON w.id = e.workspace_id AND w.deleted_at IS NULL", "JOIN workspaces w ON w.id = e.workspace_id", _I, 'EveryWorkspaceRouteAnswers'),
+    ("deletion: workspace routes still resolve a workspace scheduled for deletion", _RB, "JOIN workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL", "JOIN workspaces w ON w.id = m.workspace_id", _I, 'EveryWorkspaceRouteAnswers'),
+    ("deletion: /me still lists a workspace scheduled for deletion", _WK + 'workspaces.go', "JOIN workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL\n\t\tWHERE m.user_id = $1::uuid\n\t\tORDER BY", "JOIN workspaces w ON w.id = m.workspace_id\n\t\tWHERE m.user_id = $1::uuid\n\t\tORDER BY", _I, 'WhatALiveWorkspaceDoes'),
+    ("deletion: a user whose only workspace is pending deletion gets a new personal one", _WK + 'workspaces.go', "	if anyMembership {", "	if false && anyMembership {", _I, 'ADeletedOnlyWorkspace'),
+    ("deletion: the SDK key of a deleted workspace still verifies", 'backend/internal/platform/apikey/middleware.go', "JOIN workspaces w ON w.id = k.workspace_id AND w.deleted_at IS NULL\n\t\tWHERE k.key_prefix", "JOIN workspaces w ON w.id = k.workspace_id\n\t\tWHERE k.key_prefix", _I, 'WhatALiveWorkspaceDoes'),
+    ("deletion: an open stream's re-check ignores a deleted workspace", 'backend/internal/platform/apikey/middleware.go', "SELECT k.revoked_at IS NULL AND w.deleted_at IS NULL", "SELECT k.revoked_at IS NULL", _I, 'BroadcastIsLost'),
+    ("deletion: this instance keeps the workspace's keys cached", _DEL, "		s.drop.InvalidateWorkspace(workspaceID) // this instance, at once", "		_ = s.drop // this instance, at once", _I, 'WhatALiveWorkspaceDoes'),
+    ("deletion: other instances are not told", _DEL, "if err := s.pub.Publish(ctx, events.RevocationChannel, []byte(apikey.WorkspaceMessage(workspaceID))); err != nil {", "if err := error(nil); err != nil {", _I, 'AnotherInstanceDrops'),
+    ("deletion: open streams of the workspace are not woken", 'backend/internal/platform/apikey/middleware.go', "		v.Invalidate(p) // wakes the streams", "		_ = p // wakes the streams", _I, 'WhatALiveWorkspaceDoes|AnotherInstanceDrops'),
+    ("deletion: the scheduler still claims a deleted workspace's changes", 'backend/internal/controlplane/scheduling/run.go', "			  AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = scheduled_changes.workspace_id AND w.deleted_at IS NOT NULL)\n			ORDER BY run_at, id\n			LIMIT $2", "			ORDER BY run_at, id\n			LIMIT $2", _I, 'WhatALiveWorkspaceDoes'),
+    ("deletion: the outbox still sends for a deleted workspace", 'backend/internal/controlplane/outbox/worker.go', "			  AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = outbox.workspace_id AND w.deleted_at IS NOT NULL)\n", "", _I, 'WhatALiveWorkspaceDoes'),
+    ("deletion: an invite to a deleted workspace can be accepted by link", _WK + 'manage.go', "WHERE token_hash = $1 AND accepted_at IS NULL AND revoked_at IS NULL\n				  AND EXISTS (SELECT 1 FROM workspaces w WHERE w.id = i.workspace_id AND w.deleted_at IS NULL) FOR UPDATE OF i`", "WHERE token_hash = $1 AND accepted_at IS NULL AND revoked_at IS NULL FOR UPDATE OF i`", _I, 'WhatALiveWorkspaceDoes'),
+    ("deletion: a token of a deleted workspace is still recorded as used", 'backend/internal/platform/apitoken/verifier.go', "			if !tok.WorkspaceGone {\n				v.touch(r.Context(), tok.ID)\n			}", "			if true {\n				v.touch(r.Context(), tok.ID)\n			}", _I, 'RestoringWithinTheGrace'),
+    ("deletion: the workspace name is not required", _DEL, "if strings.TrimSpace(confirmName) != name {", "if false && strings.TrimSpace(confirmName) != name {", _I, 'OnlyAnOwnerSchedules'),
+    ("deletion: any admin can delete", _SV, 'workspace("POST /workspaces/{wsId}/schedule-deletion", rbac.WorkspaceOwner,', 'workspace("POST /workspaces/{wsId}/schedule-deletion", rbac.WorkspaceAdmin,', _I, 'OnlyAnOwnerSchedules'),
+    ("deletion: API tokens may delete a workspace", _TA, '"POST /workspaces/{wsId}/schedule-deletion":', '"POST /workspaces/{wsId}/schedule-deletion": true, //', _I + ' ./internal/server', 'OnlyAnOwnerSchedules|ClassifiedForTokens|TokenAllowlistAcrossEveryRoute|OpenAPIToken'),
+    ("deletion: restore works after the grace period", _DEL, "if graceOver { // judged by the database clock", "if false && graceOver { // judged by the database clock", _I, 'RestoreIsRefusedOnceTheGraceIsOver'),
+    ("deletion: any member can restore", _DEL, "JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $2::uuid AND m.role = 'owner'\n			WHERE w.id = $1::uuid", "JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $2::uuid\n			WHERE w.id = $1::uuid", _I, 'RestoringWithinTheGrace'),
+    ("deletion: a workspace pending deletion stops counting toward the owned limit", 'backend/internal/controlplane/quota/quota.go', "`SELECT count(*) FROM workspaces WHERE owner_id = $1::uuid`", "`SELECT count(*) FROM workspaces WHERE owner_id = $1::uuid AND deleted_at IS NULL`", _I, 'PendingDeletionStillCounts'),
+    # purge
+    ("purge: only the first batch of each table is deleted", _PG, "			if n < p.cfg.BatchSize {\n				break\n			}", "			if true {\n				break\n			}", _I, 'PurgeLeavesNoRows|CrashedPurge'),
+    ("purge: a workspace is purged before its grace period is over", _PG, "WHERE deleted_at IS NOT NULL AND purge_after <= now() ORDER BY purge_after, id LIMIT $1", "WHERE deleted_at IS NOT NULL AND purge_after <= now() + interval '100 years' ORDER BY purge_after, id LIMIT $1", _I, 'PurgeLeavesNoRows'),
+    ("purge: no tombstone is kept", _PG, "INSERT INTO workspace_tombstones (workspace_id, requested_by, requested_at, summary)", "INSERT INTO workspace_tombstones (workspace_id, requested_by, requested_at, summary) SELECT $1::uuid, $2::uuid, $3, $4::jsonb WHERE false; INSERT INTO workspace_tombstones (workspace_id, requested_by, requested_at, summary) SELECT $1::uuid, $2::uuid, $3, $4::jsonb WHERE false AND", _I, 'PurgeLeavesNoRows'),
+    ("purge: the audit log is not purged", _PG, 'var Batched = []string{"events", "outbox", "segment_members", "audit_logs"}', 'var Batched = []string{"events", "outbox", "segment_members"}', _I, 'PurgeLeavesNoRows|EveryTableWithAWorkspaceID'),
+    ("purge: no final audit entry", _PG, 'Action: "workspace.purged", ResourceType: "workspace"', 'Action: "workspace.purge_skipped", ResourceType: "workspace"', _I, 'PurgeLeavesNoRows'),
+    ("purge: a restored workspace is still purged (the due check is skipped)", _PG, "			if ok, err := p.due(ctx, id); err != nil || !ok {\n				return false, err // restored (or already gone): stop touching it\n			}", "			if ok, err := p.due(ctx, id); err != nil || !ok && false {\n				return false, err // restored (or already gone): stop touching it\n			}", _I, 'RestoreCannotRace|PurgeLeavesNoRows'),
+    ("purge: the audit log can be deleted at any time", _M14, "WHERE w.id = OLD.workspace_id AND w.deleted_at IS NOT NULL AND w.purge_after <= now()", "WHERE w.id = OLD.workspace_id", _I, 'AuditLogStaysAppendOnly'),
+    ("purge: the audit log can be updated during a due purge", _M14, "IF TG_OP = 'DELETE' AND TG_LEVEL = 'ROW' AND EXISTS (", "IF TG_LEVEL = 'ROW' AND EXISTS (", _I, 'AuditLogStaysAppendOnly'),
+    ("purge: the endpoint accepts any secret", 'backend/internal/controlplane/wspurge/internal.go', "if r.Header.Get(\"Origin\") != \"\" || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {", "if r.Header.Get(\"Origin\") != \"\" || subtle.ConstantTimeCompare(got[:], want[:]) != 1 && false {", _I, 'PurgeEndpointNeeds'),
+    # export
+    ("export: editors may export", _SV, 'env("GET /environments/{envId}/audit-logs/export", rbac.Min(rbac.Admin),', 'env("GET /environments/{envId}/audit-logs/export", rbac.Min(rbac.Editor),', _I, 'OnlyAdminsAndOwnersExport'),
+    ("export: API tokens may export", _TA, '"GET /environments/{envId}/audit-logs/export":', '"GET /environments/{envId}/audit-logs/export": true, //', _I + ' ./internal/server', 'OnlyAdminsAndOwnersExport|ClassifiedForTokens|TokenAllowlistAcrossEveryRoute|OpenAPIToken'),
+    ("export: formulas are not neutralised", _AL + 'export.go', "		return \"'\" + s\n", "		return s\n", _I, 'CSVInjection'),
+    ("export: tab, carriage return and newline are not treated as formula starts", _AL + 'export.go', "case '=', '+', '-', '@', '\\t', '\\r', '\\n':", "case '=', '+', '-', '@':", _I, 'CSVInjection'),
+    ("export: the 90 day cap is not enforced", _AL + 'export.go', "if p.To.Sub(p.From) > MaxExportRange {", "if false && p.To.Sub(p.From) > MaxExportRange {", _I, 'ExportFormatsHeaders'),
+    ("export: the row cap is not enforced", _AL + 'export.go', "if rows > MaxExportRows {", "if false && rows > MaxExportRows {", _I, 'ExportRowCap'),
+    ("export: the export is not audited", _AL + 'export.go', 'Action: "audit.export", ResourceType: "audit_log"', 'Action: "audit.noop", ResourceType: "audit_log"', _I, 'ExportFormatsHeaders'),
+    ("export: other environments' entries are included", _AL + 'export.go', "workspace_id = $1::uuid AND (environment_id = $2::uuid OR environment_id IS NULL) AND created_at >= $3 AND created_at < $4`", "workspace_id = $1::uuid AND ($2::uuid IS NOT NULL) AND created_at >= $3 AND created_at < $4`", _I, 'ExportOnlyHolds'),
+    ("export: other workspaces' entries are included", _AL + 'export.go', "workspace_id = $1::uuid AND (environment_id = $2::uuid OR environment_id IS NULL) AND created_at >= $3 AND created_at < $4`", "($1::uuid IS NOT NULL) AND (environment_id = $2::uuid OR environment_id IS NULL) AND created_at >= $3 AND created_at < $4`", _I, 'ExportOnlyHolds'),
+    ("export: batches repeat the last row", _AL + 'export.go', "AND id > $5", "AND id >= $5", _I, 'ExportRowCap'),
+    ("export: secrets under secret-looking keys are exported", _AL + 'export.go', "			if secretKeys[strings.ToLower(strings.ReplaceAll(k, \"-\", \"\"))] {", "			if false && secretKeys[strings.ToLower(strings.ReplaceAll(k, \"-\", \"\"))] {", _I, 'NoSecretLeaves'),
+    ("export: secret-shaped strings are exported", _AL + 'export.go', "		s = re.ReplaceAllString(s, redacted)", "		s = re.ReplaceAllString(s, \"${0}\")", _I, 'NoSecretLeaves|HistoryNeverShows'),
+    ("export: not rate limited", _SV, 'al.Export, perUser(ratelimit.ClassAuditExport))', 'al.Export)', _I, 'ExportIsRateLimited'),
+    # history
+    ("history: other environments' entries appear", _AL + 'history.go', "WHERE workspace_id = $1::uuid AND (environment_id = $2::uuid OR environment_id IS NULL)\n		  AND resource_type = 'flag'", "WHERE workspace_id = $1::uuid AND ($2::uuid IS NOT NULL)\n		  AND resource_type = 'flag'", _I, 'AFlagsHistory'),
+    ("history: other flags' entries appear", _AL + 'history.go', "AND resource_type = 'flag' AND resource_id = $3 AND action", "AND resource_type = 'flag' AND ($3::text IS NOT NULL) AND action", _I, 'AFlagsHistory|HistoryIsPaged'),
+    ("history: an API token's edit is shown as a person's", _AL + 'history.go', '	case actorType == "api_token":', '	case false && actorType == "api_token":', _I, 'AFlagsHistory'),
+    ("history: a scheduled change is shown as a person's", _AL + 'history.go', '	case after != nil && after["via"] == "schedule":', '	case false:', _I, 'AFlagsHistory'),
+    ("history: unchanged fields are listed as changes", _AL + 'history.go', '		if strings.Join(b, "\\n") == strings.Join(a, "\\n") {', '		if false && strings.Join(b, "\\n") == strings.Join(a, "\\n") {', _I, 'AFlagsHistory'),
+    ("history: never more than the first page", _AL + 'history.go', "	if len(list) > limit {", "	if false && len(list) > limit {", _I, 'HistoryIsPaged'),
+    ("history: only admins can read it", _SV, 'env("GET /environments/{envId}/flags/{key}/history", rbac.Min(rbac.Viewer),', 'env("GET /environments/{envId}/flags/{key}/history", rbac.Min(rbac.Admin),', _I, 'AFlagsHistory'),
+    # LISTEN_ADDR
+    ("listen: LISTEN_ADDR does not win over PORT", 'backend/internal/platform/config/config.go', "	if v := strings.TrimSpace(listenAddr); v != \"\" {", "	if v := strings.TrimSpace(listenAddr); v != \"\" && port == \"\" {", './internal/platform/config', 'ListenAddressPrecedence'),
+    ("listen: PORT is ignored", 'backend/internal/platform/config/config.go', "	if v := strings.TrimSpace(port); v != \"\" {", "	if v := strings.TrimSpace(port); v != \"\" && false {", './internal/platform/config', 'ListenAddress|LoadReads'),
+    ("listen: a port of 0 or above 65535 is accepted", 'backend/internal/platform/config/config.go', "if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != p {", "if err != nil {", './internal/platform/config', 'WrongValue'),
+    ("listen: a bad LISTEN_ADDR falls back to PORT", 'backend/internal/platform/config/config.go', "		host, p, err := net.SplitHostPort(v)\n		if err != nil {\n			return \"\", fmt.Errorf(\"LISTEN_ADDR must be host:port", "		host, p, err := net.SplitHostPort(v)\n		if err != nil && port != \"\" {\n			return ResolveListenAddr(\"\", port)\n		}\n		if err != nil {\n			return \"\", fmt.Errorf(\"LISTEN_ADDR must be host:port", './internal/platform/config', 'WrongValue'),
+    ("listen: any host text is accepted", 'backend/internal/platform/config/config.go', "if strings.Contains(h, \"%\") || !hostRE.MatchString(h) || len(h) > 253 {", "if false {", './internal/platform/config', 'WrongValue'),
+    # control
+    ("control: two controls are allowed", _M14, "CREATE UNIQUE INDEX one_control_per_experiment ON experiment_variations (experiment_id) WHERE is_control;", "CREATE INDEX one_control_per_experiment ON experiment_variations (experiment_id) WHERE is_control;", _I, 'AtMostOneControl'),
+    ("control: the backfill picks the wrong variation", _M14, "(v.ord - 1)::int, v.ord = 1", "(v.ord - 1)::int, v.ord = 2", _I, 'Migration0014Backfills'),
+    ("control: a control that is not the flag's variation is accepted", _EX, "		if !known {\n			return validationError{fmt.Errorf(\"controlVariationId %q is not a variation of flag %s\"", "		if false && !known {\n			return validationError{fmt.Errorf(\"controlVariationId %q is not a variation of flag %s\"", _I, 'FirstVariationIsTheControl'),
+    ("control: the default control is the last variation", _EX, "req.ControlVariationID = flagVariations[0].ID", "req.ControlVariationID = flagVariations[len(flagVariations)-1].ID", _I, 'FirstVariationIsTheControl'),
+    ("control: it can change after exposures", _EX, ["		if has, err := frozen(); err != nil || has {", "		if has, err := frozen(); err != nil || has {"], ["		if has, err := frozen(); err != nil || has && false {", "		if has, err := frozen(); err != nil || has && false {"], _I, 'ControlIsChosenBefore'),
+    ("control: results ignore the designated control", 'backend/internal/controlplane/results/query.go', "	x.Variations = controlFirst(x.Variations, control)", "	_ = control", _I, 'DesignatedControl'),
+    ("control: viewers can change it", _SV, 'env("PATCH /environments/{envId}/experiments/{key}", rbac.Min(rbac.Editor),', 'env("PATCH /environments/{envId}/experiments/{key}", rbac.Min(rbac.Viewer),', _I, 'ControlIsChosenBefore'),
+    ("control: API tokens can change it", _TA, '"PATCH /environments/{envId}/experiments/{key}":', '"PATCH /environments/{envId}/experiments/{key}": true, //', _I + ' ./internal/server', 'ControlIsChosenBefore|ClassifiedForTokens|TokenAllowlistAcrossEveryRoute|OpenAPIToken'),
+    ("control: moving the control puts it nowhere", 'backend/internal/controlplane/results/query.go', "	out = append(out, control)\n	for _, id := range ids {\n		if id != control {", "	out = append(out, ids[0])\n	for _, id := range ids {\n		if id != ids[0] {", './internal/controlplane/results', 'ControlFirst'),
+]
+
+UI += [
+    ("lifecycle ui: members who are not owners see the ownership controls", 'frontend/src/components/settings/OwnershipSection.tsx', "  if (workspace.role !== 'owner') return null", "  if (false) return null", 'file:e2e/lifecycle.spec.ts'),
+    ("lifecycle ui: deleting needs no exact name", 'frontend/src/components/settings/DeleteWorkspaceSection.tsx', "disabled={busy || typed.trim() !== workspace.name}", "disabled={busy}", 'file:e2e/lifecycle.spec.ts'),
+    ("lifecycle ui: non-owners see the delete zone", 'frontend/src/components/settings/DeleteWorkspaceSection.tsx', "  if (workspace.role !== 'owner') return null", "  if (false) return null", 'file:e2e/lifecycle.spec.ts'),
+    ("lifecycle ui: scheduled-for-deletion workspaces are not listed for restore", 'frontend/src/components/WorkspaceSwitcher.tsx', "{pendingDeletion.length > 0 && (\n            <div className=\"border-t border-white/10 py-1\" data-testid=\"pending-deletion\">", "{false && (\n            <div className=\"border-t border-white/10 py-1\" data-testid=\"pending-deletion\">", 'file:e2e/lifecycle.spec.ts'),
+    ("lifecycle ui: viewers are offered the audit export", 'frontend/src/pages/AuditPage.tsx', "{canManageWorkspace(workspaceRole) && <AuditExport env={env} />}", "{<AuditExport env={env} />}", 'file:e2e/lifecycle.spec.ts'),
+    ("lifecycle ui: the history shows times without their zone", 'frontend/src/components/FlagHistory.tsx', "second: '2-digit', timeZoneName: 'short' }", "second: '2-digit' }", 'file:e2e/lifecycle.spec.ts'),
+    ("lifecycle ui: the control can be changed after exposures", 'frontend/src/components/ExperimentCard.tsx', "{canEdit && counts && counts.exposureTotal === 0 && experiment.variations.length > 1 && (", "{canEdit && counts && experiment.variations.length > 1 && (", 'file:e2e/lifecycle.spec.ts'),
+    ("lifecycle ui: the ownership offer banner does not say what accepting does", 'frontend/src/components/OwnershipOfferBanner.tsx', "If you accept, you become its owner and they become an admin.", "If you accept, it is yours.", 'file:e2e/lifecycle.spec.ts'),
+]
