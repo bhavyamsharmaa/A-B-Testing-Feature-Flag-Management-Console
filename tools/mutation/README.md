@@ -5,9 +5,14 @@ tests that should notice, and expects a failure (then puts the file back). Resul
 full run are in [RESULTS.md](RESULTS.md).
 
 **Run it:** `python3 tools/mutation/run.py all --results tools/mutation/RESULTS.md`
-(Python 3, no packages). The full run of 229 mutations took about 13 minutes on a laptop with warm
+(Python 3, no packages). The full run of 312 mutations took about 25 minutes on a laptop with warm
 Go and Playwright caches (a cold first run takes longer, since each backend mutation recompiles).
-`--only <word>` runs just matching entries.
+`--only <word>` runs just matching entries. UI entries re-render the docs screenshots; restore them with
+`git checkout -- docs/screenshots` afterwards.
+
+Mutants that turned out to be equivalent (no observable behaviour change) are dropped rather than counted, e.g. the
+restored-workspace due check, the promote/demote order inside the transfer transaction, and single layers of the
+admin-offer / admin-delete checks, which are mutated together instead.
 
 Needs, all on this machine (anything else is refused):
 
