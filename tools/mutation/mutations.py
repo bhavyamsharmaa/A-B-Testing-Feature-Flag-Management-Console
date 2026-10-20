@@ -1013,6 +1013,7 @@ BACKEND += [
     ("history: unchanged fields are listed as changes", _AL + 'history.go', '		if strings.Join(b, "\\n") == strings.Join(a, "\\n") {', '		if false && strings.Join(b, "\\n") == strings.Join(a, "\\n") {', _I, 'AFlagsHistory'),
     ("history: never more than the first page", _AL + 'history.go', "	if len(list) > limit {", "	if false && len(list) > limit {", _I, 'HistoryIsPaged'),
     ("history: only admins can read it", _SV, 'env("GET /environments/{envId}/flags/{key}/history", rbac.Min(rbac.Viewer),', 'env("GET /environments/{envId}/flags/{key}/history", rbac.Min(rbac.Admin),', _I, 'AFlagsHistory'),
+    ("history: an edit with no changes is listed with a null list of changes (the drawer crashed)", _AL + 'history.go', "	out := []historyChange{} // never null in the JSON", "	var out []historyChange", _I, 'EditWithNoChanges'),
     # LISTEN_ADDR
     ("listen: LISTEN_ADDR does not win over PORT", 'backend/internal/platform/config/config.go', "	if v := strings.TrimSpace(listenAddr); v != \"\" {", "	if v := strings.TrimSpace(listenAddr); v != \"\" && port == \"\" {", './internal/platform/config', 'ListenAddressPrecedence'),
     ("listen: PORT is ignored", 'backend/internal/platform/config/config.go', "	if v := strings.TrimSpace(port); v != \"\" {", "	if v := strings.TrimSpace(port); v != \"\" && false {", './internal/platform/config', 'ListenAddress|LoadReads'),

@@ -189,7 +189,7 @@ func onOff(v any) string {
 // diffConfig lists the fields that differ between two configuration snapshots, each as readable lines.
 func diffConfig(before, after map[string]any) []historyChange {
 	type field struct{ key, label string }
-	var out []historyChange
+	out := []historyChange{} // never null in the JSON
 	for _, f := range []field{{"enabled", "Enabled"}, {"fallthroughVariationId", "Default variation"}, {"rollout", "Rollout"}, {"targetingRules", "Targeting rules"}} {
 		b, a := render(f.key, before[f.key]), render(f.key, after[f.key])
 		if strings.Join(b, "\n") == strings.Join(a, "\n") {

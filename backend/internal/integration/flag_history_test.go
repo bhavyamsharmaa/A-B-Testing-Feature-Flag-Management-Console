@@ -252,3 +252,17 @@ func fmtInt(n int64) string {
 	}
 	return string(b[i:])
 }
+
+// An edit that changes nothing (saving the same values) is listed, with an empty list of changes, never null:
+// a null made the console's drawer crash.
+func TestAnEditWithNoChangesHasAnEmptyListNotNull(t *testing.T) {
+	w := newHookWorld(t)
+	w.h.expect(200, w.a, "PATCH", "/environments/"+w.devA+"/flags/"+secretFlag, map[string]any{"enabled": true}) // already enabled by the setup
+	raw := w.h.expect(200, w.a, "GET", "/environments/"+w.devA+"/flags/"+secretFlag+"/history?limit=1", nil)
+	if !bytes.Contains(raw, []byte(`"changes":[]`)) || bytes.Contains(raw, []byte(`"changes":null`)) {
+		t.Errorf("%s", raw)
+	}
+	if e := w.history(t, w.a, w.devA, secretFlag, "?limit=1").Entries[0]; e.Summary != "Saved with no change" {
+		t.Errorf("summary %q", e.Summary)
+	}
+}

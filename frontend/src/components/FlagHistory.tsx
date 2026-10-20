@@ -89,9 +89,9 @@ export function FlagHistory({ env, flagKey }: { env: string; flagKey: string }) 
                   {e.actor.label}
                   {e.actor.onBehalfOf && <span> · on behalf of {e.actor.onBehalfOf}</span>}
                 </p>
-                {e.changes.length > 0 && (
+                {(e.changes ?? []).length > 0 && (
                   <dl className="mt-2 space-y-1.5">
-                    {e.changes.map((c) => (
+                    {(e.changes ?? []).map((c) => (
                       <div key={c.field}>
                         <dt className="text-xs text-zinc-500">{c.label}</dt>
                         <dd className="grid gap-1 sm:grid-cols-2">
