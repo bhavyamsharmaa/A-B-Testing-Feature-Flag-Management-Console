@@ -275,8 +275,8 @@ test('experiment control: chosen at creation, shown, changeable until the first 
   expect(frozen.status()).toBe(409)
   expect(await frozen.text()).toContain('CONTROL_FROZEN')
   await a.page.reload()
+  await expect(a.page.getByRole('article', { name: 'Experiment colour-test' })).toContainText('The control is fixed: this experiment has exposures') // (shown once the counts have loaded)
   await expect(a.page.getByRole('article', { name: 'Experiment colour-test' }).getByTestId('control-picker')).toHaveCount(0)
-  await expect(a.page.getByRole('article', { name: 'Experiment colour-test' })).toContainText('The control is fixed: this experiment has exposures')
 
   // the results name the designated control, in text
   await a.page.getByTestId('open-results').click()
