@@ -37,7 +37,7 @@ func TestEveryDevelopmentOnlySettingIsRefusedInProduction(t *testing.T) {
 		role Role
 	}{
 		"insecure local webhooks":  {func(c *Config) { c.WebhookAllowInsecureLocal = "true" }, "WEBHOOK_ALLOW_INSECURE_LOCAL", RoleOutbox},
-		"insecure smtp":            {func(c *Config) { c.MailAllowInsecure = "true" }, "unencrypted", RoleOutbox},
+		"insecure smtp":            {func(c *Config) { c.MailAllowInsecure = "true" }, "without encryption", RoleOutbox},
 		"smtp tls none":            {func(c *Config) { c.SMTPTLS = "none" }, "without encryption", RoleOutbox},
 		"a mail sink directory":    {func(c *Config) { c.MailSinkDir = "/tmp/mail" }, "MAIL_SINK_DIR", RoleOutbox},
 		"rate limits off":          {func(c *Config) { c.RateLimitDisabled = "true" }, "RATE_LIMIT_DISABLED", RoleAPI},
