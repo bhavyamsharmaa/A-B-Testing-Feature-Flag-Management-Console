@@ -188,7 +188,7 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 			// Machine-to-machine: no user, no tenant. With no secret configured (as here) it does not
 			// exist, whoever asks; it never answers a browser. Its own tests (scheduler_test.go) cover
 			// the secret, the rate limit and the logs.
-			if label != "POST /internal/scheduler/run" && label != "POST /internal/outbox/run" {
+			if label != "POST /internal/scheduler/run" && label != "POST /internal/outbox/run" && label != "POST /internal/workspaces/purge" {
 				t.Errorf("%s: an internal route this test does not know", label)
 			}
 			if st, body := h.call(x.a, rt.Method, rt.Path, map[string]any{}); st != 404 || bytes.Contains(body, []byte("scheduler")) || bytes.Contains(body, []byte("outbox")) {
@@ -218,6 +218,15 @@ func TestEveryRouteIsTenantScoped(t *testing.T) {
 					t.Errorf("%s as B: status %d, want 404", label, st)
 				}
 				assertNoLeak(label+" as B", b)
+			case "POST /workspaces/restore":
+				// A's (live, or deleted) workspace named by someone who is not its owner: nothing to restore, nothing revealed
+				for _, id := range []string{x.wsA.ID, "11111111-1111-4111-8111-111111111111"} {
+					st, b := h.call(x.b, rt.Method, rt.Path, map[string]any{"workspaceId": id})
+					if st != 404 {
+						t.Errorf("%s as B for %s: status %d, want 404", label, id, st)
+					}
+					assertNoLeak(label+" as B", b)
+				}
 			case "POST /invites/accept":
 				// A's open invite, by id, from someone it isn't addressed to; and a made-up token
 				for _, body := range []map[string]any{{"inviteId": inviteID}, {"token": "hinv_" + strings.Repeat("A", 43)}} {
