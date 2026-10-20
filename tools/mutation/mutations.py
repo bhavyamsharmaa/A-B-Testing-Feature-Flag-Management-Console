@@ -940,6 +940,7 @@ _EX = 'backend/internal/controlplane/experiments/handlers.go'
 _TA = 'backend/internal/server/tokenaccess.go'
 _SV = 'backend/internal/server/server.go'
 _M14 = 'backend/db/migrations/0014_lifecycle.sql'
+_M15 = 'backend/db/migrations/0015_audit_gate.sql'
 BACKEND += [
     # ownership transfer
     ("ownership: the member rows are not locked, so a concurrent demotion is not serialised", _WK + 'manage.go',
