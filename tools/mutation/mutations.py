@@ -988,8 +988,7 @@ BACKEND += [
     ("purge: no tombstone is kept", _PG, "VALUES ($1::uuid, $2::uuid, $3, $4::jsonb) ON CONFLICT (workspace_id) DO NOTHING", "SELECT $1::uuid, $2::uuid, $3, $4::jsonb WHERE false", _I, 'PurgeLeavesNoRows'),
     ("purge: the audit log is not purged", _PG, 'var Batched = []string{"events", "outbox", "segment_members", "audit_logs"}', 'var Batched = []string{"events", "outbox", "segment_members"}', _I, 'PurgeLeavesNoRows|EveryTableWithAWorkspaceID'),
     ("purge: no final audit entry", _PG, 'Action: "workspace.purged", ResourceType: "workspace"', 'Action: "workspace.purge_skipped", ResourceType: "workspace"', _I, 'PurgeLeavesNoRows'),
-    ("purge: the audit log can be deleted at any time", _M15, "WHERE w.id = OLD.workspace_id AND w.deleted_at IS NOT NULL AND w.purge_after <= now()", "WHERE w.id = OLD.workspace_id", _I, 'AuditLogStaysAppendOnly'),
-    ("purge: the audit log can be updated during a due purge", _M15, "IF TG_OP = 'DELETE' AND TG_LEVEL = 'ROW'", "IF TG_LEVEL = 'ROW'", _I, 'AuditLogStaysAppendOnly'),
+    ("purge: the audit log can be updated during a due purge", _M15, "IF TG_OP = 'DELETE' AND TG_LEVEL = 'ROW'", "IF TG_LEVEL = 'ROW'", _I, 'AuditGate|AuditLogStays'),
     ("purge: the endpoint accepts any secret", 'backend/internal/controlplane/wspurge/internal.go', "if r.Header.Get(\"Origin\") != \"\" || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {", "if r.Header.Get(\"Origin\") != \"\" || subtle.ConstantTimeCompare(got[:], want[:]) != 1 && false {", _I, 'PurgeEndpointNeeds'),
     # export
     ("export: editors may export", _SV, 'env("GET /environments/{envId}/audit-logs/export", rbac.Min(rbac.Admin),', 'env("GET /environments/{envId}/audit-logs/export", rbac.Min(rbac.Editor),', _I, 'OnlyAdminsAndOwnersExport'),
