@@ -144,6 +144,7 @@ func TestRoutesAreOnlyMountedThroughTheRegistry(t *testing.T) {
 	allowed := map[string]int{
 		filepath.Join(root, "internal", "server", "server.go"): 1,  // Router.add: the one place
 		filepath.Join(root, "cmd", "devauth", "main.go"):       -1, // local-only dev tool, its own mux
+		filepath.Join(root, "cmd", "api", "pprof.go"):          5,  // Go's profiling pages on a separate listener that config.ResolvePprofAddr limits to loopback
 	}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
