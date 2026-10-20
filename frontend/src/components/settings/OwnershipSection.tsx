@@ -4,7 +4,7 @@ import { cancelOffer, getOpenOffer, offerOwnership } from '../../api/ownership'
 import { listMembers } from '../../api/workspaces'
 import type { Member, OwnershipOffer, Workspace } from '../../types'
 
-const stamp = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZoneName: 'short' })
+const stamp = (iso: string) => new Date(iso).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })
 
 /** Hand the workspace to an admin. Owners only. Shows the open offer and lets the owner cancel it. */
 export function OwnershipSection({ workspace, reloadKey }: { workspace: Workspace; reloadKey: number }) {

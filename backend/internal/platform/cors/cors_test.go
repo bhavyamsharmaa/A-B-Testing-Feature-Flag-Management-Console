@@ -20,6 +20,9 @@ func TestAllowedOriginSeesRetryAfterAndOthersGetNothing(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(got, "Retry-After") {
 		t.Errorf("Retry-After is not exposed to the browser: %q", got)
 	}
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(got, "Content-Disposition") { // the console reads the file name of an export from it
+		t.Errorf("Content-Disposition is not exposed to the browser: %q", got)
+	}
 	if rec.Header().Get("Access-Control-Allow-Origin") != "https://console.example" {
 		t.Error("the allowed origin is not echoed")
 	}

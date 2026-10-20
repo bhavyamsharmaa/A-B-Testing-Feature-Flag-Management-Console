@@ -118,8 +118,9 @@ test('deleting a workspace: type the name, it vanishes at once, an owner restore
 
   // switch to the doomed workspace and delete it
   await a.page.getByTestId('workspace-switcher').getByRole('button').first().click()
-  await a.page.getByRole('menuitemradio', { name: new RegExp(doomed.name) }).click()
-  await a.page.goto('/console/settings')
+  await a.page.getByRole('menuitemradio', { name: new RegExp(doomed.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) }).click()
+  await expect(a.page.getByTestId('workspace-name')).toHaveText(doomed.name)
+  await a.page.getByRole('navigation', { name: 'Console sections' }).getByRole('link', { name: 'Settings' }).click()
   const zone = a.page.getByTestId('delete-workspace')
   await expect(zone).toContainText('14 days')
   await zone.getByRole('button', { name: 'Delete workspace…' }).click()
@@ -197,7 +198,7 @@ test('audit export for admins and a flag history with who, when and what', async
   await expect(a.page.getByRole('status')).toContainText('Downloaded')
   // the export is in the audit log
   await a.page.getByRole('button', { name: 'Refresh' }).first().click()
-  await expect(a.page.getByText('Audit log exported').first()).toBeVisible()
+  await expect(a.page.getByRole('table').getByText('Audit log exported').first()).toBeVisible()
 
   // a viewer has no export
   await v.page.goto('/console/audit')

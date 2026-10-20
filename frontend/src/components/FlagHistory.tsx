@@ -9,7 +9,7 @@ const ACTOR_MARK: Record<FlagHistoryEntry['actor']['type'], string> = { user: 'P
 function when(iso: string) {
   const d = new Date(iso)
   return {
-    local: d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium', timeZoneName: 'short' }),
+    local: d.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short' }),
     utc: iso.replace('T', ' ').replace(/\.\d+Z$|Z$/, ' UTC'),
   }
 }
