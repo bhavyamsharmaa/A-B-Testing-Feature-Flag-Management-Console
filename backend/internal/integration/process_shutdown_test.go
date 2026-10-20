@@ -133,3 +133,43 @@ func TestTheRealBinaryShutsDownOnSIGTERMInsideItsBudget(t *testing.T) {
 	}
 	t.Logf("SIGTERM to exit: %v (budget 5s, in-flight insert 700ms)", took.Round(time.Millisecond))
 }
+
+// The real binary in production mode with development settings: it exits 1, names the settings, and has not connected
+// to anything (no "connected to Redis" line, no listener).
+func TestTheRealBinaryRefusesDevelopmentSettingsInProductionBeforeConnectingToAnything(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "api")
+	if out, err := exec.Command("go", "build", "-o", bin, "../../cmd/api").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := ln.Addr().String()
+	ln.Close()
+	cmd := exec.Command(bin)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HELIOS_ENV=production", "SUPABASE_URL=http://127.0.0.1:1", "REDIS_URL=redis://127.0.0.1:1",
+		"RATE_LIMIT_DISABLED=true", "WEBHOOK_ALLOW_INSECURE_LOCAL=true", "EMAIL_CONFIRMATION=off", "LISTEN_ADDR=" + addr}
+	out, err := cmd.CombinedOutput()
+	ee, ok := err.(*exec.ExitError)
+	if !ok || ee.ExitCode() != 1 {
+		t.Fatalf("exit: %v\n%s", err, out)
+	}
+	text := string(out)
+	for _, want := range []string{"refusing to start in production mode", "RATE_LIMIT_DISABLED", "WEBHOOK_ALLOW_INSECURE_LOCAL", "EMAIL_CONFIRMATION=off", "EXPOSURE_TOKEN_KEY", "DATABASE_URL"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the log does not name %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "connected to Redis") || strings.Contains(text, "listening on") {
+		t.Errorf("it got as far as connecting or listening:\n%s", text)
+	}
+	if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
+		c.Close()
+		t.Error("something is listening")
+	}
+	// a typo in HELIOS_ENV is an error, not development
+	cmd = exec.Command(bin)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HELIOS_ENV=prodution"}
+	out, err = cmd.CombinedOutput()
+	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() == 0 || !strings.Contains(string(out), "HELIOS_ENV must be") {
+		t.Errorf("a mistyped HELIOS_ENV: %v\n%s", err, out)
+	}
+}

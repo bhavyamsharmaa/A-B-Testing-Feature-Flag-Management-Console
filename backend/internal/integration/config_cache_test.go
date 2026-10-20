@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"helios/backend/internal/controlplane/scheduling"
+	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/ratelimit"
 	"helios/backend/internal/platform/redisx"
@@ -496,5 +497,26 @@ func TestAColdInstanceHitByAHundredRequestsReadsTheDatabaseOnce(t *testing.T) {
 	wg.Wait()
 	if n := w.r2.ConfigCache.Stats().Loads - before; n != 1 {
 		t.Errorf("%d database loads for 100 concurrent cold requests, want 1", n)
+	}
+}
+
+// The loader the cache fills itself from reads nothing for a workspace that is scheduled for deletion, so the cache
+// cannot be refilled from a deleted workspace even by a request that was already past the key check.
+func TestTheSnapshotLoaderReadsNothingForAWorkspaceScheduledForDeletion(t *testing.T) {
+	w := newDelWorld(t)
+	w.h.expect(200, w.a, "PATCH", "/environments/"+w.devA+"/flags/"+secretFlag, map[string]any{"enabled": true})
+	snap, err := evaluation.LoadSnapshot(context.Background(), w.h.pool, w.wsA.ID, w.devA)
+	if err != nil || len(snap.Configs) != 1 || snap.Versions[secretFlag] == 0 {
+		t.Fatalf("before: %+v %v", snap, err)
+	}
+	w.schedule(t, 200)
+	snap, err = evaluation.LoadSnapshot(context.Background(), w.h.pool, w.wsA.ID, w.devA)
+	if err != nil || len(snap.Configs) != 0 || len(snap.Experiments) != 0 {
+		t.Errorf("a deleted workspace's configuration was loaded: %+v %v", snap, err)
+	}
+	// another workspace's environment is not readable through this workspace's id
+	other, err := evaluation.LoadSnapshot(context.Background(), w.h.pool, w.wsB.ID, w.devA)
+	if err != nil || len(other.Configs) != 0 {
+		t.Errorf("environment of workspace A read under workspace B's id: %+v %v", other, err)
 	}
 }
