@@ -44,19 +44,27 @@ var sourceOrTest = []*regexp.Regexp{
 }
 
 // secretText finds credentials inside files. A Go binary is scanned too: nothing in it should look like one.
+//
+// binary marks the patterns that are safe to apply to a compiled program, where adjacent string constants run together
+// ("whsec_" followed by the next string in the table looks like a secret and is not). The others apply to text files.
 var secretText = []struct {
-	why string
-	re  *regexp.Regexp
+	why    string
+	re     *regexp.Regexp
+	binary bool
 }{
-	{"a private key", regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)},
-	{"a database URL with a password", regexp.MustCompile(`postgres(ql)?://[^:@/\s"']+:[^@\s"']{3,}@`)},
-	{"a Redis URL with a password", regexp.MustCompile(`rediss?://[^:@/\s"']*:[^@\s"']{3,}@`)},
-	{"an AWS access key", regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
-	{"a Helios SDK or API key", regexp.MustCompile(`hlt_(sdk|server|tok)_[A-Za-z0-9_]{16,}`)},
-	{"a webhook signing secret", regexp.MustCompile(`whsec_[A-Za-z0-9+/=_-]{16,}`)},
-	{"a JSON web token", regexp.MustCompile(`eyJ[A-Za-z0-9_-]{15,}\.eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}`)},
-	{"a live payment key", regexp.MustCompile(`sk_live_[A-Za-z0-9]{16,}`)},
+	{"a private key", regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`), true},
+	{"a database URL with a password", regexp.MustCompile(`postgres(ql)?://[^:@/\s"']+:[^@\s"']{3,}@`), true},
+	{"a Redis URL with a password", regexp.MustCompile(`rediss?://[^:@/\s"']*:[^@\s"']{3,}@`), true},
+	{"an AWS access key", regexp.MustCompile(`AKIA[0-9A-Z]{16}`), true},
+	{"a Helios SDK or API key", regexp.MustCompile(`hlt_(sdk|server|tok)_[A-Za-z0-9_]{16,}`), false},
+	{"a webhook signing secret", regexp.MustCompile(`whsec_[A-Za-z0-9+/=_-]{16,}`), false},
+	{"a JSON web token", regexp.MustCompile(`eyJ[A-Za-z0-9_-]{15,}\.eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}`), true},
+	{"a live payment key", regexp.MustCompile(`sk_live_[A-Za-z0-9]{16,}`), true},
 }
+
+// knownPlaceholders are credentials that are published on purpose and protect nothing: the development default for
+// DATABASE_URL (a local database, and the API refuses to start in production mode while it is the one in use).
+var knownPlaceholders = []string{"postgres://helios:helios@localhost:5432/helios"}
 
 // File is one entry of the image.
 type File struct {
@@ -104,8 +112,16 @@ func Check(files []File) (findings []Finding, total int64) {
 		if f.Mode.Perm()&0o002 != 0 {
 			findings = append(findings, Finding{p, "writable by everyone"})
 		}
+		body := f.Body
+		for _, k := range knownPlaceholders {
+			body = bytes.ReplaceAll(body, []byte(k), nil)
+		}
+		isBinary := bytes.HasPrefix(body, []byte("\x7fELF"))
 		for _, s := range secretText {
-			if s.re.Match(f.Body) {
+			if isBinary && !s.binary {
+				continue
+			}
+			if s.re.Match(body) {
 				findings = append(findings, Finding{p, "contains " + s.why})
 			}
 		}

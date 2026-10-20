@@ -76,7 +76,7 @@ func TestEverythingThatMustNotShipIsFound(t *testing.T) {
 		"a webhook secret":            {"app/w.txt", "whsec_0123456789abcdef0123456789", 0o644, "webhook"},
 		"a JWT":                       {"app/j.txt", "eyJhbGciOiJFUzI1NiJ9AAAAAAAAAA.eyJzdWIiOiIxMjM0NTY3ODkwAAAAA.signaturesignature", 0o644, "web token"},
 		"an AWS key":                  {"app/a.txt", "AKIAABCDEFGHIJKLMNOP", 0o644, "AWS"},
-		"the same secret in a binary": {"app/bin/api", "\x00\x00postgres://u:pass1234@h/db\x00", 0o755, "database URL"},
+		"the same secret in a binary": {"app/bin/api", "\x7fELF\x00\x00postgres://u:pass1234@h/db\x00", 0o755, "database URL"},
 	} {
 		root := cleanImage(t)
 		write(t, root, c.rel, c.body, c.mode)
@@ -192,5 +192,21 @@ func TestTheDockerignoreKeepsSecretsTestsAndTestDataOutOfTheBuildContext(t *test
 		if !found {
 			t.Errorf(".dockerignore lacks %q", want)
 		}
+	}
+}
+
+// Two things a compiled program legitimately contains must not raise an alarm, and nothing else is excused.
+func TestAPublishedDevelopmentDefaultAndStringTableNeighboursAreNotSecrets(t *testing.T) {
+	root := cleanImage(t)
+	write(t, root, "app/bin/api", "\x7fELF\x00postgres://helios:helios@localhost:5432/helios?sslmode=disable\x00whsec_dbnamesslkeysslsnikrbspnpreferPGHOST\x00", 0o755)
+	if f := findings(t, root); len(f) != 0 {
+		t.Errorf("false alarm: %+v", f)
+	}
+	// the same text in a plain file is still a finding (it is not a program), and a different password is one anywhere
+	write(t, root, "app/x.txt", "whsec_dbnamesslkeysslsnikrbspnpreferPGHOST", 0o644)
+	write(t, root, "app/bin/outbox", "\x7fELF\x00postgres://helios:another@localhost:5432/helios\x00", 0o755)
+	got := findings(t, root)
+	if len(got) != 2 {
+		t.Errorf("findings: %+v", got)
 	}
 }
