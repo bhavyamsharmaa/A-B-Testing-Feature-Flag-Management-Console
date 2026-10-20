@@ -7,7 +7,7 @@ full run are in [RESULTS.md](RESULTS.md).
 **Run it:** `python3 tools/mutation/run.py all --results tools/mutation/RESULTS.md`
 (Python 3, no packages). The full run of 312 mutations took about 25 minutes on a laptop with warm
 Go and Playwright caches (a cold first run takes longer, since each backend mutation recompiles).
-`--only <word>` runs just matching entries. UI entries re-render the docs screenshots; restore them with
+`--parallel 4` runs the backend entries in four git worktrees at once (outside the repository, see the docstring of `run.py`), which cuts the backend part of the run roughly by three; the browser entries stay serial because they share one stack and the screenshots. `--shard i/k` runs one slice. `--only <word>` runs just matching entries. UI entries re-render the docs screenshots; restore them with
 `git checkout -- docs/screenshots` afterwards.
 
 Mutants that turned out to be equivalent (no observable behaviour change) are dropped rather than counted, e.g. the
@@ -38,3 +38,8 @@ refuses the same destinations); letting the dialer resolve the name again instea
 `Control` hook refuses the address actually connected to, and has its own mutation); accepting a recipient with a line
 break (`net/mail` rejects it too); and an old-token email sent after a resend (either the resend retires the queued
 row or the send-time token check stops it; the combined removal is a mutation and is caught).
+
+
+**Equivalent mutants dropped in ops readiness.** Holding a /track turn until the response is written instead of releasing it right after the insert
+(identical for every test; it only differs for a client that reads its answer slowly). Mutations whose test lives in a
+separate module (`tools/imagecheck`) are run from that module's directory (`../tools/<name>` in the package field).
