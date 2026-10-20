@@ -11,10 +11,17 @@ caught: it proves nothing. Exit status is 1 if any mutation survived or was brok
     python3 tools/mutation/run.py ui                 # browser mutations (needs the local stack, see README)
     python3 tools/mutation/run.py all --results tools/mutation/RESULTS.md
     python3 tools/mutation/run.py backend --only quota --only regex     # entries whose label contains a word
+    python3 tools/mutation/run.py backend --parallel 4               # the backend entries in 4 worktrees at once (see below)
+    python3 tools/mutation/run.py backend --shard 2/4                # one slice of the backend entries (what --parallel runs)
 
 Environment (local throwaway services only; both are refused if they are not on this machine):
     HELIOS_TEST_DATABASE_URL   e.g. postgres://helios@127.0.0.1:55432/postgres?sslmode=disable
     HELIOS_TEST_REDIS_URL      e.g. redis://127.0.0.1:56379/0   (optional; the Redis test is skipped without it)
+
+PARALLEL RUNS. A mutation edits a file in place, so two cannot run in one working tree. `--parallel K` makes K git
+worktrees of the committed HEAD in ${HELIOS_LOCAL_DIR:-~/helios-local}/mutation-worktrees (outside the repository), runs one slice of
+the backend entries in each (`--shard i/K`), and merges the answers; each test run makes its own database, so they do not collide.
+The browser (`ui`, `frontend`) entries share one running stack and one set of screenshots and stay serial.
 
 It refuses to start if a file it would edit has uncommitted changes, so a crash can never lose work
 (and `git checkout -- <file>` always restores).
@@ -78,13 +85,15 @@ def classify(proc, output):
     return 'SURVIVED', 'all tests passed: this protection is not tested'
 
 
-def run_backend(only):
+def run_backend(only, shard=None):
     env = dict(os.environ)
     local_only('HELIOS_TEST_DATABASE_URL', env.get('HELIOS_TEST_DATABASE_URL'), True)
     local_only('HELIOS_TEST_REDIS_URL', env.get('HELIOS_TEST_REDIS_URL'), False)
     rows = []
-    for label, path, old, new, pkgs, pattern in mutations.BACKEND:
+    for index, (label, path, old, new, pkgs, pattern) in enumerate(mutations.BACKEND):
         if only and not any(o in label for o in only):
+            continue
+        if shard and index % shard[1] != shard[0] - 1:
             continue
         def check():
             # packages of the backend module run from backend/; '../tools/<name>' is a separate module (its own go.mod),
@@ -124,12 +133,55 @@ def run_playwright(kind, entries, only, extra):
     return rows
 
 
+def run_parallel(k, only):
+    """The backend entries, k at a time: one git worktree of HEAD per slice, each running `run.py backend --shard i/k`."""
+    base = os.path.join(os.environ.get('HELIOS_LOCAL_DIR', os.path.expanduser('~/helios-local')), 'mutation-worktrees')
+    if os.path.abspath(base).startswith(ROOT + os.sep):
+        sys.exit('the worktree directory is inside the repository; refusing')
+    os.makedirs(base, exist_ok=True)
+    procs = []
+    for i in range(1, k + 1):
+        wt = os.path.join(base, f'wt{i}')
+        subprocess.run(['git', 'worktree', 'remove', '--force', wt], cwd=ROOT, capture_output=True)
+        subprocess.run(['git', 'worktree', 'prune'], cwd=ROOT, capture_output=True)
+        r = subprocess.run(['git', 'worktree', 'add', '--detach', wt, 'HEAD'], cwd=ROOT, capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit('git worktree add failed: ' + r.stderr)
+        cmd = [sys.executable, os.path.join(wt, 'tools', 'mutation', 'run.py'), 'backend', '--shard', f'{i}/{k}']
+        for o in only:
+            cmd += ['--only', o]
+        procs.append((wt, subprocess.Popen(cmd, cwd=wt, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=dict(os.environ))))
+    rows = []
+    for wt, p in procs:
+        out, _ = p.communicate()
+        for line in out.splitlines():
+            parts = [x.strip() for x in line.split(' | ')]
+            if len(parts) >= 4 and parts[0] in ('backend',):
+                rows.append((parts[0], parts[1], parts[2], ' | '.join(parts[3:])))
+            elif line.strip() and 'mutations caught' not in line and not line.startswith('refusing'):
+                print(line, flush=True)
+            elif line.startswith('refusing'):
+                print(wt + ': ' + line, flush=True)
+        subprocess.run(['git', 'worktree', 'remove', '--force', wt], cwd=ROOT, capture_output=True)
+    order = {m[0]: i for i, m in enumerate(mutations.BACKEND)}
+    rows.sort(key=lambda r: order.get(r[1], 1 << 30))
+    for r in rows:
+        print(' | '.join(r), flush=True)
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('which', choices=['backend', 'frontend', 'ui', 'all'])
     ap.add_argument('--only', action='append', default=[], help='run entries whose label contains this text (repeatable)')
     ap.add_argument('--results', help='write a markdown summary to this file')
+    ap.add_argument('--shard', help='i/k: run only every k-th backend entry, starting at the i-th (1-based)')
+    ap.add_argument('--parallel', type=int, default=0, help='run the backend entries in this many git worktrees at once')
     a = ap.parse_args()
+    shard = None
+    if a.shard:
+        i, k = a.shard.split('/')
+        shard = (int(i), int(k))
 
     files = set()
     if a.which in ('backend', 'all'):
@@ -145,7 +197,7 @@ def main():
     rows = []
     started = datetime.datetime.now(datetime.timezone.utc)
     if a.which in ('backend', 'all'):
-        rows += run_backend(a.only)
+        rows += run_parallel(a.parallel, a.only) if a.parallel > 1 else run_backend(a.only, shard)
     if a.which in ('frontend', 'all'):
         rows += run_playwright('frontend', mutations.FRONTEND, a.only, lambda e: [e[4] if len(e) > 4 else 'e2e/unit/segments.spec.tsx'])
     if a.which in ('ui', 'all'):
@@ -153,18 +205,20 @@ def main():
 
     bad = [r for r in rows if r[2] != 'CAUGHT']
     caught = len(rows) - len(bad)
-    print(f'\n{caught} of {len(rows)} mutations caught')
+    took = datetime.datetime.now(datetime.timezone.utc) - started
+    print(f'\n{caught} of {len(rows)} mutations caught in {int(took.total_seconds() // 60)} min {int(took.total_seconds() % 60)} s')
     if a.results:
-        write_results(a.results, rows, caught, started)
+        write_results(a.results, rows, caught, started, took, a.parallel)
     sys.exit(1 if bad else 0)
 
 
-def write_results(path, rows, caught, started):
+def write_results(path, rows, caught, started, took=None, parallel=0):
     commit = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     lines = [
         '# Mutation check results', '',
         f'Run on {started:%Y-%m-%d} at commit `{commit}` with `python3 tools/mutation/run.py all`.',
-        f'**{caught} of {len(rows)} mutations caught.** Each row breaks one protection; a test must fail.', '',
+        f'**{caught} of {len(rows)} mutations caught.** Each row breaks one protection; a test must fail.',
+        (f'The run took {int(took.total_seconds() // 60)} min {int(took.total_seconds() % 60)} s' + (f' with the backend entries spread over {parallel} worktrees.' if parallel > 1 else '.')) if took else '', '',
         '| Kind | Mutation | Result | First failing test |', '|---|---|---|---|',
     ]
     for kind, label, result, detail in rows:

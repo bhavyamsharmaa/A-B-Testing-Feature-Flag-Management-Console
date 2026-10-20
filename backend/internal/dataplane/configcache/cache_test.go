@@ -42,6 +42,7 @@ type fakeDB struct {
 	err      error
 	delay    time.Duration
 	gate     chan struct{} // if set, loads wait for it after reading
+	first    chan struct{} // the gate the first gated load captured
 }
 
 func (d *fakeDB) load(ctx context.Context, ws, env string) (*evaluation.Snapshot, error) {
@@ -53,6 +54,9 @@ func (d *fakeDB) load(ctx context.Context, ws, env string) (*evaluation.Snapshot
 		read[k] = v
 	}
 	gate, delay := d.gate, d.delay
+	if gate != nil && d.first == nil {
+		d.first = gate
+	}
 	d.mu.Unlock()
 	if gate != nil {
 		<-gate // the read happened; the result is delivered later
@@ -205,6 +209,30 @@ func TestALoadStartedBeforeAnInvalidationIsNeverStored(t *testing.T) {
 	}
 	if got := version(t, c, "f"); got != 2 {
 		t.Errorf("the cache holds version %d, the stale load won", got)
+	}
+}
+
+// Without a version in the message there is no floor; the stale mark alone must keep the old read out of the cache.
+func TestALoadStartedBeforeAnInvalidationWithNoVersionIsNeverStored(t *testing.T) {
+	db := &fakeDB{versions: map[string]int64{"f": 1}, gate: make(chan struct{})}
+	c := newCache(db, time.Hour, newClock())
+	done := make(chan struct{})
+	go func() { _, _ = c.Snapshot(context.Background(), "w", "e"); close(done) }()
+	for db.loads.Load() < 1 {
+		time.Sleep(time.Millisecond)
+	}
+	db.set("f", 2)
+	c.Invalidate("w", "e", "", 0) // e.g. an experiment started: no flag version to compare
+	db.mu.Lock()
+	db.gate = nil // later loads are not held
+	db.mu.Unlock()
+	// (the first load's gate was captured when it began) let it finish with its old read
+	c.mu.Lock()
+	c.mu.Unlock()
+	close(firstGate(db))
+	<-done
+	if got := version(t, c, "f"); got != 2 {
+		t.Errorf("the cache serves version %d: a read from before the invalidation was stored", got)
 	}
 }
 
@@ -473,3 +501,6 @@ func TestConcurrentReadersWritersAndInvalidationsStayConsistent(t *testing.T) {
 	}
 	_ = fmt.Sprint(db.loads.Load())
 }
+
+// firstGate: the gate the first load is waiting on (kept by the test through the fake database).
+func firstGate(db *fakeDB) chan struct{} { return db.first }

@@ -509,14 +509,14 @@ func TestTheSnapshotLoaderReadsNothingForAWorkspaceScheduledForDeletion(t *testi
 	if err != nil || len(snap.Configs) != 1 || snap.Versions[secretFlag] == 0 {
 		t.Fatalf("before: %+v %v", snap, err)
 	}
+	// another workspace's environment is not readable through this workspace's id (checked while A is alive)
+	other, err := evaluation.LoadSnapshot(context.Background(), w.h.pool, w.wsB.ID, w.devA)
+	if err != nil || len(other.Configs) != 0 {
+		t.Errorf("environment of workspace A read under workspace B's id: %+v %v", other, err)
+	}
 	w.schedule(t, 200)
 	snap, err = evaluation.LoadSnapshot(context.Background(), w.h.pool, w.wsA.ID, w.devA)
 	if err != nil || len(snap.Configs) != 0 || len(snap.Experiments) != 0 {
 		t.Errorf("a deleted workspace's configuration was loaded: %+v %v", snap, err)
-	}
-	// another workspace's environment is not readable through this workspace's id
-	other, err := evaluation.LoadSnapshot(context.Background(), w.h.pool, w.wsB.ID, w.devA)
-	if err != nil || len(other.Configs) != 0 {
-		t.Errorf("environment of workspace A read under workspace B's id: %+v %v", other, err)
 	}
 }
