@@ -65,7 +65,7 @@ func TestOutboxEndpointNeedsTheSecret(t *testing.T) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"claimed": true, "reclaimed": true, "delivered": true, "retrying": true, "dead": true, "leaseLost": true, "purged": true}
+	want := map[string]bool{"claimed": true, "reclaimed": true, "delivered": true, "retrying": true, "dead": true, "leaseLost": true, "purged": true, "released": true}
 	for k, v := range m {
 		if !want[k] {
 			t.Errorf("unexpected field %q in the answer", k)

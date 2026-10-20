@@ -26,6 +26,7 @@ import "sort"
 var tokenAccess = map[string]bool{
 	// Not control-plane routes: a token has no meaning here.
 	"GET /healthz":                 false,
+	"GET /readyz":                  false,
 	"POST /evaluate":               false,
 	"POST /track":                  false,
 	"GET /sdk/stream":              false,

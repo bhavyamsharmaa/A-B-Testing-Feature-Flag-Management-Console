@@ -7,10 +7,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log"
+	"net"
 	"net/http"
-	"os"
 	"os/signal"
 	"runtime"
 	"strings"
@@ -26,6 +25,8 @@ import (
 	"helios/backend/internal/platform/db"
 	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/exposuretoken"
+	"helios/backend/internal/platform/graceful"
+	"helios/backend/internal/platform/lifecycle"
 	"helios/backend/internal/platform/ratelimit"
 	"helios/backend/internal/platform/redisx"
 	"helios/backend/internal/server"
@@ -75,6 +76,7 @@ func main() {
 	// degrade (fan-out silently no-ops; /sdk/stream returns 503).
 	var publisher events.Publisher = events.NoopPublisher{}
 	var subscriber events.Subscriber = events.NoopSubscriber{}
+	var redisPing func(context.Context) error // nil: Redis is not in use, /readyz reports "not_configured"
 	if cfg.RedisURL == "" {
 		log.Printf("WARNING: REDIS_URL not set; flag-change propagation disabled (evaluation is unaffected)")
 	} else if redisClient, err := redisx.Connect(appCtx, cfg.RedisURL); err != nil {
@@ -83,6 +85,7 @@ func main() {
 		log.Printf("connected to Redis")
 		publisher = redisx.Publisher{Client: redisClient}
 		subscriber = redisx.Subscriber{Client: redisClient}
+		redisPing = func(ctx context.Context) error { return redisClient.Ping(ctx).Err() }
 		defer redisClient.Close()
 	}
 
@@ -206,7 +209,16 @@ func main() {
 		log.Fatal(err)
 	}
 
+	shutdown, err := config.ParseShutdown(cfg.ShutdownTimeout, cfg.ShutdownReadyDelay)
+	if err != nil {
+		log.Fatal(err)
+	}
+	life := lifecycle.New()
+
 	router := server.New(server.Deps{
+		Lifecycle:             life,
+		RedisPing:             redisPing,
+		ReadyRequireRedis:     strings.EqualFold(strings.TrimSpace(cfg.ReadyRequireRedis), "true"),
 		TrackMaxWriters:       trackSettings.MaxWriters,
 		TrackMaxWait:          trackSettings.MaxWait,
 		ConfigCacheTTL:        cacheSettings.TTL,
@@ -234,26 +246,26 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// No WriteTimeout on purpose: /sdk/stream responses last as long as the connection does. Streams end on shutdown,
+	// on revocation, or when the client or the platform's own request limit closes them (docs/DEPLOYMENT.md).
 	srv := &http.Server{
 		Addr:              listenAddr,
 		Handler:           cors.Middleware(cfg.CORSAllowedOrigins, router.Mux),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
-
-	go func() {
-		log.Printf("helios backend listening on %s", listenAddr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("server error: %v", err)
-		}
-	}()
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("graceful shutdown failed: %v", err)
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		log.Fatalf("cannot listen on %s: %v", listenAddr, err)
 	}
+	log.Printf("helios backend listening on %s (on SIGTERM: not ready at once, streams told to reconnect, requests drained, exit within %s)", listenAddr, shutdown.Timeout)
+
+	// SIGTERM is what every platform sends first; SIGINT is a person at a terminal.
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+	if err := graceful.Serve(sigCtx, srv, ln, graceful.Options{Life: life, Timeout: shutdown.Timeout, ReadyDelay: shutdown.ReadyDelay}); err != nil {
+		log.Printf("shutdown: %v", err)
+	}
+	log.Printf("helios backend stopped")
 }

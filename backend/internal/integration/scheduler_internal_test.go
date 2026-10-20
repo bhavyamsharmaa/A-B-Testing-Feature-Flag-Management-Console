@@ -80,7 +80,7 @@ func TestInternalEndpointNeedsTheSecret(t *testing.T) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"missed": true, "claimed": true, "reclaimed": true, "succeeded": true, "failed": true, "retried": true, "skipped": true, "cancelled": true}
+	want := map[string]bool{"missed": true, "claimed": true, "reclaimed": true, "succeeded": true, "failed": true, "retried": true, "skipped": true, "cancelled": true, "released": true}
 	for k, v := range m {
 		if !want[k] {
 			t.Errorf("unexpected field %q in the answer", k)

@@ -21,6 +21,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"helios/backend/internal/controlplane/scheduling"
@@ -39,7 +40,7 @@ func main() {
 		log.Fatalf("scheduler: -grace must be between 1m and 24h")
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
@@ -63,8 +64,8 @@ func main() {
 	}
 
 	st, err := scheduling.NewRunner(pool, pub, nil, scheduling.Config{Grace: *grace, MaxRows: *maxRows}).Run(ctx)
-	log.Printf("scheduler: claimed %d (reclaimed %d), succeeded %d, failed %d, retrying %d, missed %d, skipped %d",
-		st.Claimed, st.Reclaimed, st.Succeeded, st.Failed, st.Retried, st.Missed, st.Skipped)
+	log.Printf("scheduler: claimed %d (reclaimed %d), succeeded %d, failed %d, retrying %d, missed %d, skipped %d, released %d",
+		st.Claimed, st.Reclaimed, st.Succeeded, st.Failed, st.Retried, st.Missed, st.Skipped, st.Released)
 	if err != nil {
 		log.Fatalf("scheduler: stopped early: %v", err) // the pgx error carries no flag or rule content
 	}

@@ -30,20 +30,38 @@ paths:
   /healthz:
     get:
       tags: [system]
-      summary: Liveness probe — 200 only if the database is reachable
+      summary: Liveness probe — 200 whenever the process can answer (checks no dependency)
+      description: >
+        "The process is alive." It deliberately does not touch the database or Redis, so a dependency outage never makes
+        a platform restart healthy processes. Use /readyz to decide whether to send traffic.
       security: []
       responses:
         "200":
-          description: Service is up and the database answered a ping
+          description: The process is up
           content:
             text/plain:
               schema: { type: string, example: ok }
-        "503":
-          description: Database unreachable
+  /readyz:
+    get:
+      tags: [system]
+      summary: Readiness probe — database and Redis reachable, and not shutting down
+      description: >
+        200 when this instance should receive traffic: the database answered within a second and the process is not
+        shutting down. A Redis that is configured but down gives status "degraded" (still 200: evaluation does not need
+        it) unless READY_REQUIRE_REDIS=true. During a graceful shutdown it answers 503 "shutting_down" from the first
+        moment. The body holds fixed words only: no addresses, versions or error texts.
+      security: []
+      responses:
+        "200":
+          description: Ready (or degraded)
           content:
-            text/plain:
-              schema: { type: string, example: db unreachable }
-
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+        "503":
+          description: Not ready (database unreachable, or shutting down)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
   /me:
     get:
       tags: [control-plane]
@@ -1878,6 +1896,16 @@ components:
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   schemas:
+    Readiness:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok, degraded, unavailable, shutting_down] }
+        checks:
+          type: object
+          properties:
+            database: { type: string, enum: [ok, unavailable] }
+            redis: { type: string, enum: [ok, unavailable, not_configured] }
     Error:
       type: object
       required: [code, message]

@@ -153,6 +153,7 @@ type Stats struct {
 	Dead      int `json:"dead"`
 	LeaseLost int `json:"leaseLost"` // delivered or failed, but another worker had taken the row over
 	Purged    int `json:"purged"`
+	Released  int `json:"released"` // claimed, then given back unsent because the run was asked to stop
 }
 
 // Worker claims and delivers. It holds no state between calls.
@@ -185,14 +186,30 @@ func (w *Worker) Run(ctx context.Context) (Stats, error) {
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, w.cfg.Concurrency)
+		var unstarted []Delivery // claimed, but we were asked to stop before sending them
 		for _, d := range claimed {
-			sem <- struct{}{}
+			// Wait for a free sender, but not past a request to stop.
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				unstarted = append(unstarted, d)
+				continue
+			}
+			if ctx.Err() != nil {
+				<-sem
+				unstarted = append(unstarted, d)
+				continue
+			}
 			wg.Add(1)
 			go func(d Delivery) {
 				defer wg.Done()
 				defer func() { <-sem }()
 				var one Stats
-				if err := w.Deliver(ctx, d, &one); err != nil {
+				// A delivery that has begun is finished and recorded even if we are asked to stop: it is bounded by
+				// the sender's own timeout, and abandoning it would send the message AND leave the row to be sent again.
+				dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deliverTimeout)
+				defer cancel()
+				if err := w.Deliver(dctx, d, &one); err != nil {
 					log.Printf("outbox: delivery %s: %v", d.DeliveryID, err) // ids only: never a payload, secret or URL
 				}
 				mu.Lock()
@@ -208,7 +225,11 @@ func (w *Worker) Run(ctx context.Context) (Stats, error) {
 			}(d)
 		}
 		wg.Wait()
+		w.release(unstarted, &st)
 		handled += len(claimed)
+	}
+	if ctx.Err() != nil {
+		return st, nil // asked to stop: nothing is held, and the housekeeping can wait for the next run
 	}
 	if n, err := Purge(ctx, w.pool, w.cfg.Now()); err != nil {
 		log.Printf("outbox: purge: %v", err)
@@ -216,6 +237,32 @@ func (w *Worker) Run(ctx context.Context) (Stats, error) {
 		st.Purged = int(n)
 	}
 	return st, nil
+}
+
+// deliverTimeout bounds one delivery once it has begun (the sender has its own, shorter, timeout).
+const deliverTimeout = 30 * time.Second
+
+// release gives claimed rows back unsent: pending again, lease cleared, the attempt that never happened taken off. It
+// only touches rows still delivering under THIS worker's lease. Its own short context, because the caller's is done.
+func (w *Worker) release(rows []Delivery, st *Stats) {
+	if len(rows) == 0 {
+		return
+	}
+	ids := make([]string, len(rows))
+	for i, d := range rows {
+		ids[i] = d.ID
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	tag, err := w.pool.Exec(ctx, `
+		UPDATE outbox
+		SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL, attempts = GREATEST(attempts - 1, 0), updated_at = $3
+		WHERE id = ANY($1::uuid[]) AND status = 'delivering' AND lease_owner = $2`, ids, w.cfg.WorkerID, w.cfg.Now())
+	if err != nil {
+		log.Printf("outbox: could not release %d claimed row(s); their leases will expire: %v", len(ids), err)
+		return
+	}
+	st.Released += int(tag.RowsAffected())
 }
 
 func (w *Worker) kinds() []string {

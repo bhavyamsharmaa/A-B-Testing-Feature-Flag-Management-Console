@@ -41,6 +41,7 @@ import (
 	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/exposuretoken"
 	"helios/backend/internal/platform/health"
+	"helios/backend/internal/platform/lifecycle"
 	"helios/backend/internal/platform/mail"
 	"helios/backend/internal/platform/netguard"
 	"helios/backend/internal/platform/ratelimit"
@@ -107,6 +108,11 @@ type Deps struct {
 	// want the pre-gate behaviour; the binary sets 500 ms).
 	TrackMaxWriters int
 	TrackMaxWait    time.Duration
+	// Lifecycle is the shutdown signal (nil: never shutting down). RedisPing checks Redis for /readyz (nil: Redis is
+	// not configured); ReadyRequireRedis makes a Redis that is down mean "not ready" instead of "degraded".
+	Lifecycle         *lifecycle.State
+	RedisPing         func(context.Context) error
+	ReadyRequireRedis bool
 }
 
 // Scope says how a route is tied to a tenant.
@@ -357,7 +363,10 @@ func New(d Deps) *Router {
 		sdkAlso(pattern, h, nil, classes...)
 	}
 
-	public("GET /healthz", health.Handler(d.Pool))
+	// Two probes, kept apart: /healthz is "the process is alive" and checks nothing else; /readyz is "send traffic here"
+	// (database, Redis, and not shutting down). See internal/platform/health.
+	public("GET /healthz", health.Live())
+	public("GET /readyz", health.Ready(d.Pool, d.RedisPing, d.ReadyRequireRedis, d.Lifecycle))
 
 	// Account and workspaces. The first GET /me creates the personal workspace.
 	self("GET /me", ws.Me, perUser(ratelimit.ClassMe))
@@ -397,8 +406,10 @@ func New(d Deps) *Router {
 	workspace("GET /workspaces/{wsId}/webhooks/{endpointId}/deliveries", rbac.WorkspaceAdmin, wh.Deliveries)
 	workspace("POST /workspaces/{wsId}/webhooks/{endpointId}/deliveries/{deliveryId}/resend", rbac.WorkspaceAdmin, wh.Resend, perUser(ratelimit.ClassWebhookTest))
 	purger := wspurge.New(d.Pool, wspurge.Config{Pub: pub})
-	internal("POST /internal/workspaces/purge", wspurge.InternalHandler(d.PurgeSecret, purger.Run), ratelimit.ClassPurgeRun)
-	internal("POST /internal/outbox/run", outbox.InternalHandler(d.OutboxSecret, outboxWorker.Run), ratelimit.ClassOutboxRun)
+	// The job endpoints run under the shutdown signal: asked to stop, a run claims nothing new, finishes what it has begun
+	// and gives back what it holds (docs/OPERATIONS.md, "Shutdown").
+	internal("POST /internal/workspaces/purge", wspurge.InternalHandler(d.PurgeSecret, bindToShutdown(d.Lifecycle, purger.Run)), ratelimit.ClassPurgeRun)
+	internal("POST /internal/outbox/run", outbox.InternalHandler(d.OutboxSecret, bindToShutdown(d.Lifecycle, outboxWorker.Run)), ratelimit.ClassOutboxRun)
 
 	// API tokens (see docs/API_TOKENS.md). Managing them is for admins and owners and is
 	// session-only: these routes are classified token-denied. A token's creator is the
@@ -443,7 +454,7 @@ func New(d Deps) *Router {
 	env("GET /environments/{envId}/scheduled-changes/{changeId}", rbac.Min(rbac.Viewer), sc.Get)
 	env("POST /environments/{envId}/flags/{key}/scheduled-changes", rbac.Min(rbac.Editor), sc.Create, perUser(ratelimit.ClassScheduleWrite))
 	env("POST /environments/{envId}/scheduled-changes/{changeId}/cancel", rbac.Min(rbac.Editor), sc.Cancel, perUser(ratelimit.ClassScheduleWrite))
-	internal("POST /internal/scheduler/run", scheduling.InternalHandler(d.SchedulerSecret, runner.Run), ratelimit.ClassSchedulerRun)
+	internal("POST /internal/scheduler/run", scheduling.InternalHandler(d.SchedulerSecret, bindToShutdown(d.Lifecycle, runner.Run)), ratelimit.ClassSchedulerRun)
 
 	// Same requirement as listing flags: any role in {envId}.
 	env("GET /environments/{envId}/audit-logs", rbac.Min(rbac.Viewer), al.List)
@@ -492,9 +503,19 @@ func New(d Deps) *Router {
 	rt.TrackGate = trackGate
 	sdkAlso("POST /track", track.Handler(track.Deps{Writer: store, Experiments: store, Limiter: lim, Tokens: d.ExposureTokens, Mode: d.ExposureMode, Gate: trackGate}),
 		[]string{ratelimit.ClassSDKTrackEvents}, ratelimit.ClassSDKTrack)
-	sdk("GET /sdk/stream", stream.Handler(d.Subscriber, sdkKeys, recheck, lim), ratelimit.ClassSDKKey, ratelimit.ClassStream)
+	sdk("GET /sdk/stream", stream.HandlerWith(d.Subscriber, sdkKeys, recheck, lim, d.Lifecycle), ratelimit.ClassSDKKey, ratelimit.ClassStream)
 
 	return rt
+}
+
+// bindToShutdown runs a job under the shutdown signal: when the process starts draining, the job's context ends, which is
+// the job's cue to stop claiming work, finish what it has begun and release what it holds.
+func bindToShutdown[T any](life *lifecycle.State, run func(context.Context) (T, error)) func(context.Context) (T, error) {
+	return func(ctx context.Context) (T, error) {
+		ctx, cancel := life.Bind(ctx)
+		defer cancel()
+		return run(ctx)
+	}
 }
 
 // dropFan forgets a workspace in every verifier of this instance: its SDK keys (and their streams) and its API tokens.

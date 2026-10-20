@@ -17,6 +17,7 @@ import (
 	"helios/backend/internal/platform/apikey"
 	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/httpx"
+	"helios/backend/internal/platform/lifecycle"
 	"helios/backend/internal/platform/ratelimit"
 )
 
@@ -40,10 +41,25 @@ type KeyChecker interface {
 // `recheck` the stream asks the checker whether the key was revoked since and
 // closes if it was: a revoked key must not keep receiving flag changes.
 func Handler(sub events.Subscriber, checker KeyChecker, recheck time.Duration, slots SlotGate) http.HandlerFunc {
+	return HandlerWith(sub, checker, recheck, slots, nil)
+}
+
+// ReconnectEvent is what an open stream receives, as its last message, when the server is shutting down: the SDK
+// should reconnect (to another instance) after retryAfterMs. The connection is then closed.
+const ReconnectEvent = "event: reconnect\ndata: {\"reason\":\"server_shutdown\",\"retryAfterMs\":1000}\n\n"
+
+// HandlerWith is Handler that also takes part in a graceful shutdown: once life is draining, new streams are refused
+// (503 with Retry-After, before any slot or subscription is taken) and open ones are sent ReconnectEvent and closed.
+func HandlerWith(sub events.Subscriber, checker KeyChecker, recheck time.Duration, slots SlotGate, life *lifecycle.State) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		scope, ok := apikey.ScopeFrom(r.Context())
 		if !ok {
 			httpx.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "SDK key required")
+			return
+		}
+		if life.Draining() {
+			w.Header().Set("Retry-After", "1")
+			httpx.WriteError(w, http.StatusServiceUnavailable, "SHUTTING_DOWN", "this instance is shutting down; reconnect")
 			return
 		}
 
@@ -97,6 +113,10 @@ func Handler(sub events.Subscriber, checker KeyChecker, recheck time.Duration, s
 		for {
 			select {
 			case <-r.Context().Done():
+				return
+			case <-life.Done():
+				fmt.Fprint(w, ReconnectEvent)
+				flusher.Flush()
 				return
 			case <-revoked:
 				return // the key was revoked: end the stream now, not at the next re-check

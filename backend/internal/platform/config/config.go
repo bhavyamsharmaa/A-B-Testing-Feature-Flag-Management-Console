@@ -82,6 +82,13 @@ type Config struct {
 	// the pool size minus 2. TrackMaxWait (TRACK_MAX_WAIT) is how long a batch waits for a turn before a fast 503.
 	TrackMaxWriters string
 	TrackMaxWait    string
+	// ShutdownTimeout (SHUTDOWN_TIMEOUT, default 8s) is the whole graceful shutdown from SIGTERM; keep it under the
+	// platform's grace period (about 10 s). ShutdownReadyDelay (SHUTDOWN_READY_DELAY, default 1s) is how long the
+	// instance reports "not ready" before it starts refusing connections. ReadyRequireRedis (READY_REQUIRE_REDIS=true)
+	// makes /readyz fail when Redis is down.
+	ShutdownTimeout    string
+	ShutdownReadyDelay string
+	ReadyRequireRedis  string
 }
 
 // Load reads configuration from the environment, applying defaults that match
@@ -131,6 +138,9 @@ func Load() Config {
 		DBMaxConns:                os.Getenv("DB_MAX_CONNS"),
 		TrackMaxWriters:           os.Getenv("TRACK_MAX_WRITERS"),
 		TrackMaxWait:              os.Getenv("TRACK_MAX_WAIT"),
+		ShutdownTimeout:           os.Getenv("SHUTDOWN_TIMEOUT"),
+		ShutdownReadyDelay:        os.Getenv("SHUTDOWN_READY_DELAY"),
+		ReadyRequireRedis:         os.Getenv("READY_REQUIRE_REDIS"),
 	}
 }
 
@@ -288,6 +298,36 @@ func ParseConfigCache(ttl, entries, mb string) (ConfigCacheSettings, error) {
 			return out, fmt.Errorf("CONFIG_CACHE_MAX_MB must be a whole number from 1 to 4096 (got %q)", v)
 		}
 		out.MaxBytes = int64(n) << 20
+	}
+	return out, nil
+}
+
+// ShutdownSettings are the graceful-shutdown budget and its first step.
+type ShutdownSettings struct {
+	Timeout    time.Duration
+	ReadyDelay time.Duration
+}
+
+// ParseShutdown validates SHUTDOWN_TIMEOUT (1s-55s, default 8s) and SHUTDOWN_READY_DELAY (0-10s, default 1s, and not
+// more than a quarter of the timeout).
+func ParseShutdown(timeout, readyDelay string) (ShutdownSettings, error) {
+	out := ShutdownSettings{Timeout: 8 * time.Second, ReadyDelay: time.Second}
+	if v := strings.TrimSpace(timeout); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Second || d > 55*time.Second {
+			return out, fmt.Errorf("SHUTDOWN_TIMEOUT must be a duration from 1s to 55s (got %q)", v)
+		}
+		out.Timeout = d
+	}
+	if v := strings.TrimSpace(readyDelay); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 || d > 10*time.Second {
+			return out, fmt.Errorf("SHUTDOWN_READY_DELAY must be a duration from 0 to 10s (got %q)", v)
+		}
+		out.ReadyDelay = d
+	}
+	if out.ReadyDelay > out.Timeout/4 {
+		out.ReadyDelay = out.Timeout / 4
 	}
 	return out, nil
 }

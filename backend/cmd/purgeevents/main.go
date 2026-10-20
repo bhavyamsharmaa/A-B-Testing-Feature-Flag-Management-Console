@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"helios/backend/internal/platform/config"
@@ -33,7 +34,7 @@ func main() {
 	dry := flag.Bool("dry-run", false, "count what would be deleted, delete nothing")
 	flag.Parse()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()

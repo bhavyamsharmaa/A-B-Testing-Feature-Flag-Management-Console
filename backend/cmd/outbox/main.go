@@ -17,6 +17,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"helios/backend/internal/controlplane/outbox"
@@ -35,7 +36,7 @@ func main() {
 	rekey := flag.Bool("rekey", false, "re-encrypt every webhook secret under the current WEBHOOK_SECRET_KEY, then exit")
 	flag.Parse()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()

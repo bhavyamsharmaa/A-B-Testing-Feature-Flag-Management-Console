@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"helios/backend/internal/controlplane/wspurge"
@@ -31,7 +32,7 @@ func main() {
 	timeout := flag.Duration("timeout", 30*time.Minute, "give up after this long")
 	flag.Parse()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()

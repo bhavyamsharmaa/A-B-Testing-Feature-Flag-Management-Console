@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"helios/backend/internal/controlplane/segments"
@@ -33,7 +34,7 @@ func main() {
 	timeout := flag.Duration("timeout", time.Minute, "give up after this long")
 	flag.Parse()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()

@@ -83,6 +83,7 @@ type Stats struct {
 	Retried   int `json:"retried"`
 	Skipped   int `json:"skipped"`   // claimed, then cancelled or taken over before it ran
 	Cancelled int `json:"cancelled"` // cancelled because the API token that scheduled them is revoked or expired
+	Released  int `json:"released"`  // claimed, then given back unexecuted because the run was asked to stop
 }
 
 // Runner executes due scheduled changes. It holds no state between calls and
@@ -135,14 +136,26 @@ func (r *Runner) Run(ctx context.Context) (Stats, error) {
 		if len(claimed) == 0 {
 			break
 		}
-		for _, c := range claimed {
+		for i, c := range claimed {
+			if ctx.Err() != nil {
+				// Asked to stop (shutdown, timeout) between claiming and executing: give the rest back at once, so
+				// they are not stranded under a lease until it expires.
+				r.release(claimed[i:], &st)
+				return st, nil
+			}
 			st.Claimed++
 			if c.Reclaimed {
 				st.Reclaimed++
 			}
-			if err := r.execute(ctx, c, &st); err != nil {
+			// A change that has begun is finished even if we are asked to stop: its transaction is short and atomic
+			// (it commits whole or not at all), and stopping halfway is what would strand the row.
+			ectx, cancel := context.WithTimeout(context.WithoutCancel(ctx), executeTimeout)
+			err := r.execute(ectx, c, &st)
+			cancel()
+			if err != nil {
 				// the row stays running with its lease; another pass takes it over
 				log.Printf("scheduler: change %s: %v", c.ID, err)
+				r.release(claimed[i:i+1], &st) // give it back now rather than at lease expiry (a no-op if it finished)
 			}
 		}
 		handled += len(claimed)
@@ -151,6 +164,33 @@ func (r *Runner) Run(ctx context.Context) (Stats, error) {
 		}
 	}
 	return st, nil
+}
+
+// executeTimeout bounds one change's transaction once it has begun.
+const executeTimeout = 30 * time.Second
+
+// release gives claimed rows back: pending again, lease cleared, the attempt that never happened taken off. It only
+// touches rows still running under THIS worker's lease, so a row that finished, was cancelled or was taken over after
+// its lease expired is left alone. It uses its own short context because it runs when the caller's is already done.
+func (r *Runner) release(rows []Claimed, st *Stats) {
+	if len(rows) == 0 {
+		return
+	}
+	ids := make([]string, len(rows))
+	for i, c := range rows {
+		ids[i] = c.ID
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE scheduled_changes
+		SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL, attempts = GREATEST(attempts - 1, 0), updated_at = $3
+		WHERE id = ANY($1::uuid[]) AND status = 'running' AND lease_owner = $2`, ids, r.cfg.WorkerID, r.clock.now())
+	if err != nil {
+		log.Printf("scheduler: could not release %d claimed change(s); their leases will expire: %v", len(ids), err)
+		return
+	}
+	st.Released += int(tag.RowsAffected())
 }
 
 // Claimed is a row a worker has leased and not yet executed.
