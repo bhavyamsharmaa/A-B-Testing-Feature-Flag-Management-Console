@@ -3,18 +3,24 @@
 package config
 
 import (
+	"fmt"
+	"net"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
 // Config holds process configuration.
 type Config struct {
-	Port              string // HTTP listen port
-	DatabaseURL       string // PostgreSQL connection string
-	RedisURL          string // redis:// or rediss:// connection string; empty disables propagation (falls back to Postgres-only, never blocks startup)
-	SupabaseURL       string // https://<project-ref>.supabase.co; its JWKS verifies access tokens
-	SupabaseAnonKey   string // the project's PUBLIC anon/publishable key (not a secret); lets the backend ask Supabase whether an email is confirmed
-	EmailConfirmation string // off | enforce (default) | strict; see auth.EmailPolicy
+	Port string // HTTP listen port (default "8080"); see ListenAddress for the precedence with LISTEN_ADDR
+	// listenAddr and portEnv are the raw LISTEN_ADDR and PORT, so ListenAddress can tell "unset" from the default.
+	listenAddr, portEnv string
+	DatabaseURL         string // PostgreSQL connection string
+	RedisURL            string // redis:// or rediss:// connection string; empty disables propagation (falls back to Postgres-only, never blocks startup)
+	SupabaseURL         string // https://<project-ref>.supabase.co; its JWKS verifies access tokens
+	SupabaseAnonKey     string // the project's PUBLIC anon/publishable key (not a secret); lets the backend ask Supabase whether an email is confirmed
+	EmailConfirmation   string // off | enforce (default) | strict; see auth.EmailPolicy
 	// Rate limiting (all optional; see internal/platform/ratelimit).
 	RateLimitDisabled string // "true" switches every limit off
 	RateLimits        string // overrides, e.g. "me=5/60,accept=2/50" (per second / burst)
@@ -68,6 +74,8 @@ type Config struct {
 func Load() Config {
 	return Config{
 		Port:                     getenv("PORT", "8080"),
+		listenAddr:               os.Getenv("LISTEN_ADDR"),
+		portEnv:                  os.Getenv("PORT"),
 		DatabaseURL:              getenv("DATABASE_URL", "postgres://helios:helios@localhost:5432/helios?sslmode=disable"),
 		RedisURL:                 os.Getenv("REDIS_URL"),
 		SupabaseURL:              os.Getenv("SUPABASE_URL"),
@@ -133,4 +141,68 @@ func trustedProxyHops() string {
 		return "1"
 	}
 	return ""
+}
+
+// DefaultListenAddr is where the API listens when neither LISTEN_ADDR nor PORT is set (as before this setting existed).
+const DefaultListenAddr = ":8080"
+
+// ListenAddress is the address the API listens on. The precedence is:
+//
+//  1. LISTEN_ADDR, a host:port ("127.0.0.1:8080", ":8080", "[::1]:8080", "localhost:9000"): for local runs that
+//     must not be reachable from the network, and for anything that wants an explicit interface;
+//  2. PORT, the port alone, on every interface (":" + PORT): what Render and similar platforms set;
+//  3. DefaultListenAddr, ":8080".
+//
+// A value that is set but wrong is an error (the API refuses to start with a message saying which setting), never
+// silently ignored in favour of a lower one: running on the wrong interface or port is how a dev server ends up on
+// the network.
+func (c Config) ListenAddress() (string, error) {
+	return ResolveListenAddr(c.listenAddr, c.portEnv)
+}
+
+// ResolveListenAddr is ListenAddress for explicit values (see there).
+func ResolveListenAddr(listenAddr, port string) (string, error) {
+	if v := strings.TrimSpace(listenAddr); v != "" {
+		host, p, err := net.SplitHostPort(v)
+		if err != nil {
+			return "", fmt.Errorf("LISTEN_ADDR must be host:port, such as 127.0.0.1:8080 or :8080 (got %q)", v)
+		}
+		if err := checkPort(p); err != nil {
+			return "", fmt.Errorf("LISTEN_ADDR %q: %w", v, err)
+		}
+		if err := checkHost(host); err != nil {
+			return "", fmt.Errorf("LISTEN_ADDR %q: %w", v, err)
+		}
+		return net.JoinHostPort(host, p), nil
+	}
+	if v := strings.TrimSpace(port); v != "" {
+		if err := checkPort(v); err != nil {
+			return "", fmt.Errorf("PORT %q: %w", v, err)
+		}
+		return ":" + v, nil
+	}
+	return DefaultListenAddr, nil
+}
+
+func checkPort(p string) error {
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != p {
+		return fmt.Errorf("the port must be a whole number from 1 to 65535")
+	}
+	return nil
+}
+
+var hostRE = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`)
+
+func checkHost(h string) error {
+	if h == "" {
+		return nil // every interface
+	}
+	if ip := net.ParseIP(strings.Trim(h, "[]")); ip != nil {
+		return nil
+	}
+	if strings.Contains(h, "%") || !hostRE.MatchString(h) || len(h) > 253 {
+		return fmt.Errorf("the host must be an IP address or a host name")
+	}
+	return nil
 }

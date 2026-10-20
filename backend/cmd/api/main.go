@@ -198,14 +198,18 @@ func main() {
 		SDKKeyCacheTTL:  sdkKeyCacheTTL,
 	})
 
+	listenAddr, err := cfg.ListenAddress()
+	if err != nil {
+		log.Fatal(err)
+	}
 	srv := &http.Server{
-		Addr:              ":" + cfg.Port,
+		Addr:              listenAddr,
 		Handler:           cors.Middleware(cfg.CORSAllowedOrigins, router.Mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	go func() {
-		log.Printf("helios backend listening on :%s", cfg.Port)
+		log.Printf("helios backend listening on %s", listenAddr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
 		}

@@ -35,7 +35,7 @@ export DATABASE_URL='postgres://helios@127.0.0.1:55432/helios_dev?sslmode=disabl
 
 # Backend on :8080, trusting devauth's signing keys. Optional settings (see the table below)
 # go in the environment too, e.g. RATE_LIMITS="me=5/60" EMAIL_CONFIRMATION=strict
-(cd backend && SUPABASE_URL=http://127.0.0.1:54321 CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173 go run ./cmd/api) &
+(cd backend && SUPABASE_URL=http://127.0.0.1:54321 CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173 scripts/local_api.sh) &   # binds 127.0.0.1:8080 only
 
 # Console on :5173 (frontend/.env.local, which is git-ignored)
 cat > frontend/.env.local <<'ENV'
@@ -118,3 +118,12 @@ link is queued in the same transaction and sent by the outbox worker (`go run ./
 to also write each message to a file you can open. The link works once, only for the invited address, for
 7 days. The invitee can also accept from the banner shown in the console when they sign in with that
 address. "Resend" sends a new email with a NEW link (the old one stops working).
+
+## Where the API listens (`LISTEN_ADDR` and `PORT`)
+
+The listen address is, in this order: **`LISTEN_ADDR`** (`host:port`, for example `127.0.0.1:8080`, `:8080`, `[::1]:8080`), else
+**`PORT`** (the port alone, on every interface: what Render sets), else `:8080` (unchanged from before this setting existed).
+A value that is set but invalid (no port, port 0 or above 65535, a URL, a host with spaces) stops the API at startup with a message
+naming the setting; it is never ignored in favour of a lower one. `backend/scripts/local_api.sh` starts the API on
+`127.0.0.1:8080` and refuses any address that is not loopback, so a development server is not reachable from the network. Production
+(Render) sets only `PORT` and is unaffected.
