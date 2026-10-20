@@ -303,3 +303,28 @@ then validated. The foreign keys of the new tables take SHARE ROW EXCLUSIVE on `
 `auth.users` and `api_tokens` for milliseconds. Nothing is rewritten. **Rollback:** deploy a backend without
 webhooks and invite email first, then the commented block at the end of the migration (discards every endpoint,
 secret and queued delivery; back up first).
+
+
+## Migration 0014: lifecycle (a later release than webhooks and email)
+
+Adds three nullable columns and a CHECK on `workspaces`, the tables `ownership_offers`, `workspace_tombstones` and `experiment_variations` (backfilled), and replaces the
+audit log's append-only function. On the rehearsal database (never production), once 0001-0013 are in place:
+
+```bash
+psql "$REHEARSAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0014_lifecycle.sql
+psql "$REHEARSAL_DATABASE_URL" -f backend/db/verify_0014.sql      # every row PASS
+```
+
+Then, with the backend running against it:
+
+1. `verify_0014.sql` row "every experiment has exactly one control" is the backfill check. Spot-check one experiment's results before and after the migration: identical.
+2. As an owner, offer ownership to a second account that is an admin; accept it as that account: roles swap, exactly one owner throughout. Try the same with a demotion racing it.
+3. Make a THROWAWAY workspace, schedule its deletion (type its name), confirm 404 for its members, 401 for its SDK key, restore it. Schedule it again,
+   `UPDATE workspaces SET purge_after = now() - interval '1 minute' WHERE id = '<throwaway>'`, run `go run ./cmd/purgeworkspaces`, then check that
+   `workspace_tombstones` has one row and `SELECT count(*) FROM audit_logs WHERE workspace_id = '<throwaway>'` is 0.
+4. Try `DELETE FROM audit_logs WHERE workspace_id = '<any live workspace>'`: it must still fail with "append-only".
+
+Negative rehearsals: dropping `one_control_per_experiment` or `one_pending_offer_per_workspace` must turn the matching `verify_0014.sql` row to FAIL (on a throwaway copy only).
+
+**Lock impact:** `workspaces` takes a brief `ACCESS EXCLUSIVE` for the three nullable `ADD COLUMN`s (catalog only, no rewrite); its CHECK is added NOT VALID then validated. `audit_logs` and `events`
+are not altered. **Rollback:** the commented block at the end of the migration, after a backup.

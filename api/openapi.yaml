@@ -520,6 +520,191 @@ paths:
         "404": { description: Not enabled }
         "429": { description: RATE_LIMITED }
 
+  /workspaces/{wsId}/ownership-offers:
+    parameters: [{ $ref: "#/components/parameters/WsPath" }]
+    get:
+      tags: [control-plane]
+      summary: The workspace's open ownership offer, if any (owner, session only)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200":
+          description: The open offer or null (expired offers are not open)
+          content:
+            application/json:
+              schema: { type: object, required: [offer], properties: { offer: { oneOf: [{ $ref: "#/components/schemas/OwnershipOffer" }, { type: "null" }] } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+    post:
+      tags: [control-plane]
+      summary: Offer ownership to an admin of the workspace (owner, session only)
+      description: >-
+        The target must be an existing ADMIN of the workspace. They must accept; the offer lasts 7 days and can be cancelled.
+        One open offer per workspace (409 OFFER_EXISTS).
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [userId], properties: { userId: { type: string, format: uuid } } }
+      responses:
+        "201": { description: Offered, content: { application/json: { schema: { type: object, properties: { offer: { $ref: "#/components/schemas/OwnershipOffer" } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND or MEMBER_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: "TARGET_NOT_ADMIN, ALREADY_OWNER or OFFER_EXISTS", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/ownership-offers/{offerId}:
+    parameters:
+      - $ref: "#/components/parameters/WsPath"
+      - { name: offerId, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      tags: [control-plane]
+      summary: Cancel the open ownership offer (owner, session only)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "204": { description: Cancelled }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "WORKSPACE_NOT_FOUND or OFFER_NOT_FOUND", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /ownership-offers/{offerId}/accept:
+    parameters: [{ name: offerId, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      tags: [control-plane]
+      summary: Accept an offer of ownership (the person it is addressed to, session only)
+      description: >-
+        One transaction: the caller becomes owner FIRST, then the previous owner becomes an admin, so the workspace never has
+        no owner. Everything is checked again: the offer is open and unexpired, the workspace is not scheduled for deletion, the
+        offerer is still an owner, the caller is still an admin, and the caller owns fewer than 5 workspaces (409 QUOTA_EXCEEDED).
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "200": { description: Accepted, content: { application/json: { schema: { type: object, properties: { workspaceId: { type: string, format: uuid } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: OFFER_NOT_FOUND (also for an offer addressed to someone else), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: "OFFER_NOT_OPEN, OFFER_NO_LONGER_VALID or QUOTA_EXCEEDED", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "410": { description: OFFER_EXPIRED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /ownership-offers/{offerId}/decline:
+    parameters: [{ name: offerId, in: path, required: true, schema: { type: string, format: uuid } }]
+    post:
+      tags: [control-plane]
+      summary: Decline an offer of ownership (the person it is addressed to, session only)
+      security: [{ supabaseJWT: [] }]
+      responses:
+        "204": { description: Declined }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: OFFER_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workspaces/{wsId}/schedule-deletion:
+    parameters: [{ $ref: "#/components/parameters/WsPath" }]
+    post:
+      tags: [control-plane]
+      summary: Schedule the workspace for deletion (owner, session only)
+      description: >-
+        The caller types the workspace's exact name. From that instant the workspace is invisible (404 to every member and every
+        API token), SDK keys stop evaluating and their streams close, scheduled changes and webhook/email deliveries stop, and
+        invites cannot be accepted. NOTHING is deleted for 14 days: an owner can restore it (POST /workspaces/restore). After that
+        cmd/purgeworkspaces removes the data in batches. It still counts toward the owner's 5 owned workspaces until purged.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [confirmName], properties: { confirmName: { type: string } } }
+      responses:
+        "200": { description: Scheduled, content: { application/json: { schema: { type: object, properties: { workspace: { $ref: "#/components/schemas/PendingDeletion" } } } } } }
+        "400": { description: NAME_MISMATCH, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/WorkspaceNotFound" }
+
+  /workspaces/restore:
+    post:
+      tags: [control-plane]
+      summary: Restore a workspace scheduled for deletion (an owner of it, session only)
+      description: A self route, because a workspace scheduled for deletion is invisible to the workspace routes. 410 GRACE_PERIOD_ENDED once the 14 days are over.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [workspaceId], properties: { workspaceId: { type: string, format: uuid } } }
+      responses:
+        "200": { description: Restored, content: { application/json: { schema: { type: object, properties: { workspaceId: { type: string, format: uuid } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: Not a workspace of yours that can be restored, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "410": { description: GRACE_PERIOD_ENDED, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /internal/workspaces/purge:
+    post:
+      tags: [system]
+      summary: Purge workspaces whose grace period has ended (machines only)
+      description: >-
+        Not part of the public API. Needs X-Helios-Purge-Secret; with no PURGE_SECRET configured it answers 404. Removes data in
+        bounded, resumable batches and returns counts only.
+      security: []
+      parameters:
+        - { name: X-Helios-Purge-Secret, in: header, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Counts, content: { application/json: { schema: { type: object } } } }
+        "401": { description: One fixed answer, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Not enabled }
+        "429": { description: RATE_LIMITED }
+
+  /environments/{envId}/audit-logs/export:
+    parameters: [{ $ref: "#/components/parameters/EnvPath" }]
+    get:
+      tags: [control-plane]
+      summary: Export the audit log as CSV or JSON (admin+, session only, rate limited)
+      description: >-
+        Streams this environment's entries plus the workspace-wide ones for a date range of at most 90 days (default the last 30), at most
+        100,000 entries (422 EXPORT_TOO_LARGE otherwise: never silently cut). Cells that begin with = + - @ tab or CR are prefixed with an
+        apostrophe (CSV injection). Secret-shaped values are redacted. The export is itself audited.
+      security: [{ supabaseJWT: [] }]
+      parameters:
+        - { name: format, in: query, schema: { type: string, enum: [csv, json], default: csv } }
+        - { name: from, in: query, schema: { type: string }, description: "RFC 3339 or YYYY-MM-DD" }
+        - { name: to, in: query, schema: { type: string }, description: "RFC 3339, or YYYY-MM-DD meaning the whole of that day" }
+      responses:
+        "200": { description: The file (attachment), content: { text/csv: { schema: { type: string } }, application/json: { schema: { type: array, items: { type: object } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: ENVIRONMENT_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { description: EXPORT_TOO_LARGE, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: RATE_LIMITED }
+
+  /environments/{envId}/flags/{key}/history:
+    parameters:
+      - $ref: "#/components/parameters/EnvPath"
+      - $ref: "#/components/parameters/FlagKeyPath"
+    get:
+      tags: [control-plane]
+      summary: One flag's change history in this environment (any role, session only)
+      description: Newest first, paged by entry id. Read only. Shows who (person, API token, or a schedule acting for a person), when (RFC 3339 UTC) and a readable before/after of the fields that changed.
+      security: [{ supabaseJWT: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: before, in: query, schema: { type: integer, minimum: 1 }, description: "Entry id from nextCursor" }
+      responses:
+        "200":
+          description: A page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries, nextCursor]
+                properties:
+                  entries: { type: array, items: { $ref: "#/components/schemas/FlagHistoryEntry" } }
+                  nextCursor: { type: [integer, "null"] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: ENVIRONMENT_NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /invites/accept:
     post:
       tags: [control-plane]
@@ -1308,6 +1493,29 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/ExperimentNotFound" }
+    patch:
+      tags: [control-plane]
+      summary: Choose the experiment's control variation (editor+, session only)
+      description: >-
+        The control is the variation every other variation is compared with. Allowed until the experiment has any
+        exposure; afterwards 409 CONTROL_FROZEN. Choosing the current control is a no-op.
+      security: [{ supabaseJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [controlVariationId]
+              properties:
+                controlVariationId: { type: string }
+      responses:
+        "200": { description: The experiment, content: { application/json: { schema: { $ref: "#/components/schemas/Experiment" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/ExperimentNotFound" }
+        "409": { description: CONTROL_FROZEN, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /environments/{envId}/experiments/{key}/start:
     parameters:
@@ -1719,7 +1927,7 @@ components:
 
     Me:
       type: object
-      required: [id, email, activeWorkspaceId, workspaces, invites]
+      required: [id, email, activeWorkspaceId, workspaces, invites, ownershipOffers, pendingDeletion]
       properties:
         id: { type: string, format: uuid }
         email: { type: string }
@@ -1740,6 +1948,64 @@ components:
               role: { $ref: "#/components/schemas/WorkspaceRole" }
               invitedByEmail: { type: string }
               expiresAt: { type: string, format: date-time }
+        ownershipOffers:
+          type: array
+          description: Offers of ownership addressed to the caller (an admin of that workspace)
+          items: { $ref: "#/components/schemas/OwnershipOffer" }
+        pendingDeletion:
+          type: array
+          description: Workspaces the caller OWNS that are scheduled for deletion and can still be restored (nobody else sees them)
+          items: { $ref: "#/components/schemas/PendingDeletion" }
+
+    FlagHistoryEntry:
+      type: object
+      required: [id, createdAt, action, summary, severity, actor, changes]
+      properties:
+        id: { type: integer }
+        createdAt: { type: string, format: date-time }
+        action: { type: string }
+        summary: { type: string }
+        severity: { type: string }
+        source: { type: string, description: "e.g. 'promotion from staging' or 'scheduled change'" }
+        actor:
+          type: object
+          required: [type, label]
+          properties:
+            type: { type: string, enum: [user, api_token, schedule] }
+            label: { type: string }
+            onBehalfOf: { type: string, description: "The person who made the token, or who scheduled the change" }
+        changes:
+          type: array
+          items:
+            type: object
+            required: [field, label, before, after]
+            properties:
+              field: { type: string }
+              label: { type: string }
+              before: { type: array, items: { type: string } }
+              after: { type: array, items: { type: string } }
+
+    OwnershipOffer:
+      type: object
+      required: [id, workspaceId, workspaceName, fromEmail, toUserId, toEmail, createdAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        workspaceId: { type: string, format: uuid }
+        workspaceName: { type: string }
+        fromEmail: { type: string }
+        toUserId: { type: string, format: uuid }
+        toEmail: { type: string }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+
+    PendingDeletion:
+      type: object
+      required: [id, name, deletedAt, purgeAfter]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        deletedAt: { type: string, format: date-time }
+        purgeAfter: { type: string, format: date-time, description: Restorable until this time; the data is deleted for good after it }
 
     Member:
       type: object
@@ -2144,6 +2410,7 @@ components:
       type: object
       required: [flagKey, key, name, metrics]
       properties:
+        controlVariationId: { type: string, description: "The control: one of the flag's variations. Omitted: the flag's first variation. Fixed once the experiment has an exposure." }
         flagKey: { type: string }
         key: { type: string, description: Same rules as a flag key, pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$' }
         name: { type: string, maxLength: 200 }
@@ -2157,7 +2424,7 @@ components:
 
     Experiment:
       type: object
-      required: [id, key, name, hypothesis, flagKey, environment, status, startedAt, stoppedAt, metrics, configChangedSinceStart, createdAt]
+      required: [id, key, name, hypothesis, flagKey, environment, status, startedAt, stoppedAt, metrics, configChangedSinceStart, createdAt, controlVariationId, variations]
       properties:
         id: { type: string, format: uuid }
         key: { type: string }
@@ -2178,6 +2445,11 @@ components:
             differs from when the experiment started (or, once stopped, from
             when it stopped). Informational; flag edits are not blocked.
         createdAt: { type: string, format: date-time }
+        controlVariationId: { type: string, description: The variation every other variation is compared with (exactly one per experiment) }
+        variations:
+          type: array
+          description: The flag's variations in its order, the control marked
+          items: { type: object, required: [id, isControl], properties: { id: { type: string }, isControl: { type: boolean } } }
 
     Flag:
       type: object

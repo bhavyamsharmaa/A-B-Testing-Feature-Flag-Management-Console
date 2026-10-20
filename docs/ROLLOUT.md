@@ -58,7 +58,11 @@ The history is strictly linear (each branch contains the one before it; checked 
 (`feature/webhooks-email`, section "Release 6" below). It adds one migration, 0013, and needs release 5's
 `api_tokens` (one column on `scheduled_changes` references it) and release 4's `scheduled_changes`.
 
-## Migrations 0004-0013
+**A seventh release comes after the sixth: lifecycle** (`feature/lifecycle`, section "Release 7" below): ownership transfer, workspace deletion with a
+14-day grace period and a purge job, audit export and per-flag history, an explicit experiment control, and `LISTEN_ADDR`. One migration, 0014. It needs only
+release 1's schema for the code; the migration needs 0011-0013 only in that it is numbered after them.
+
+## Migrations 0004-0014
 
 All files are in `backend/db/migrations/`; verify scripts in `backend/db/`. Every
 migration runs in its own transaction (no `psql -1`). Lock notes come from each file's
@@ -81,6 +85,8 @@ restored copy gives the real numbers.
 | 0012 api tokens | **5** | after release 4 (or on its own after release 1: it needs `workspaces`, `environments`, `audit_logs`) | two NEW tables (`api_tokens`, `api_token_environments`; `workspace_id`, composite FKs, RLS on) and two columns on `audit_logs` (`actor_type` default `user`, `actor_detail`) | new tables: none on existing data (FKs take `SHARE ROW EXCLUSIVE` on `workspaces`, `environments`, `auth.users` for milliseconds). `audit_logs`: `ADD COLUMN ... DEFAULT <constant>` is catalog-only on PostgreSQL 11+ (no rewrite, no row updated, the append-only trigger does not fire) with a brief `ACCESS EXCLUSIVE` that queues behind running inserts; the CHECK is added NOT VALID then validated (`SHARE UPDATE EXCLUSIVE`, inserts continue) | commented block: drop the tables and the two audit columns (deploy a backend without tokens first; discards tokens) | `verify_0012.sql` |
 
 | 0013 webhooks, email, outbox | **6** | after release 5 (it references `api_tokens` and `scheduled_changes`) | two NEW tables (`webhook_endpoints`, `outbox`; `workspace_id`, composite FKs, RLS on, indexes lead with `workspace_id` except the claim, lease, purge and recipient indexes that look across workspaces by time or recipient); `scheduled_changes.created_by_token_id` (nullable, FK added NOT VALID then validated); `UNIQUE (id, workspace_id)` on `workspace_invites` | new tables: none on existing data (FKs take `SHARE ROW EXCLUSIVE` on `workspaces`, `environments`, `auth.users`, `api_tokens` for milliseconds). `scheduled_changes`: one nullable column, catalog-only, brief `ACCESS EXCLUSIVE`. `workspace_invites`: the unique index build takes a `SHARE` lock (invite writes wait, reads do not; milliseconds on a table this small) | commented block: drop both tables, the constraint, the index and the column (deploy a backend without webhooks and invite email first; discards endpoints, secrets and queued deliveries) | `verify_0013.sql` |
+
+| 0014 lifecycle | **7** | after release 6 (or on its own after release 1: it needs `workspaces`, `workspace_members`, `experiments`, `flags`) | three nullable columns and a CHECK on `workspaces`; NEW tables `ownership_offers`, `workspace_tombstones`, `experiment_variations` (backfilled from existing experiments); `audit_logs_append_only()` replaced so a delete is allowed only for a workspace past its purge date | `workspaces`: `ADD COLUMN` nullable (catalog only, no rewrite), brief `ACCESS EXCLUSIVE`; the CHECK is added NOT VALID then validated (the table is small). `audit_logs` and `events` are **not altered** (the function body is replaced; no lock on the table). New tables: none on existing data (FKs take `SHARE ROW EXCLUSIVE` on `workspaces`, `experiments`, `auth.users` for milliseconds). The backfill inserts one row per experiment variation: a few rows | commented block at the end of the file (back up first: discards offers, tombstones and control designations; pending deletions become ordinary workspaces again) | `verify_0014.sql` |
 
 `verify_0005.sql` is expected to FAIL until 0005 is applied.
 
@@ -110,6 +116,17 @@ Names only for secrets. "Recommended" is for production on day one of that relea
 | `HELIOS_EVENT_RETENTION_DAYS` | new, read only by the `purgeevents` command, not the API | `90` |
 
 Vercel (console), release 2: no new variables. Supabase auth settings: not changed by either release.
+
+**Release 7 (lifecycle):** all optional.
+
+| Name | New | Recommended production value |
+|---|---|---|
+| `PURGE_SECRET` | **secret**, at least 32 characters; enables `POST /internal/workspaces/purge` | optional: set it if a Cloud Scheduler HTTP job will run the purge, otherwise schedule `cmd/purgeworkspaces` |
+| `LISTEN_ADDR` | `host:port` the API listens on; wins over `PORT` | **unset** on Render (it sets `PORT`); set to `127.0.0.1:8080` for local runs |
+| `RATE_LIMITS` | new classes `audit_export`, `purge_run` | unset |
+
+**The purge and the outbox are not run by anything automatically.** After this release is deployed, nothing deletes a workspace's data until `cmd/purgeworkspaces` (or the endpoint) is
+scheduled (hourly). Until then workspaces scheduled for deletion are simply hidden, which is the safe failure.
 
 **Release 6 (webhooks and invite email):** all optional; with none set, webhooks are unavailable (endpoints cannot be
 created: fail closed) and invite email goes to a sink that sends nothing. See `docs/WEBHOOKS.md`, `docs/OUTBOX.md`.
@@ -327,6 +344,33 @@ block in the file, after a backup.
 **Dependency on the earlier releases:** `segments.workspace_id` references `workspaces` (0004);
 the every-route test, the tenant checks and the workspace guard of release 1 are assumed. It
 does not need 0008 or 0009, so it could ship without release 2, but this plan keeps the order.
+
+## Release 7 - lifecycle
+
+Do not start until release 6 is finished and observed. What it adds, how each part is made safe, and what to test by hand: `docs/LIFECYCLE.md`.
+
+**Schema:** one migration, 0014 (lock impact in the table above). The previous backend keeps running against the migrated database: it does not read the new tables or
+columns, and results keep using the first variation, which is what the backfill designates as control, so nothing changes until someone chooses a different control.
+Do not deploy this release's backend before 0014 is applied: the membership queries read `workspaces.deleted_at`.
+
+**Safety to confirm before announcing:** a workspace scheduled for deletion is invisible everywhere and restorable for 14 days; the purge job is scheduled **and has been run
+by hand once against a throwaway workspace** (schedule its deletion, set `purge_after` into the past in the rehearsal database, run `cmd/purgeworkspaces`, check
+`workspace_tombstones` and that no row remains); ownership transfer is rehearsed with a real second account.
+
+**Sequence (each step on "go", with a report; never chained):**
+
+1. **L0 Preflight** (read-only): the checks under "After each merge" on the merged branch.
+2. **L1 Backup** (`backend/scripts/backup_db.sh`, via `PGSERVICE` only) and restore into a throwaway database.
+3. **L2 Rehearsal** on the restored copy: 0014, `verify_0014.sql` (every experiment has exactly one control), the backend, the Playwright suite, and the steps in
+   `backend/db/rehearsal.md` ("Migration 0014"), including the purge on a throwaway workspace.
+4. **L3 Migrate:** 0014, `verify_0014.sql`. The running backend is unaffected.
+5. **L4 Deploy** backend and console together **without** `PURGE_SECRET` and without any purge job. Smoke: offer ownership between two test accounts and accept; schedule a throwaway
+   workspace for deletion, confirm it is 404 for its members and its SDK key is 401, restore it; export an audit log and open a flag's history; create an experiment with a non-default control.
+6. **L5 Schedule the purge** (on "go"): a cron entry or Cloud Scheduler job running `cmd/purgeworkspaces` hourly (or `PURGE_SECRET` and the endpoint). Watch the counts.
+
+**Rollback:** disable the purge job first (nothing is deleted any more), then redeploy the previous backend and console. Workspaces scheduled for deletion would then
+**reappear** to the old backend (it does not know the column): restore or purge them before rolling back, or accept that they come back. Undoing 0014 itself is the
+commented block, after a backup.
 
 ## Release 6 - webhooks and invite email
 
