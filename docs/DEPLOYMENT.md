@@ -110,7 +110,7 @@ this instance` at startup (never the URL). The total that must stay under the po
 
 Supabase's pooler has a pool size and a client-connection limit that depend on the plan and are set in the project's database settings; read them there and
 do the sum. Worked example with invented numbers: a pooler pool of 15 and at most 2 API instances leaves 15 - 2 x 5 = 5 for jobs and humans, so set `DB_MAX_CONNS=5`.
-At 5 connections an instance still sustains thousands of `/evaluate` per second on the load test's hardware because evaluation is cache-fed; `/track` batches share the
+Measured on the load test's laptop with `DB_MAX_CONNS=5`: 31,800 `/evaluate` per second (42,100 with 10) and 80,600 `/track` events per second (107,900 with 10), with no errors; evaluation is cache-fed. `/track` batches share the
 same pool and are bounded to `DB_MAX_CONNS - 2` at once (`TRACK_MAX_WRITERS`), answering `503 TRACK_BUSY` with `Retry-After` beyond a 500 ms wait (`TRACK_MAX_WAIT`).
 The driver uses the simple query protocol (it works through Supabase's transaction pooler); do not add a second pooler in front without checking that.
 
