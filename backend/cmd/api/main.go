@@ -182,6 +182,7 @@ func main() {
 	router := server.New(server.Deps{
 		Delivery:        delOpts,
 		OutboxSecret:    cfg.OutboxSecret,
+		PurgeSecret:     cfg.PurgeSecret,
 		SchedulerSecret: cfg.SchedulerSecret,
 		Scheduler:       schedulerCfg,
 		ExposureTokens:  keyring,

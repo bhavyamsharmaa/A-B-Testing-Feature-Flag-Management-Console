@@ -257,6 +257,8 @@ func (w *Worker) Claim(ctx context.Context, n int) ([]Delivery, error) {
 			WHERE kind = ANY($1)
 			  AND ((status IN ('pending', 'failed') AND next_attempt_at <= $2)
 			    OR (status = 'delivering' AND lease_expires_at <= $2))
+			  -- nothing is sent for a workspace that is scheduled for deletion (it resumes if it is restored)
+			  AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = outbox.workspace_id AND w.deleted_at IS NOT NULL)
 		), busy AS (
 			SELECT target_key, count(*) AS n FROM outbox
 			WHERE status = 'delivering' AND lease_expires_at > $2 GROUP BY target_key

@@ -60,8 +60,11 @@ var tokenAccess = map[string]bool{
 	"POST /workspaces/{wsId}/ownership-offers":                                     false,
 	"GET /workspaces/{wsId}/ownership-offers":                                      false,
 	"DELETE /workspaces/{wsId}/ownership-offers/{offerId}":                         false,
+	"POST /workspaces/{wsId}/schedule-deletion":                                    false,
+	"POST /workspaces/restore":                                                     false,
 	"POST /ownership-offers/{offerId}/accept":                                      false,
 	"POST /ownership-offers/{offerId}/decline":                                     false,
+	"POST /internal/workspaces/purge":                                              false,
 	"POST /internal/outbox/run":                                                    false,
 	"DELETE /workspaces/{wsId}/api-tokens/{tokenId}":                               false,
 

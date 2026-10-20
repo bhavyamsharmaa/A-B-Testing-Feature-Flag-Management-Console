@@ -25,6 +25,7 @@ import (
 	"helios/backend/internal/controlplane/quota"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/platform/auth"
+	"helios/backend/internal/platform/events"
 	"helios/backend/internal/platform/httpx"
 )
 
@@ -103,6 +104,8 @@ type Service struct {
 	pool     *pgxpool.Pool
 	mailMode string
 	now      func() time.Time
+	drop     WorkspaceDropper
+	pub      events.Publisher
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
@@ -165,7 +168,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 func load(ctx context.Context, q querier, userID string) ([]Workspace, error) {
 	rows, err := q.Query(ctx, `
 		SELECT w.id::text, w.name, w.slug, m.role::text
-		FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
+		FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL
 		WHERE m.user_id = $1::uuid
 		ORDER BY m.last_active_at DESC NULLS LAST, w.created_at, w.id`, userID)
 	if err != nil {
@@ -182,7 +185,7 @@ func load(ctx context.Context, q querier, userID string) ([]Workspace, error) {
 	envRows, err := q.Query(ctx, `
 		SELECT e.workspace_id::text, e.id::text, e.key, e.name, e.is_production
 		FROM environments e
-		WHERE e.workspace_id IN (SELECT workspace_id FROM workspace_members WHERE user_id = $1::uuid)
+		WHERE e.workspace_id IN (SELECT m.workspace_id FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL WHERE m.user_id = $1::uuid)
 		ORDER BY e.is_production, e.key`, userID)
 	if err != nil {
 		return nil, err
@@ -218,7 +221,7 @@ func pendingInvites(ctx context.Context, q querier, email string) ([]PendingInvi
 	rows, err := q.Query(ctx, `
 		SELECT i.id::text, i.workspace_id::text, w.name, i.role::text, COALESCE(u.email, ''), i.expires_at
 		FROM workspace_invites i
-		JOIN workspaces w ON w.id = i.workspace_id
+		JOIN workspaces w ON w.id = i.workspace_id AND w.deleted_at IS NULL
 		LEFT JOIN auth.users u ON u.id = i.invited_by
 		WHERE i.email = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now()
 		ORDER BY i.created_at DESC`, e)
@@ -318,6 +321,15 @@ func createWorkspaceTx(ctx context.Context, tx pgx.Tx, user auth.User, name stri
 func (s *Service) Ensure(ctx context.Context, user auth.User) ([]Workspace, error) {
 	if list, err := load(ctx, s.pool, user.ID); err != nil || len(list) > 0 {
 		return list, err
+	}
+	// Someone whose only workspace is scheduled for deletion is not a new user: do not create a second
+	// personal workspace behind their back (they can restore it, or make one deliberately).
+	var anyMembership bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_members WHERE user_id = $1::uuid)`, user.ID).Scan(&anyMembership); err != nil {
+		return nil, err
+	}
+	if anyMembership {
+		return []Workspace{}, nil
 	}
 	if _, err := provisionPlan(defaultEnvironments); err != nil {
 		return nil, err

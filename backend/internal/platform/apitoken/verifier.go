@@ -92,6 +92,17 @@ func (v *Verifier) Invalidate(tokenID string) {
 	v.mu.Unlock()
 }
 
+// InvalidateWorkspace forgets every cached token of the workspace (it was scheduled for deletion).
+func (v *Verifier) InvalidateWorkspace(workspaceID string) {
+	v.mu.Lock()
+	for d, e := range v.cache {
+		if e.tok.WorkspaceID == workspaceID {
+			delete(v.cache, d)
+		}
+	}
+	v.mu.Unlock()
+}
+
 // InvalidateAll forgets everything cached. Used after the revocation
 // subscription was down: announcements may have been missed.
 func (v *Verifier) InvalidateAll() {
@@ -137,10 +148,16 @@ func (v *Verifier) Watch(ctx context.Context, sub events.Subscriber) {
 		v.InvalidateAll()
 		for payload := range msgs {
 			var m struct {
-				TokenID string `json:"tokenId"`
+				TokenID     string `json:"tokenId"`
+				WorkspaceID string `json:"workspaceId"`
 			}
-			if json.Unmarshal([]byte(payload), &m) == nil && m.TokenID != "" {
-				v.Invalidate(m.TokenID)
+			if json.Unmarshal([]byte(payload), &m) == nil {
+				switch {
+				case m.WorkspaceID != "":
+					v.InvalidateWorkspace(m.WorkspaceID)
+				case m.TokenID != "":
+					v.Invalidate(m.TokenID)
+				}
 			}
 		}
 		_ = closeFn()
@@ -149,10 +166,10 @@ func (v *Verifier) Watch(ctx context.Context, sub events.Subscriber) {
 
 const selectToken = `
 	SELECT t.id::text, t.workspace_id::text, t.name, t.token_prefix, t.role, COALESCE(t.created_by::text, ''), t.created_by_email,
-	       t.expires_at, t.revoked_at IS NOT NULL, t.token_hash,
+	       t.expires_at, t.revoked_at IS NOT NULL, t.token_hash, w.deleted_at IS NOT NULL,
 	       COALESCE((SELECT array_agg(e.environment_id::text ORDER BY e.environment_id) FROM api_token_environments e
 	                 WHERE e.workspace_id = t.workspace_id AND e.token_id = t.id), '{}')
-	FROM api_tokens t WHERE t.token_hash = $1`
+	FROM api_tokens t JOIN workspaces w ON w.id = t.workspace_id WHERE t.token_hash = $1`
 
 // lookup finds a well-formed token: from the cache, else the database.
 func (v *Verifier) lookup(ctx context.Context, raw string) (auth.APIToken, time.Time, *Rejection, error) {
@@ -171,10 +188,10 @@ func (v *Verifier) lookup(ctx context.Context, raw string) (auth.APIToken, time.
 
 	var t auth.APIToken
 	var expires time.Time
-	var revoked bool
+	var revoked, workspaceGone bool
 	var stored []byte
 	err := v.pool.QueryRow(ctx, selectToken, digest[:]).Scan(&t.ID, &t.WorkspaceID, &t.Name, &t.Prefix, &t.Role, &t.CreatorID, &t.CreatorEmail,
-		&expires, &revoked, &stored, &t.EnvironmentIDs)
+		&expires, &revoked, &stored, &workspaceGone, &t.EnvironmentIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return auth.APIToken{}, time.Time{}, &Rejection{Reason: ReasonUnknown}, nil
 	}
@@ -187,7 +204,11 @@ func (v *Verifier) lookup(ctx context.Context, raw string) (auth.APIToken, time.
 	rej := func(r Reason) *Rejection {
 		return &Rejection{TokenID: t.ID, WorkspaceID: t.WorkspaceID, Name: t.Name, Prefix: t.Prefix, CreatorID: t.CreatorID, CreatorEmail: t.CreatorEmail, Reason: r}
 	}
+	t.WorkspaceGone = workspaceGone
 	switch {
+	case workspaceGone && (revoked || !now.Before(expires) || t.CreatorID == ""):
+		// Nothing about a workspace scheduled for deletion is audited (it may be restored exactly as it was).
+		return auth.APIToken{}, time.Time{}, &Rejection{Reason: ReasonUnknown}, nil
 	case revoked:
 		return auth.APIToken{}, time.Time{}, rej(ReasonRevoked), nil
 	case !now.Before(expires):
@@ -303,7 +324,9 @@ func (v *Verifier) Wrap(jwt func(http.Handler) http.Handler, tokenAllowed bool) 
 				ratelimit.Reject(w, wait)
 				return
 			}
-			v.touch(r.Context(), tok.ID)
+			if !tok.WorkspaceGone {
+				v.touch(r.Context(), tok.ID)
+			}
 			ctx := auth.WithUser(r.Context(), auth.User{ID: tok.CreatorID, Email: tok.CreatorEmail, EmailStatus: auth.EmailConfirmed})
 			next.ServeHTTP(w, r.WithContext(auth.WithAPIToken(ctx, tok)))
 		})

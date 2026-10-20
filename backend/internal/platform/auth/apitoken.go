@@ -13,10 +13,13 @@ import (
 // The guard then caps the role at Role and keeps the token inside WorkspaceID and
 // EnvironmentIDs.
 type APIToken struct {
-	ID          string
-	Name        string
-	Prefix      string // "hlt_" and 8 hex characters: for lists and audit entries; not secret
-	WorkspaceID string
+	// WorkspaceGone: the token's workspace is scheduled for deletion. The token still authenticates, so the
+	// guards answer "not found" exactly as for a stranger, but nothing is recorded for it (no last-used time).
+	WorkspaceGone bool
+	ID            string
+	Name          string
+	Prefix        string // "hlt_" and 8 hex characters: for lists and audit entries; not secret
+	WorkspaceID   string
 	// Role is the highest workspace role the token may use: viewer, editor or admin.
 	Role string
 	// EnvironmentIDs restricts the token to these environments; empty means all of its workspace's.

@@ -63,6 +63,7 @@ const (
 	// POST /internal/scheduler/run, per client IP, applied BEFORE the secret is
 	// checked so guessing it is as slow as using it.
 	ClassSchedulerRun   = "scheduler_run"
+	ClassPurgeRun       = "purge_run"     // POST /internal/workspaces/purge, per client IP, before the secret is checked
 	ClassOutboxRun      = "outbox_run"    // POST /internal/outbox/run, per client IP, before the secret is checked
 	ClassWebhookWrite   = "webhook_write" // creating, changing, rotating and deleting webhook endpoints, per user
 	ClassWebhookTest    = "webhook_test"  // test pings and resends: each is an outbound request, per user
@@ -106,6 +107,7 @@ func DefaultRules() map[string]Rule {
 		// seconds is far above that and far below a guessing loop.
 		ClassSchedulerRun: {PerSecond: 0.2, Burst: 10},
 		ClassOutboxRun:    {PerSecond: 0.2, Burst: 10},
+		ClassPurgeRun:     {PerSecond: 0.2, Burst: 10},
 		ClassWebhookWrite: {PerSecond: 0.5, Burst: 20},
 		// Each test or resend makes the server call a customer's URL: 10 at once, then one every five seconds.
 		ClassWebhookTest:    {PerSecond: 0.2, Burst: 10},

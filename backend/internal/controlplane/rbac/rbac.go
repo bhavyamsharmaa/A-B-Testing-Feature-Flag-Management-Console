@@ -112,6 +112,11 @@ type rowQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+// A workspace scheduled for deletion (workspaces.deleted_at) is invisible: BOTH resolvers below (and
+// workspaces.load, which builds /me) join workspaces on "deleted_at IS NULL", so to every member and every
+// API token it is a workspace that does not exist (404), like a stranger's. Nothing else in the control plane
+// resolves a workspace, so no route can forget; a test walks the router registry to prove it.
+//
 // resolveEnvironment turns the {envId} path segment into an environment and
 // the caller's role in its workspace, in one query. The join on
 // workspace_members is what makes this the tenant boundary: an environment
@@ -128,6 +133,7 @@ func resolveEnvironment(ctx context.Context, db rowQuerier, userID, segment stri
 		SELECT e.id::text, e.workspace_id::text, e.key, e.is_production, m.role::text
 		FROM environments e
 		JOIN workspace_members m ON m.workspace_id = e.workspace_id
+		JOIN workspaces w ON w.id = e.workspace_id AND w.deleted_at IS NULL
 		WHERE e.id = $2::uuid AND m.user_id = $1::uuid`,
 		userID, segment,
 	).Scan(&env.ID, &env.WorkspaceID, &env.Key, &env.IsProduction, &role)
@@ -224,6 +230,7 @@ func resolveWorkspace(ctx context.Context, db rowQuerier, userID, segment string
 	var role WorkspaceRole
 	err := db.QueryRow(ctx, `
 		SELECT m.role::text FROM workspace_members m
+		JOIN workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL
 		WHERE m.user_id = $1::uuid AND m.workspace_id = $2::uuid`, userID, segment).Scan(&role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrWorkspaceNotFound

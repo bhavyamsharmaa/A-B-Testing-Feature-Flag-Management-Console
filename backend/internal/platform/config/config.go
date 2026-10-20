@@ -46,6 +46,8 @@ type Config struct {
 	WebhookAllowInsecureLocal string
 	// OutboxSecret (a SECRET, at least 32 characters) enables POST /internal/outbox/run; unset leaves it answering 404.
 	OutboxSecret string
+	// PurgeSecret (a SECRET, at least 32 characters) enables POST /internal/workspaces/purge; unset leaves it answering 404.
+	PurgeSecret string
 
 	// Email (invites). MailMode is "sink" (the default: nothing is sent) or "smtp".
 	MailMode          string
@@ -88,6 +90,7 @@ func Load() Config {
 		WebhookSecretKeyPrevious:  os.Getenv("WEBHOOK_SECRET_KEY_PREVIOUS"),
 		WebhookAllowInsecureLocal: os.Getenv("WEBHOOK_ALLOW_INSECURE_LOCAL"),
 		OutboxSecret:              os.Getenv("OUTBOX_SECRET"),
+		PurgeSecret:               os.Getenv("PURGE_SECRET"),
 		MailMode:                  os.Getenv("MAIL_MODE"),
 		MailSinkDir:               os.Getenv("MAIL_SINK_DIR"),
 		MailAllowInsecure:         os.Getenv("MAIL_ALLOW_INSECURE_SMTP"),

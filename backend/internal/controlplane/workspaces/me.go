@@ -75,6 +75,8 @@ type meResponse struct {
 	Invites           []inviteForMeView `json:"invites"`
 	// OwnershipOffers are offers of ownership addressed to the caller (they are an admin there).
 	OwnershipOffers []offerView `json:"ownershipOffers"`
+	// PendingDeletion: workspaces the caller owns that are scheduled for deletion and can be restored.
+	PendingDeletion []pendingView `json:"pendingDeletion"`
 }
 
 func viewOf(w Workspace) workspaceView {
@@ -94,7 +96,7 @@ func viewsOf(list []Workspace) []workspaceView {
 }
 
 func buildMe(user auth.User, list []Workspace, invites []PendingInvite) meResponse {
-	resp := meResponse{ID: user.ID, Email: user.Email, Workspaces: viewsOf(list), Invites: make([]inviteForMeView, 0, len(invites)), OwnershipOffers: []offerView{}}
+	resp := meResponse{ID: user.ID, Email: user.Email, Workspaces: viewsOf(list), Invites: make([]inviteForMeView, 0, len(invites)), OwnershipOffers: []offerView{}, PendingDeletion: []pendingView{}}
 	if len(list) > 0 {
 		resp.ActiveWorkspaceID = list[0].ID // load orders the most recently used first
 	}
@@ -140,6 +142,14 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	resp := buildMe(user, list, invites)
 	for _, o := range offers {
 		resp.OwnershipOffers = append(resp.OwnershipOffers, offerOf(o))
+	}
+	pending, err := h.svc.PendingFor(r.Context(), user.ID)
+	if err != nil {
+		httpx.WriteInternal(w, r, err)
+		return
+	}
+	for _, p := range pending {
+		resp.PendingDeletion = append(resp.PendingDeletion, pendingOf(p))
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	httpx.WriteJSON(w, http.StatusOK, resp)

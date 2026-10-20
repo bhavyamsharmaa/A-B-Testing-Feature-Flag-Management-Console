@@ -397,8 +397,9 @@ func (s *Service) AcceptInvite(ctx context.Context, user auth.User, token, invit
 		case token != "":
 			err = tx.QueryRow(ctx, `
 				SELECT id::text, workspace_id::text, email, role::text, expires_at <= now()
-				FROM workspace_invites
-				WHERE token_hash = $1 AND accepted_at IS NULL AND revoked_at IS NULL FOR UPDATE`,
+				FROM workspace_invites i
+				WHERE token_hash = $1 AND accepted_at IS NULL AND revoked_at IS NULL
+				  AND EXISTS (SELECT 1 FROM workspaces w WHERE w.id = i.workspace_id AND w.deleted_at IS NULL) FOR UPDATE OF i`,
 				hashToken(strings.TrimSpace(token))).Scan(&id, &workspaceID, &inviteEmail, &role, &expired)
 		default:
 			if !rbac.IsUUID(inviteID) {
@@ -407,8 +408,9 @@ func (s *Service) AcceptInvite(ctx context.Context, user auth.User, token, invit
 			// By id: only invites addressed to the caller exist for them.
 			err = tx.QueryRow(ctx, `
 				SELECT id::text, workspace_id::text, email, role::text, expires_at <= now()
-				FROM workspace_invites
-				WHERE id = $1::uuid AND email = $2 AND accepted_at IS NULL AND revoked_at IS NULL FOR UPDATE`,
+				FROM workspace_invites i
+				WHERE id = $1::uuid AND email = $2 AND accepted_at IS NULL AND revoked_at IS NULL
+				  AND EXISTS (SELECT 1 FROM workspaces w WHERE w.id = i.workspace_id AND w.deleted_at IS NULL) FOR UPDATE OF i`,
 				inviteID, email).Scan(&id, &workspaceID, &inviteEmail, &role, &expired)
 		}
 		if errors.Is(err, pgx.ErrNoRows) {

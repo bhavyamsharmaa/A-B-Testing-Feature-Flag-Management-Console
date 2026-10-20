@@ -166,7 +166,8 @@ func (r *Runner) Claim(ctx context.Context, n int) ([]Claimed, error) {
 	rows, err := r.pool.Query(ctx, `
 		WITH due AS (
 			SELECT id, status AS previous FROM scheduled_changes
-			WHERE (status = 'pending' AND due_at <= $1) OR (status = 'running' AND lease_expires_at <= $1)
+			WHERE ((status = 'pending' AND due_at <= $1) OR (status = 'running' AND lease_expires_at <= $1))
+			  AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = scheduled_changes.workspace_id AND w.deleted_at IS NOT NULL)
 			ORDER BY run_at, id
 			LIMIT $2
 			FOR UPDATE SKIP LOCKED
@@ -220,6 +221,7 @@ const selectForRun = `
 	       sc.created_by_token_id::text, COALESCE(t.revoked_at IS NOT NULL, false), t.expires_at
 	FROM scheduled_changes sc
 	LEFT JOIN api_tokens t ON t.id = sc.created_by_token_id AND t.workspace_id = sc.workspace_id
+	JOIN workspaces ws ON ws.id = sc.workspace_id AND ws.deleted_at IS NULL
 	JOIN flags f ON f.id = sc.flag_id AND f.workspace_id = sc.workspace_id
 	JOIN environments e ON e.id = sc.environment_id AND e.workspace_id = sc.workspace_id
 	WHERE sc.id = $1::uuid AND sc.workspace_id = $2::uuid
@@ -296,8 +298,9 @@ func (r *Runner) sweep(ctx context.Context, st *Stats) error {
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT id::text, workspace_id::text FROM scheduled_changes
-			WHERE (status = 'pending' AND run_at < $2)
-			   OR (status = 'running' AND lease_expires_at <= $1 AND (run_at < $2 OR attempts >= $3))
+			WHERE ((status = 'pending' AND run_at < $2)
+			   OR (status = 'running' AND lease_expires_at <= $1 AND (run_at < $2 OR attempts >= $3)))
+			  AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = scheduled_changes.workspace_id AND w.deleted_at IS NOT NULL)
 			ORDER BY run_at, id
 			LIMIT 200
 			FOR UPDATE SKIP LOCKED`, now, now.Add(-r.cfg.Grace), r.cfg.MaxAttempts)
@@ -500,6 +503,7 @@ func (r *Runner) cancelDeadTokenChanges(ctx context.Context, st *Stats) error {
 			SELECT sc.id::text, sc.workspace_id::text FROM scheduled_changes sc
 			JOIN api_tokens t ON t.id = sc.created_by_token_id AND t.workspace_id = sc.workspace_id
 			WHERE sc.status = 'pending' AND (t.revoked_at IS NOT NULL OR t.expires_at <= $1)
+			  AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = sc.workspace_id AND w.deleted_at IS NOT NULL)
 			ORDER BY sc.run_at, sc.id LIMIT 200
 			FOR UPDATE OF sc SKIP LOCKED`, now)
 		if err != nil {

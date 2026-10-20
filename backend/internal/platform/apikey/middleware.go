@@ -67,6 +67,10 @@ type Verifier struct {
 
 	watchMu  sync.Mutex
 	watchers map[string]map[chan struct{}]struct{} // key prefix -> open streams to wake
+
+	// prefixesOf: every key prefix this instance has verified, by workspace. Unlike the cache it is not
+	// forgotten when an entry expires, so a workspace's open streams can always be found and closed.
+	prefixesOf map[string]map[string]struct{}
 }
 
 // Throttle bounds how fast one client can make the verifier do expensive work
@@ -95,7 +99,7 @@ func (v *Verifier) cached(plaintext string) (Scope, bool) {
 }
 
 func NewVerifier(pool *pgxpool.Pool, ttl time.Duration) *Verifier {
-	return &Verifier{pool: pool, ttl: ttl, cache: map[[sha256.Size]byte]cacheEntry{}, watchers: map[string]map[chan struct{}]struct{}{}}
+	return &Verifier{pool: pool, ttl: ttl, cache: map[[sha256.Size]byte]cacheEntry{}, watchers: map[string]map[chan struct{}]struct{}{}, prefixesOf: map[string]map[string]struct{}{}}
 }
 
 var errInvalidKey = errors.New("invalid key")
@@ -115,9 +119,10 @@ func (v *Verifier) scopeFor(ctx context.Context, plaintext string) (Scope, error
 	sc := Scope{Prefix: prefix}
 	var hash string
 	err := v.pool.QueryRow(ctx, `
-		SELECT workspace_id::text, environment_id::text, key_hash
-		FROM api_keys
-		WHERE key_prefix = $1 AND kind = 'sdk' AND revoked_at IS NULL`,
+		SELECT k.workspace_id::text, k.environment_id::text, k.key_hash
+		FROM api_keys k
+		JOIN workspaces w ON w.id = k.workspace_id AND w.deleted_at IS NULL
+		WHERE k.key_prefix = $1 AND k.kind = 'sdk' AND k.revoked_at IS NULL`,
 		prefix,
 	).Scan(&sc.WorkspaceID, &sc.EnvironmentID, &hash)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -136,6 +141,10 @@ func (v *Verifier) scopeFor(ctx context.Context, plaintext string) (Scope, error
 
 	v.mu.Lock()
 	v.cache[digest] = cacheEntry{scope: sc, expires: now.Add(v.ttl)}
+	if v.prefixesOf[sc.WorkspaceID] == nil {
+		v.prefixesOf[sc.WorkspaceID] = map[string]struct{}{}
+	}
+	v.prefixesOf[sc.WorkspaceID][sc.Prefix] = struct{}{}
 	v.mu.Unlock()
 	return sc, nil
 }
@@ -160,6 +169,33 @@ func (v *Verifier) Invalidate(prefix string) {
 		}
 	}
 	v.watchMu.Unlock()
+}
+
+// InvalidateWorkspace forgets every cached verification of every key of the workspace and wakes all of its
+// open streams (they close). Call it when the workspace is scheduled for deletion, and when another instance
+// announces that.
+func (v *Verifier) InvalidateWorkspace(workspaceID string) {
+	v.mu.Lock()
+	for digest, e := range v.cache {
+		if e.scope.WorkspaceID == workspaceID {
+			delete(v.cache, digest)
+		}
+	}
+	prefixes := make([]string, 0, len(v.prefixesOf[workspaceID]))
+	for p := range v.prefixesOf[workspaceID] {
+		prefixes = append(prefixes, p)
+	}
+	delete(v.prefixesOf, workspaceID)
+	v.mu.Unlock()
+	for _, p := range prefixes {
+		v.Invalidate(p) // wakes the streams
+	}
+}
+
+// WorkspaceMessage is the payload that announces a workspace-wide drop on the revocation channel.
+func WorkspaceMessage(workspaceID string) string {
+	b, _ := json.Marshal(map[string]string{"workspaceId": workspaceID})
+	return string(b)
 }
 
 // InvalidateAll forgets every cached verification. Used after the revocation
@@ -220,10 +256,16 @@ func (v *Verifier) Watch(ctx context.Context, sub events.Subscriber) {
 		v.InvalidateAll()
 		for payload := range msgs {
 			var m struct {
-				Prefix string `json:"prefix"`
+				Prefix      string `json:"prefix"`
+				WorkspaceID string `json:"workspaceId"`
 			}
-			if json.Unmarshal([]byte(payload), &m) == nil && m.Prefix != "" {
-				v.Invalidate(m.Prefix)
+			if json.Unmarshal([]byte(payload), &m) == nil {
+				switch {
+				case m.WorkspaceID != "":
+					v.InvalidateWorkspace(m.WorkspaceID)
+				case m.Prefix != "":
+					v.Invalidate(m.Prefix)
+				}
 			}
 		}
 		_ = closeFn()
@@ -235,7 +277,10 @@ func (v *Verifier) Watch(ctx context.Context, sub events.Subscriber) {
 // use it to notice a revocation made on another instance.
 func (v *Verifier) Active(ctx context.Context, prefix string) (bool, error) {
 	var active bool
-	err := v.pool.QueryRow(ctx, `SELECT revoked_at IS NULL FROM api_keys WHERE key_prefix = $1 AND kind = 'sdk'`, prefix).Scan(&active)
+	err := v.pool.QueryRow(ctx, `
+		SELECT k.revoked_at IS NULL AND w.deleted_at IS NULL
+		FROM api_keys k JOIN workspaces w ON w.id = k.workspace_id
+		WHERE k.key_prefix = $1 AND k.kind = 'sdk'`, prefix).Scan(&active)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

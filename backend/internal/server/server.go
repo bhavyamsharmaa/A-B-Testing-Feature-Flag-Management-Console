@@ -29,6 +29,7 @@ import (
 	"helios/backend/internal/controlplane/segments"
 	"helios/backend/internal/controlplane/webhooks"
 	"helios/backend/internal/controlplane/workspaces"
+	"helios/backend/internal/controlplane/wspurge"
 	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/dataplane/stream"
 	"helios/backend/internal/dataplane/track"
@@ -88,6 +89,9 @@ type Deps struct {
 	// OutboxSecret enables POST /internal/outbox/run when at least outbox.MinSharedLen long;
 	// empty (or shorter) leaves the endpoint answering 404. It is a secret: never log it.
 	OutboxSecret string
+	// PurgeSecret enables POST /internal/workspaces/purge when at least wspurge.MinSharedLen long; empty (or
+	// shorter) leaves the endpoint answering 404. It is a secret: never log it.
+	PurgeSecret string
 	// StreamRecheck is how often an open /sdk/stream asks whether its key was
 	// revoked. Zero means 10 seconds.
 	StreamRecheck time.Duration
@@ -222,7 +226,9 @@ func New(d Deps) *Router {
 	}
 	outboxWorker := delivery.NewWorker(d.Pool, del)
 	wh := webhooks.NewHandlers(d.Pool, del.Box, del.Guard, outboxWorker, del.Outbox.Now)
-	ws := workspaces.NewHandlers(workspaces.NewService(d.Pool).WithMail(del.Mail.Mode(), del.Outbox.Now), d.Email, d.InvitesByID)
+	sdkKeys := apikey.NewVerifier(d.Pool, d.SDKKeyCacheTTL)
+	drops := &dropFan{sdk: sdkKeys} // the API token verifier joins it below, once it exists
+	ws := workspaces.NewHandlers(workspaces.NewService(d.Pool).WithMail(del.Mail.Mode(), del.Outbox.Now).WithRuntime(drops, d.Publisher), d.Email, d.InvitesByID)
 	fl := flags.NewHandlers(d.Pool, d.Publisher)
 	al := auditlog.NewHandlers(d.Pool)
 	sg := segments.NewHandlers(d.Pool, d.Publisher)
@@ -234,7 +240,6 @@ func New(d Deps) *Router {
 	runner := scheduling.NewRunner(d.Pool, d.Publisher, d.Clock, d.Scheduler)
 	ex := experiments.NewHandlers(d.Pool)
 	res := results.NewHandlers(d.Pool)
-	sdkKeys := apikey.NewVerifier(d.Pool, d.SDKKeyCacheTTL)
 	keys := sdkkeys.NewHandlers(d.Pool, sdkKeys, d.Publisher)
 	ctx := d.Context
 	if ctx == nil {
@@ -259,6 +264,7 @@ func New(d Deps) *Router {
 	// authenticator, a per-user limit, then the route's own extra limits.
 	tokens := apitoken.NewVerifier(d.Pool, lim, d.APITokenCacheTTL, clock)
 	tokens.OnRejected = apitokens.AuditRejection(d.Pool)
+	drops.tokens = tokens
 	tk := apitokens.NewHandlers(d.Pool, tokens, d.Publisher)
 	go tokens.Watch(ctx, d.Subscriber) // revocations announced by other instances
 	// authn is the authentication of a control-plane route: the user JWT, or an API
@@ -349,6 +355,10 @@ func New(d Deps) *Router {
 	workspace("DELETE /workspaces/{wsId}/ownership-offers/{offerId}", rbac.WorkspaceOwner, ws.CancelOffer, perUser(ratelimit.ClassInvite))
 	self("POST /ownership-offers/{offerId}/accept", ws.AcceptOffer, perUser(ratelimit.ClassAccept))
 	self("POST /ownership-offers/{offerId}/decline", ws.DeclineOffer, perUser(ratelimit.ClassAccept))
+	// Deleting a workspace: schedule (owner, after typing its name), restore (during the grace period; a self
+	// route because a workspace scheduled for deletion is invisible to the workspace routes).
+	workspace("POST /workspaces/{wsId}/schedule-deletion", rbac.WorkspaceOwner, ws.ScheduleDeletion, perUser(ratelimit.ClassWorkspace))
+	self("POST /workspaces/restore", ws.Restore, perUser(ratelimit.ClassWorkspace))
 	workspace("POST /workspaces/{wsId}/invites/{inviteId}/resend", rbac.WorkspaceAdmin, ws.ResendInvite, perUser(ratelimit.ClassInvite))
 
 	// Webhooks (see docs/WEBHOOKS.md): admins and owners, session only (token-denied).
@@ -360,6 +370,8 @@ func New(d Deps) *Router {
 	workspace("POST /workspaces/{wsId}/webhooks/{endpointId}/test", rbac.WorkspaceAdmin, wh.Test, perUser(ratelimit.ClassWebhookTest))
 	workspace("GET /workspaces/{wsId}/webhooks/{endpointId}/deliveries", rbac.WorkspaceAdmin, wh.Deliveries)
 	workspace("POST /workspaces/{wsId}/webhooks/{endpointId}/deliveries/{deliveryId}/resend", rbac.WorkspaceAdmin, wh.Resend, perUser(ratelimit.ClassWebhookTest))
+	purger := wspurge.New(d.Pool, wspurge.Config{Pub: d.Publisher})
+	internal("POST /internal/workspaces/purge", wspurge.InternalHandler(d.PurgeSecret, purger.Run), ratelimit.ClassPurgeRun)
 	internal("POST /internal/outbox/run", outbox.InternalHandler(d.OutboxSecret, outboxWorker.Run), ratelimit.ClassOutboxRun)
 
 	// API tokens (see docs/API_TOKENS.md). Managing them is for admins and owners and is
@@ -436,4 +448,17 @@ func New(d Deps) *Router {
 	sdk("GET /sdk/stream", stream.Handler(d.Subscriber, sdkKeys, recheck, lim), ratelimit.ClassSDKKey, ratelimit.ClassStream)
 
 	return rt
+}
+
+// dropFan forgets a workspace in every verifier of this instance: its SDK keys (and their streams) and its API tokens.
+type dropFan struct {
+	sdk    *apikey.Verifier
+	tokens *apitoken.Verifier
+}
+
+func (f *dropFan) InvalidateWorkspace(workspaceID string) {
+	f.sdk.InvalidateWorkspace(workspaceID)
+	if f.tokens != nil {
+		f.tokens.InvalidateWorkspace(workspaceID)
+	}
 }
