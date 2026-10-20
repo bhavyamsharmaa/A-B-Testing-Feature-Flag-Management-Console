@@ -140,7 +140,7 @@ func (r *Runner) Run(ctx context.Context) (Stats, error) {
 			if ctx.Err() != nil {
 				// Asked to stop (shutdown, timeout) between claiming and executing: give the rest back at once, so
 				// they are not stranded under a lease until it expires.
-				r.release(claimed[i:], &st)
+				r.Release(claimed[i:], &st)
 				return st, nil
 			}
 			st.Claimed++
@@ -155,7 +155,7 @@ func (r *Runner) Run(ctx context.Context) (Stats, error) {
 			if err != nil {
 				// the row stays running with its lease; another pass takes it over
 				log.Printf("scheduler: change %s: %v", c.ID, err)
-				r.release(claimed[i:i+1], &st) // give it back now rather than at lease expiry (a no-op if it finished)
+				r.Release(claimed[i:i+1], &st) // give it back now rather than at lease expiry (a no-op if it finished)
 			}
 		}
 		handled += len(claimed)
@@ -169,10 +169,10 @@ func (r *Runner) Run(ctx context.Context) (Stats, error) {
 // executeTimeout bounds one change's transaction once it has begun.
 const executeTimeout = 30 * time.Second
 
-// release gives claimed rows back: pending again, lease cleared, the attempt that never happened taken off. It only
+// Release gives claimed rows back: pending again, lease cleared, the attempt that never happened taken off. It only
 // touches rows still running under THIS worker's lease, so a row that finished, was cancelled or was taken over after
 // its lease expired is left alone. It uses its own short context because it runs when the caller's is already done.
-func (r *Runner) release(rows []Claimed, st *Stats) {
+func (r *Runner) Release(rows []Claimed, st *Stats) {
 	if len(rows) == 0 {
 		return
 	}

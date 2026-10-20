@@ -158,7 +158,7 @@ func TestTheRealBinaryRefusesDevelopmentSettingsInProductionBeforeConnectingToAn
 			t.Errorf("the log does not name %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "connected to Redis") || strings.Contains(text, "listening on") {
+	if strings.Contains(text, "connected to Redis") || strings.Contains(text, "listening on") || strings.Contains(text, "could not connect") || strings.Contains(text, "database pool:") {
 		t.Errorf("it got as far as connecting or listening:\n%s", text)
 	}
 	if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {

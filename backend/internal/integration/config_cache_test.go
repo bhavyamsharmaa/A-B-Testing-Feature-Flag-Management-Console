@@ -50,6 +50,12 @@ func ccLimiter() *ratelimit.Limiter {
 
 func newCCWorld(t *testing.T, ttl time.Duration, mod2 func(*server.Deps)) *ccWorld {
 	t.Helper()
+	return newCCWorldWith(t, ttl, nil, mod2)
+}
+
+// newCCWorldWith also adjusts instance 1 (mod1), e.g. to make it deaf to the broker.
+func newCCWorldWith(t *testing.T, ttl time.Duration, mod1, mod2 func(*server.Deps)) *ccWorld {
+	t.Helper()
 	url := os.Getenv("HELIOS_TEST_REDIS_URL")
 	if url == "" {
 		t.Skip("HELIOS_TEST_REDIS_URL not set; skipping the Redis-backed cache test")
@@ -71,7 +77,12 @@ func newCCWorld(t *testing.T, ttl time.Duration, mod2 func(*server.Deps)) *ccWor
 		d.Clock = clock.now
 		d.Limiter = ccLimiter()
 	}
-	x := newTenantsWith(t, common)
+	x := newTenantsWith(t, func(d *server.Deps) {
+		common(d)
+		if mod1 != nil {
+			mod1(d)
+		}
+	})
 	w := &ccWorld{delWorld: &delWorld{tenants: x, clock: clock}}
 	w.stage, w.prod = envID(t, x.wsA, "staging"), envID(t, x.wsA, "production")
 	w.i2, w.r2 = x.h.newInstanceRouter(func(d *server.Deps) {
@@ -518,5 +529,34 @@ func TestTheSnapshotLoaderReadsNothingForAWorkspaceScheduledForDeletion(t *testi
 	snap, err = evaluation.LoadSnapshot(context.Background(), w.h.pool, w.wsA.ID, w.devA)
 	if err != nil || len(snap.Configs) != 0 || len(snap.Experiments) != 0 {
 		t.Errorf("a deleted workspace's configuration was loaded: %+v %v", snap, err)
+	}
+}
+
+// Instance 1 hears nothing from the broker (no pattern subscription, so no echo of its own messages either): what it
+// does itself must still drop its own entries at once.
+func TestTheInstanceThatTookAChangeDropsItsOwnEntriesEvenWhenItHearsNothingFromTheBroker(t *testing.T) {
+	url := os.Getenv("HELIOS_TEST_REDIS_URL")
+	if url == "" {
+		t.Skip("HELIOS_TEST_REDIS_URL not set")
+	}
+	w := newCCWorldWith(t, time.Hour, func(d *server.Deps) { d.Subscriber = noPatterns{d.Subscriber} }, nil)
+	w.flag(t, "cc", map[string]any{"enabled": true, "fallthroughVariationId": "on"})
+	if _, e := evalAt(t, w.h.srv.URL, w.sdkKeyA, "cc"); e.Variation != "on" {
+		t.Fatal(e)
+	}
+	w.h.expect(200, w.a, "PATCH", "/environments/"+w.devA+"/flags/cc", map[string]any{"fallthroughVariationId": "off"})
+	if _, e := evalAt(t, w.h.srv.URL, w.sdkKeyA, "cc"); e.Variation != "off" {
+		t.Errorf("after its own edit the deaf instance served %+v", e)
+	}
+	w.h.expect(200, w.a, "POST", "/environments/"+w.devA+"/flags/cc/kill", nil)
+	if _, e := evalAt(t, w.h.srv.URL, w.sdkKeyA, "cc"); e.Reason != "FLAG_DISABLED" {
+		t.Errorf("after its own kill the deaf instance served %+v", e)
+	}
+	if !w.r1.ConfigCache.Has(w.wsA.ID, w.devA) {
+		t.Fatal("setup: nothing cached on instance 1")
+	}
+	w.schedule(t, 200)
+	if w.r1.ConfigCache.Has(w.wsA.ID, w.devA) {
+		t.Error("the deaf instance kept the deleted workspace's configuration")
 	}
 }

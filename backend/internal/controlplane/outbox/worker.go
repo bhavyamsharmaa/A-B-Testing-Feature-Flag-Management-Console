@@ -225,7 +225,7 @@ func (w *Worker) Run(ctx context.Context) (Stats, error) {
 			}(d)
 		}
 		wg.Wait()
-		w.release(unstarted, &st)
+		w.Release(unstarted, &st)
 		handled += len(claimed)
 	}
 	if ctx.Err() != nil {
@@ -242,9 +242,9 @@ func (w *Worker) Run(ctx context.Context) (Stats, error) {
 // deliverTimeout bounds one delivery once it has begun (the sender has its own, shorter, timeout).
 const deliverTimeout = 30 * time.Second
 
-// release gives claimed rows back unsent: pending again, lease cleared, the attempt that never happened taken off. It
+// Release gives claimed rows back unsent: pending again, lease cleared, the attempt that never happened taken off. It
 // only touches rows still delivering under THIS worker's lease. Its own short context, because the caller's is done.
-func (w *Worker) release(rows []Delivery, st *Stats) {
+func (w *Worker) Release(rows []Delivery, st *Stats) {
 	if len(rows) == 0 {
 		return
 	}

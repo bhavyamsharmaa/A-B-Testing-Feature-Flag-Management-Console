@@ -359,3 +359,52 @@ func TestARowLeftBehindByAKilledWorkerIsRecoveredWhenItsLeaseExpires(t *testing.
 		t.Errorf("after the lease expired: %+v %v", st, err)
 	}
 }
+
+// A release only touches rows still leased to the releasing worker: a row whose lease expired and was taken over by
+// another worker in the meantime is that worker's now.
+func TestReleasingNeverTouchesARowAnotherWorkerHasTakenOver(t *testing.T) {
+	w := newOutboxWorld(t)
+	id := w.enqueue(t, w.wsA.ID, w.endpoint(t, w.wsA.ID))
+	a := w.worker("worker-a", &fakeSender{}, outbox.Config{})
+	claimed, err := a.Claim(context.Background(), 5)
+	if err != nil || len(claimed) != 1 {
+		t.Fatal(err, claimed)
+	}
+	// worker B takes the row over (as after a lease expiry)
+	if err := w.h.rawExec(`UPDATE outbox SET lease_owner = 'worker-b', attempts = attempts + 1 WHERE delivery_id = $1::uuid`, id); err != nil {
+		t.Fatal(err)
+	}
+	var st outbox.Stats
+	a.Release(claimed, &st)
+	if status, attempts, _, _ := w.state(id); status != "delivering" || attempts != 2 || st.Released != 0 {
+		t.Errorf("worker A's release touched worker B's row: status %s attempts %d released %d", status, attempts, st.Released)
+	}
+	// its own claim is released
+	own := w.enqueue(t, w.wsA.ID, w.endpoint(t, w.wsA.ID))
+	claimed2, _ := a.Claim(context.Background(), 5)
+	a.Release(claimed2, &st)
+	if status, attempts, _, _ := w.state(own); status != "pending" || attempts != 0 || st.Released != 1 {
+		t.Errorf("its own row: %s %d released %d", status, attempts, st.Released)
+	}
+}
+
+func TestSchedulerReleasingNeverTouchesAChangeAnotherWorkerHasTakenOver(t *testing.T) {
+	w := newSchedWorld(t)
+	h := w.h
+	h.expect(201, w.a, "POST", "/environments/"+w.devA+"/flags", boolFlag("tk"))
+	w.scheduleOK(t, w.a, w.devA, "tk", "k-tk", "enable", 2*time.Minute, nil)
+	w.clock.advance(3 * time.Minute)
+	a := scheduling.NewRunner(h.pool, h.bus, w.clock.now, scheduling.Config{WorkerID: "worker-a"})
+	claimed, err := a.Claim(context.Background(), 5)
+	if err != nil || len(claimed) != 1 {
+		t.Fatal(err, claimed)
+	}
+	if err := h.rawExec(`UPDATE scheduled_changes SET lease_owner = 'worker-b', attempts = attempts + 1`); err != nil {
+		t.Fatal(err)
+	}
+	var st scheduling.Stats
+	a.Release(claimed, &st)
+	if got := h.dbString2(`SELECT status || ' ' || lease_owner || ' ' || attempts FROM scheduled_changes`); got != "running worker-b 2" || st.Released != 0 {
+		t.Errorf("worker A's release touched worker B's change: %s (released %d)", got, st.Released)
+	}
+}
