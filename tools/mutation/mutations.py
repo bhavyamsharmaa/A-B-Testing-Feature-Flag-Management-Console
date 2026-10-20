@@ -1016,7 +1016,7 @@ BACKEND += [
     # LISTEN_ADDR
     ("listen: LISTEN_ADDR does not win over PORT", 'backend/internal/platform/config/config.go', "	if v := strings.TrimSpace(listenAddr); v != \"\" {", "	if v := strings.TrimSpace(listenAddr); v != \"\" && port == \"\" {", './internal/platform/config', 'ListenAddressPrecedence'),
     ("listen: PORT is ignored", 'backend/internal/platform/config/config.go', "	if v := strings.TrimSpace(port); v != \"\" {", "	if v := strings.TrimSpace(port); v != \"\" && false {", './internal/platform/config', 'ListenAddress|LoadReads'),
-    ("listen: a port of 0 or above 65535 is accepted", 'backend/internal/platform/config/config.go', "if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != p {", "if err != nil {", './internal/platform/config', 'WrongValue'),
+    ("listen: a port of 0 or above 65535 is accepted", 'backend/internal/platform/config/config.go', "if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != p {", "if err != nil || n < -1 || n > 99999 || strconv.Itoa(n) != p {", './internal/platform/config', 'WrongValue'),
     ("listen: a bad LISTEN_ADDR falls back to PORT", 'backend/internal/platform/config/config.go', "		host, p, err := net.SplitHostPort(v)\n		if err != nil {\n			return \"\", fmt.Errorf(\"LISTEN_ADDR must be host:port", "		host, p, err := net.SplitHostPort(v)\n		if err != nil && port != \"\" {\n			return ResolveListenAddr(\"\", port)\n		}\n		if err != nil {\n			return \"\", fmt.Errorf(\"LISTEN_ADDR must be host:port", './internal/platform/config', 'WrongValue'),
     ("listen: any host text is accepted", 'backend/internal/platform/config/config.go', "if strings.Contains(h, \"%\") || !hostRE.MatchString(h) || len(h) > 253 {", "if false {", './internal/platform/config', 'WrongValue'),
     # control
