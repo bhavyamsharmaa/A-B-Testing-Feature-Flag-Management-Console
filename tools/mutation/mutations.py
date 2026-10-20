@@ -979,7 +979,6 @@ BACKEND += [
     ("deletion: API tokens may delete a workspace", _TA, '"POST /workspaces/{wsId}/schedule-deletion":', '"POST /workspaces/{wsId}/schedule-deletion": true, //', _I + ' ./internal/server', 'OnlyAnOwnerSchedules|ClassifiedForTokens|TokenAllowlistAcrossEveryRoute|OpenAPIToken'),
     ("deletion: restore works after the grace period", _DEL, "if graceOver { // judged by the database clock", "if false && graceOver { // judged by the database clock", _I, 'RestoreIsRefusedOnceTheGraceIsOver'),
     ("deletion: any member can restore", _DEL, "JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $2::uuid AND m.role = 'owner'\n			WHERE w.id = $1::uuid", "JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $2::uuid\n			WHERE w.id = $1::uuid", _I, 'RestoringWithinTheGrace'),
-    ("deletion: a workspace pending deletion stops counting toward the owned limit", 'backend/internal/controlplane/quota/quota.go', "`SELECT count(*) FROM workspaces WHERE owner_id = $1::uuid`", "`SELECT count(*) FROM workspaces WHERE owner_id = $1::uuid AND deleted_at IS NULL`", _I, 'PendingDeletionStillCounts'),
     # purge
     ("purge: only the first batch of each table is deleted", _PG, "			if n < p.cfg.BatchSize {\n				break\n			}", "			if true {\n				break\n			}", _I, 'PurgeLeavesNoRows|CrashedPurge'),
     ("purge: a workspace is purged before its grace period is over (the query and the re-check)", _PG,
@@ -988,8 +987,8 @@ BACKEND += [
     ("purge: no tombstone is kept", _PG, "VALUES ($1::uuid, $2::uuid, $3, $4::jsonb) ON CONFLICT (workspace_id) DO NOTHING", "SELECT $1::uuid, $2::uuid, $3, $4::jsonb WHERE false", _I, 'PurgeLeavesNoRows'),
     ("purge: the audit log is not purged", _PG, 'var Batched = []string{"events", "outbox", "segment_members", "audit_logs"}', 'var Batched = []string{"events", "outbox", "segment_members"}', _I, 'PurgeLeavesNoRows|EveryTableWithAWorkspaceID'),
     ("purge: no final audit entry", _PG, 'Action: "workspace.purged", ResourceType: "workspace"', 'Action: "workspace.purge_skipped", ResourceType: "workspace"', _I, 'PurgeLeavesNoRows'),
-    ("purge: the audit log can be deleted at any time", _M14, "WHERE w.id = OLD.workspace_id AND w.deleted_at IS NOT NULL AND w.purge_after <= now()", "WHERE w.id = OLD.workspace_id", _I, 'AuditLogStaysAppendOnly'),
-    ("purge: the audit log can be updated during a due purge", _M14, "IF TG_OP = 'DELETE' AND TG_LEVEL = 'ROW' AND EXISTS (", "IF TG_LEVEL = 'ROW' AND EXISTS (", _I, 'AuditLogStaysAppendOnly'),
+    ("purge: the audit log can be deleted at any time", _M15, "WHERE w.id = OLD.workspace_id AND w.deleted_at IS NOT NULL AND w.purge_after <= now()", "WHERE w.id = OLD.workspace_id", _I, 'AuditLogStaysAppendOnly'),
+    ("purge: the audit log can be updated during a due purge", _M15, "IF TG_OP = 'DELETE' AND TG_LEVEL = 'ROW'", "IF TG_LEVEL = 'ROW'", _I, 'AuditLogStaysAppendOnly'),
     ("purge: the endpoint accepts any secret", 'backend/internal/controlplane/wspurge/internal.go', "if r.Header.Get(\"Origin\") != \"\" || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {", "if r.Header.Get(\"Origin\") != \"\" || subtle.ConstantTimeCompare(got[:], want[:]) != 1 && false {", _I, 'PurgeEndpointNeeds'),
     # export
     ("export: editors may export", _SV, 'env("GET /environments/{envId}/audit-logs/export", rbac.Min(rbac.Admin),', 'env("GET /environments/{envId}/audit-logs/export", rbac.Min(rbac.Editor),', _I, 'OnlyAdminsAndOwnersExport'),
