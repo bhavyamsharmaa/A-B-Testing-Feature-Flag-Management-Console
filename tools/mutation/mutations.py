@@ -1070,3 +1070,102 @@ BACKEND += [
     ("local stack: a non-loopback LISTEN_ADDR is accepted", 'backend/scripts/local_stack.sh', 'case "${API_ADDR%:*}" in 127.*|localhost|"[::1]") ;; *) die', 'case "${API_ADDR%:*}" in *) ;; esac; case "x" in 127.*|localhost|"[::1]") ;; *) die', './scripts', 'LocalStackRefuses'),
     ("local stack: a remote database host is accepted", 'backend/scripts/local_stack.sh', "case \"$h\" in 127.0.0.1|localhost) ;; *) die", "case \"$h\" in *) ;; esac; case \"x\" in 127.0.0.1|localhost) ;; *) die", './scripts', 'LocalStackRefuses'),
 ]
+
+# ---- ops readiness: cache, key verification, track, shutdown, production mode, the runbook, the image ----
+_CC = 'backend/internal/dataplane/configcache/cache.go'
+_AK = 'backend/internal/platform/apikey/middleware.go'
+_TG = 'backend/internal/dataplane/track/gate.go'
+_TH = 'backend/internal/dataplane/track/handler.go'
+_HL = 'backend/internal/platform/health/health.go'
+_ST = 'backend/internal/dataplane/stream/stream.go'
+_GR = 'backend/internal/platform/graceful/graceful.go'
+_PR = 'backend/internal/platform/config/production.go'
+_CCU = './internal/dataplane/configcache'
+_CCI = './internal/integration'
+_CCT = 'ConfigCache|AnEditReaches|AKillIsFast|ADeletedFlagIs|ScheduledChangeRunByAnother|PromotedConfiguration|StartingAndStopping|DeletedWorkspaceIsDropped|MessageIsLost|WriterThatDoesNot|NoInstanceEver|ColdInstance|SnapshotLoaderReads'
+
+BACKEND += [
+    ("cache: a change made on this instance does not drop this instance's entry", _CC, "		p.Cache.Apply(channel, string(payload))", "		_ = payload", _CCU + ' ' + _CCI, 'InvalidatingPublisher|AnEditReaches|AKillIsFast|PromotedConfiguration|DeletedFlagIs'),
+    ("cache: flag-channel messages from other instances are ignored", _CC, "				c.Apply(m.Channel, m.Payload)", "				_ = m", _CCI, 'AnEditReaches|AKillIsFast|DeletedFlagIs|ScheduledChangeRunByAnother|PromotedConfiguration|StartingAndStopping|NoInstanceEver'),
+    ("cache: entries never expire (the TTL fallback is gone)", _CC, "if e := c.entries[k]; e != nil && e.snap != nil && now.Before(e.expires) {\n		snap := e.snap\n		e.lastUsed.Store(now.UnixNano())\n		c.mu.RUnlock()", "if e := c.entries[k]; e != nil && e.snap != nil {\n		snap := e.snap\n		e.lastUsed.Store(now.UnixNano())\n		c.mu.RUnlock()", _CCU + ' ' + _CCI, 'ServedFromMemoryUntilTheTTL|MessageIsLost|WriterThatDoesNot'),
+    ("cache: a load that began before an invalidation is stored", _CC, "	case cl.stale:\n		c.stale.Add(1)", "	case false:\n		c.stale.Add(1)", _CCU, 'LoadStartedBeforeAnInvalidation'),
+    ("cache: a request after an invalidation joins the load that began before it", _CC, "		cl.stale = true\n		delete(c.calls, k) // requests from now on start a load of their own", "		cl.stale = true", _CCU, 'LoadStartedBeforeAnInvalidation'),
+    ("cache: the announced version is not a floor", _CC, "func satisfies(snap *evaluation.Snapshot, floor map[string]int64) bool {\n	for flag, min := range floor {", "func satisfies(snap *evaluation.Snapshot, floor map[string]int64) bool {\n	for flag, min := range map[string]int64{} {\n		_, _ = flag, floor", _CCU, 'BelowTheAnnouncedVersion'),
+    ("cache: an older snapshot replaces a newer one", _CC, "func olderThan(snap, held *evaluation.Snapshot) bool {\n	if held == nil {\n		return false\n	}", "func olderThan(snap, held *evaluation.Snapshot) bool {\n	if held == nil || true {\n		return false\n	}", _CCU, 'OlderSnapshotNeverReplaces'),
+    ("cache: concurrent misses each read the database (no single loader)", _CC, "	start := cl == nil\n	if start {\n		cl = &call{done: make(chan struct{})}", "	start := true\n	if start {\n		cl = &call{done: make(chan struct{})}", _CCU + ' ' + _CCI, 'ConcurrentMissesShareOneLoad|ColdInstance'),
+    ("cache: an environment with no flags is cached for the full TTL", _CC, "		ttl = c.opt.EmptyTTL", "		ttl = c.opt.TTL", _CCU, 'NoFlagsIsCachedBriefly'),
+    ("cache: the size bound is not enforced", _CC, "	for len(c.entries) > c.opt.MaxEntries || c.bytes > c.opt.MaxBytes {", "	for false && len(c.entries) > c.opt.MaxEntries || c.bytes > c.opt.MaxBytes+1<<40 {", _CCU, 'MemoryIsBounded|ConcurrentReaders'),
+    ("cache: a deleted workspace is not dropped from this instance's cache", 'backend/internal/server/server.go', "	if f.configs != nil {\n		f.configs.InvalidateWorkspace(workspaceID)\n	}", "", _CCI, 'DeletedWorkspaceIsDropped'),
+    ("cache: a workspace drop announced by another instance is ignored", _CC, "					c.InvalidateWorkspace(m.WorkspaceID)", "					_ = m", _CCU + ' ' + _CCI, 'RunHearsOtherInstances|DeletedWorkspaceIsDropped'),
+    ("cache: the loader reads a workspace scheduled for deletion", 'backend/internal/dataplane/evaluation/snapshot.go', "		JOIN workspaces w ON w.id = f.workspace_id AND w.deleted_at IS NULL\n", "", _CCI, 'SnapshotLoaderReads'),
+    ("cache: the loader does not confine itself to the workspace", 'backend/internal/dataplane/evaluation/snapshot.go', "WHERE fc.environment_id = $1::uuid AND f.workspace_id = $2::uuid`", "WHERE fc.environment_id = $1::uuid AND $2::uuid IS NOT NULL`", _CCI, 'SnapshotLoaderReads'),
+    ("cache: a kill is not published", 'backend/internal/controlplane/flags/flags.go', '	h.publish(ctx, access.Env.WorkspaceID, access.Env.ID, "killed", view.Key, view.Config.Enabled, view.Config.Version)\n', '', _CCI, 'AKillIsFast'),
+    ("cache: starting an experiment is not published", 'backend/internal/controlplane/experiments/handlers.go', '	h.publishRunState(ctx, access.Env, "experiment_started", key)\n', '', _CCI, 'StartingAndStopping'),
+    ("cache: stopping an experiment is not published", 'backend/internal/controlplane/experiments/handlers.go', '	h.publishRunState(ctx, access.Env, "experiment_stopped", key)\n', '', _CCI, 'StartingAndStopping'),
+    ("cache: a promotion is not published", 'backend/internal/controlplane/flags/promote.go', '	h.publish(ctx, access.Env.WorkspaceID, access.Env.ID, "updated", view.Key, view.Config.Enabled, view.Config.Version)\n', '', _CCI, 'PromotedConfiguration'),
+    # single-flight key verification
+    ("apikey: every concurrent miss runs its own Argon2id hash", _AK, "	leader := f == nil || f.epoch != v.epoch", "	leader := true", './internal/platform/apikey', 'ConcurrentMissesForOneKey|DifferentKeys|FailedVerificationIsShared'),
+    ("apikey: a verification that began before a revocation is cached", _AK, "if f.err == nil && v.epoch == f.epoch {", "if f.err == nil {", './internal/platform/apikey', 'RevocationDuringVerification'),
+    ("apikey: a request after a revocation joins the verification that began before it", _AK, "	leader := f == nil || f.epoch != v.epoch", "	leader := f == nil", './internal/platform/apikey', 'RevocationDuringVerification'),
+    ("apikey: invalidating a key does not count as an invalidation", _AK, "func (v *Verifier) Invalidate(prefix string) {\n	v.mu.Lock()\n	v.epoch++", "func (v *Verifier) Invalidate(prefix string) {\n	v.mu.Lock()", './internal/platform/apikey', 'RevocationDuringVerification'),
+    # /track backpressure
+    ("track: no bound on concurrent writers", 'backend/internal/server/server.go', "Mode: d.ExposureMode, Gate: trackGate})", "Mode: d.ExposureMode, Gate: nil})", _CCI, 'DatabaseIsSaturated|RefundedItsRate'),
+    ("track: a refused batch has no Retry-After", _TG, '	w.Header().Set("Retry-After", retryAfterSeconds())\n	httpx.WriteError(w, http.StatusServiceUnavailable, "TRACK_BUSY"', '	httpx.WriteError(w, http.StatusServiceUnavailable, "TRACK_BUSY"', _CCI, 'DatabaseIsSaturated'),
+    ("track: a refused batch keeps its rate-limit tokens", _TH, "						d.Limiter.Refund(ratelimit.ClassSDKTrackEvents, sc.Prefix, len(req.Events))", "						_ = d.Limiter", _CCI, 'RefundedItsRate'),
+    ("track: the wait for a turn is effectively unlimited", _TG, "		t := time.NewTimer(g.wait)", "		t := time.NewTimer(g.wait * 1000)", _CCI, 'DatabaseIsSaturated'),
+    ("track: the gate lets everyone in", _TG, "	return &Gate{slots: make(chan struct{}, max), wait: wait}", "	return &Gate{slots: make(chan struct{}, max*100), wait: wait}", _CCI, 'DatabaseIsSaturated'),
+    ("track: events are acknowledged before they are written", _TH, "			inserted, err := d.Writer.Insert(r.Context(), sc, store)\n			releaseTurn()", "			var err error\n			inserted := map[string]bool{}\n			for _, e := range store {\n				inserted[e.ID] = true\n			}\n			go d.Writer.Insert(r.Context(), sc, store)\n			releaseTurn()", _CCI, 'NotAcknowledgedBefore|DatabaseIsSaturated'),
+    ("track: the turn is held while a slow client reads the answer, not released after the insert", _TH, "			inserted, err := d.Writer.Insert(r.Context(), sc, store)\n			releaseTurn()", "			inserted, err := d.Writer.Insert(r.Context(), sc, store)", _CCI, 'DatabaseIsSaturated'),
+    # health, readiness and shutdown
+    ("health: readiness does not flip when the server is shutting down", _HL, "		if life.Draining() {", "		if false && life.Draining() {", './internal/platform/health ' + _CCI, 'ShuttingDownIsNotReady|SIGTERM|TheRealBinaryShutsDown'),
+    ("health: a database that is down is still reported ready", _HL, "			dbErr = pool.Ping(ctx)", "			_ = pool.Ping(ctx)", './internal/platform/health', 'DatabaseIsDown'),
+    ("health: Redis down makes the instance unready even when it is not required", _HL, "				case requireRedis:\n					status = \"unavailable\"", "				case true:\n					status = \"unavailable\"", './internal/platform/health', 'RedisDownIsDegraded'),
+    ("health: the readiness response quotes the error", _HL, '				checks["redis"] = "unavailable"', '				checks["redis"] = "unavailable: " + redisErr.Error()', './internal/platform/health', 'RedisDownIsDegraded'),
+    ("shutdown: new streams are accepted while the server is draining", _ST, "		if life.Draining() {\n			w.Header().Set(\"Retry-After\", \"1\")", "		if false && life.Draining() {\n			w.Header().Set(\"Retry-After\", \"1\")", _CCI, 'SIGTERM'),
+    ("shutdown: open streams are not told to reconnect", _ST, "				fmt.Fprint(w, ReconnectEvent)\n", "", _CCI, 'SIGTERM|TheRealBinaryShutsDown'),
+    ("shutdown: open streams ignore the drain", _ST, "			case <-life.Done():\n", "			case <-(<-chan struct{})(nil):\n", _CCI, 'SIGTERM|TheRealBinaryShutsDown'),
+    ("shutdown: the drain is never started", _GR, "	o.Life.Drain()\n", "", _CCI, 'SIGTERM|TheRealBinaryShutsDown|OutlivesTheBudget'),
+    ("shutdown: the budget is not enforced", _GR, "	err := srv.Shutdown(sctx)", "	err := srv.Shutdown(context.Background())", _CCI, 'OutlivesTheBudget'),
+    ("shutdown: connections that never sent a request hold the shutdown", _GR, "			fresh.closeAll()\n			select {", "			select {", _CCI, 'TheRealBinaryShutsDown|SIGTERM'),
+    ("shutdown: in-flight requests are cut off at once instead of drained", _GR, "	err := srv.Shutdown(sctx)", "	_ = srv.Shutdown(sctx)\n	err := errors.New(\"cut off\")", _CCI, 'SIGTERM'),
+    ("shutdown: scheduler jobs claimed but not run are not released", 'backend/internal/controlplane/scheduling/run.go', "				r.release(claimed[i:], &st)\n				return st, nil", "				return st, nil", _CCI, 'ClaimedButNotRunWhenAskedToStop'),
+    ("shutdown: a scheduler release forgets to take the attempt off", 'backend/internal/controlplane/scheduling/run.go', "attempts = GREATEST(attempts - 1, 0), updated_at = $3\n		WHERE id = ANY($1::uuid[]) AND status = 'running'", "attempts = attempts, updated_at = $3\n		WHERE id = ANY($1::uuid[]) AND status = 'running'", _CCI, 'ClaimedButNotRunWhenAskedToStop'),
+    ("shutdown: a scheduler release takes rows that belong to another worker", 'backend/internal/controlplane/scheduling/run.go', "WHERE id = ANY($1::uuid[]) AND status = 'running' AND lease_owner = $2`, ids, r.cfg.WorkerID, r.clock.now())", "WHERE id = ANY($1::uuid[]) AND status = 'running' AND $2::text IS NOT NULL`, ids, r.cfg.WorkerID, r.clock.now())", _CCI, 'ClaimedButNotRunWhenAskedToStop'),
+    ("shutdown: outbox rows claimed but not sent are not released", 'backend/internal/controlplane/outbox/worker.go', "		w.release(unstarted, &st)\n", "", _CCI, 'OutboxRowsClaimedButNotSent'),
+    ("shutdown: outbox sends stop mid-way instead of finishing and recording", 'backend/internal/controlplane/outbox/worker.go', "dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deliverTimeout)", "dctx, cancel := context.WithTimeout(ctx, deliverTimeout)", _CCI, 'OutboxRowsClaimedButNotSent'),
+    ("shutdown: an outbox release takes rows that belong to another worker", 'backend/internal/controlplane/outbox/worker.go', "WHERE id = ANY($1::uuid[]) AND status = 'delivering' AND lease_owner = $2`, ids, w.cfg.WorkerID, w.cfg.Now())", "WHERE id = ANY($1::uuid[]) AND status = 'delivering' AND $2::text IS NOT NULL`, ids, w.cfg.WorkerID, w.cfg.Now())", _CCI, 'OutboxRowsClaimedButNotSent'),
+    ("shutdown: the job endpoints do not stop when the server drains", 'backend/internal/platform/lifecycle/lifecycle.go', "		case <-s.done:\n			cancel()", "		case <-s.done:\n			_ = s", './internal/platform/lifecycle', 'DrainIsOnceAndEndsBound'),
+    # production mode
+    ("production: a development flag does not stop the start (webhooks to loopback)", _PR, '	if c.WebhookAllowInsecureLocal == "true" {', '	if false && c.WebhookAllowInsecureLocal == "true" {', './internal/platform/config ' + _CCI, 'DevelopmentOnlySetting|RealBinaryRefuses'),
+    ("production: rate limits may be off", _PR, '	if c.RateLimitDisabled == "true" {', '	if false && c.RateLimitDisabled == "true" {', './internal/platform/config ' + _CCI, 'DevelopmentOnlySetting|RealBinaryRefuses'),
+    ("production: email confirmation may be off", _PR, '	if strings.EqualFold(strings.TrimSpace(c.EmailConfirmation), "off") {', '	if false && strings.EqualFold(strings.TrimSpace(c.EmailConfirmation), "off") {', './internal/platform/config ' + _CCI, 'DevelopmentOnlySetting|RealBinaryRefuses'),
+    ("production: a per-process exposure token key is accepted", _PR, '	if strings.TrimSpace(c.ExposureTokenKey) == "" {', '	if false && strings.TrimSpace(c.ExposureTokenKey) == "" {', './internal/platform/config ' + _CCI, 'DevelopmentOnlySetting|RealBinaryRefuses'),
+    ("production: a database without TLS is accepted", _PR, '		case "disable", "allow", "prefer":', '		case "":', './internal/platform/config', 'DevelopmentOnlySetting|ProblemsNameSettings'),
+    ("production: the local default database is accepted", _PR, '	if c.DatabaseURL == "" || c.DatabaseURL == defaultDatabaseURL {', '	if c.DatabaseURL == "" {', './internal/platform/config ' + _CCI, 'DevelopmentOnlySetting|RealBinaryRefuses'),
+    ("production: a wildcard CORS origin is accepted", _PR, '		case o == "*":', '		case o == "*" && false:', './internal/platform/config', 'DevelopmentOnlySetting'),
+    ("production: an insecure auth server is accepted", _PR, '	} else if u, err := url.Parse(c.SupabaseURL); err != nil || u.Scheme != "https" {', '	} else if u, err := url.Parse(c.SupabaseURL); err != nil || u.Scheme != "https" && false {', './internal/platform/config', 'DevelopmentOnlySetting'),
+    ("production: unencrypted SMTP is accepted", _PR, '	if c.MailAllowInsecure == "true" || strings.EqualFold(c.SMTPTLS, "none") {', '	if false && (c.MailAllowInsecure == "true" || strings.EqualFold(c.SMTPTLS, "none")) {', './internal/platform/config', 'DevelopmentOnlySetting'),
+    ("production: a job is checked for settings it does not use / the API for fewer", _PR, "	if role == RoleJob {\n		return\n	}", "	if true {\n		return\n	}", './internal/platform/config', 'RolesOnlyCheck|DevelopmentOnlySetting'),
+    ("production: problems quote values", _PR, '		p("DATABASE_URL has sslmode=%s: production connections', '		p("DATABASE_URL %s has sslmode=%s: production connections', './internal/platform/config', 'NeverQuoteValues'),
+    ("production: a mistyped HELIOS_ENV selects development", _PR, '	return Development, fmt.Errorf("HELIOS_ENV must be development or production (got %q)", v)', '	return Development, nil', './internal/platform/config', 'HeliosEnvIsStrict'),
+    ("production: the process does not stop when a check fails", _PR, '		log.Fatalf("refusing to start in production mode (HELIOS_ENV=production)', '		log.Printf("refusing to start in production mode (HELIOS_ENV=production)', _CCI, 'RealBinaryRefuses'),
+    ("config: profiling may be exposed beyond this machine", 'backend/internal/platform/config/config.go', "	if host != \"localhost\" && (ip == nil || !ip.IsLoopback()) {", "	if false {", './internal/platform/config', 'PprofAddress'),
+    ("db: the configured pool size is ignored", 'backend/internal/platform/db/db.go', "	if opt.MaxConns > 0 {", "	if false {", './internal/platform/db', 'ConfiguredPoolSize'),
+    ("db: the default pool size is unbounded", 'backend/internal/platform/db/db.go', "	if n > 10 {\n		n = 10\n	}", "", './internal/platform/db', 'DefaultPoolSize'),
+    # the runbook, the entrypoint and the image
+    ("runbook: a job directory is missing from the runbook", 'docs/OPERATIONS.md', ["`cmd/purgeevents` (`-retention-days", "(`cmd/purgeevents`)?"], ["`cmd/purge-events-forgotten` (`-retention-days", "(`cmd/purge-events-forgotten`)?"], './cmd/helios', 'EveryCommandAndInternalRouteIsInTheRunbook'),
+    ("runbook: an internal endpoint is missing from the runbook", 'docs/OPERATIONS.md', ["| `POST /internal/outbox/run` |", "https://<api-host>/internal/outbox/run"], ["| `POST /internal/outbox-gone` |", "https://<api-host>/internal/outbox-gone"], _CCI, 'InternalRouteIsInTheRunbook'),
+    ("runbook: the cadence of a job is not stated", 'docs/OPERATIONS.md', "| **Cadence** |", "| **Frequency** |", './cmd/helios', 'EveryJobHasItsOperationalFacts'),
+    ("image: the entrypoint can start something that is not in the table", 'backend/cmd/helios/main.go', '	bin, ok := Commands[name]\n	if !ok {', '	bin, ok := Commands[name]\n	if !ok && false {', './cmd/helios', 'UnknownCommands'),
+    ("image: a new cmd directory is not reachable from the image", 'backend/cmd/helios/main.go', '	"segment-usage":    "segmentusage",\n', '', './cmd/helios', 'CommandTableMatches'),
+    ("image: the Dockerfile may run as root", 'backend/Dockerfile', "USER 65532:65532\n", "", '../tools/imagecheck', 'DockerfileIsPinned'),
+    ("image: the base image is not pinned to an exact version", 'backend/Dockerfile', "ARG GO_VERSION=1.25.3", "ARG GO_VERSION=latest", '../tools/imagecheck', 'DockerfileIsPinned'),
+    ("image: the whole build context is copied", 'backend/Dockerfile', "COPY cmd ./cmd", "COPY . ./", '../tools/imagecheck', 'DockerfileIsPinned'),
+    ("image: the final stage is not minimal", 'backend/Dockerfile', "FROM scratch", "FROM debian:12.5", '../tools/imagecheck', 'DockerfileIsPinned'),
+    ("image: the ignore file lets .env into the build context", 'backend/.dockerignore', ".env\n.env.*\n**/.env\n", "**/.env\n", '../tools/imagecheck', 'DockerignoreKeeps'),
+    ("image: the ignore file lets tests and test data in", 'backend/.dockerignore', "**/testdata\n", "", '../tools/imagecheck', 'DockerignoreKeeps'),
+    ("image: the check ignores environment files", 'tools/imagecheck/imagecheck.go', '	regexp.MustCompile(`(^|/)\\.env(\\..*)?$`),\n', '', '../tools/imagecheck', 'EverythingThatMustNotShip'),
+    ("image: the check ignores private keys inside files", 'tools/imagecheck/imagecheck.go', '	{"a private key", regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`), true},\n', '', '../tools/imagecheck', 'EverythingThatMustNotShip'),
+    ("image: the check allows files outside the allowed places", 'tools/imagecheck/imagecheck.go', "		if !allowed {", "		if !allowed && false {", '../tools/imagecheck', 'EverythingThatMustNotShip'),
+    ("image: the check excuses any database password in a program", 'tools/imagecheck/imagecheck.go', 'var knownPlaceholders = []string{"postgres://helios:helios@localhost:5432/helios"}', 'var knownPlaceholders = []string{"postgres://"}', '../tools/imagecheck', 'PublishedDevelopmentDefault'),
+]

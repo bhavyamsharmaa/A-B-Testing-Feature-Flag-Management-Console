@@ -87,9 +87,21 @@ def run_backend(only):
         if only and not any(o in label for o in only):
             continue
         def check():
-            p = subprocess.run(['go', 'test', '-count=1', '-run', pattern] + pkgs.split(), cwd=os.path.join(ROOT, 'backend'), env=env,
-                               capture_output=True, text=True, timeout=900)
-            return classify(p, p.stdout + p.stderr)
+            # packages of the backend module run from backend/; '../tools/<name>' is a separate module (its own go.mod),
+            # run from its own directory. The first run that fails the tests (or does not compile) decides.
+            names = pkgs.split()
+            runs = [(os.path.join(ROOT, 'backend'), [x for x in names if not x.startswith('../tools/')])]
+            runs += [(os.path.join(ROOT, 'tools', x.split('/')[-1]), ['./...']) for x in names if x.startswith('../tools/')]
+            res = ('SURVIVED', 'all tests passed: this protection is not tested')
+            for cwd, args in runs:
+                if not args:
+                    continue
+                p = subprocess.run(['go', 'test', '-count=1', '-run', pattern] + args, cwd=cwd, env=env,
+                                   capture_output=True, text=True, timeout=900)
+                res = classify(p, p.stdout + p.stderr)
+                if res[0] != 'SURVIVED':
+                    return res
+            return res
         _, res = apply(path, old, new, check)
         rows.append(('backend', label) + (res if isinstance(res, tuple) else ('NOT RUN', res)))
         print(' | '.join(rows[-1]), flush=True)
