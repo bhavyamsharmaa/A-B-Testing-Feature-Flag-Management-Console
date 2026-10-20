@@ -1,0 +1,25 @@
+[
+  {
+    "label": "gate",
+    "scenario": "track",
+    "seconds": 20.059608667,
+    "concurrency": 256,
+    "requests": 79175,
+    "errors": 0,
+    "errorRate": 0,
+    "statuses": {
+      "200": 79175
+    },
+    "requestsPerSecond": 3946.986270487447,
+    "eventsPerSecond": 98674.65676218618,
+    "p50ms": 64.09,
+    "p95ms": 69.097,
+    "p99ms": 89.973,
+    "maxMs": 101.543,
+    "rssStartMB": 84.4,
+    "rssPeakMB": 92.1,
+    "apiCpuAvgPct": 156.4,
+    "dbConnectionsMax": 11,
+    "goroutinesMax": 568
+  }
+]

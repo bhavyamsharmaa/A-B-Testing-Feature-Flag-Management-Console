@@ -79,7 +79,7 @@ type Config struct {
 	// DBMaxConns (DB_MAX_CONNS) caps this process's Postgres pool; empty means the CPU count between 4 and 10.
 	DBMaxConns string
 	// TrackMaxWriters (TRACK_MAX_WRITERS) bounds how many /track batches touch the database at once; empty means
-	// half the pool. TrackMaxWait (TRACK_MAX_WAIT) is how long a batch waits for a turn before a fast 503.
+	// the pool size minus 2. TrackMaxWait (TRACK_MAX_WAIT) is how long a batch waits for a turn before a fast 503.
 	TrackMaxWriters string
 	TrackMaxWait    string
 }

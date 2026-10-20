@@ -1,0 +1,24 @@
+[
+  {
+    "label": "cache-off",
+    "scenario": "evaluate",
+    "seconds": 20.003519958,
+    "concurrency": 32,
+    "requests": 374466,
+    "errors": 0,
+    "errorRate": 0,
+    "statuses": {
+      "200": 374466
+    },
+    "requestsPerSecond": 18720.005318375977,
+    "p50ms": 1.647,
+    "p95ms": 2.194,
+    "p99ms": 2.627,
+    "maxMs": 25.179,
+    "rssStartMB": 66.4,
+    "rssPeakMB": 84.3,
+    "apiCpuAvgPct": 310.6,
+    "dbConnectionsMax": 11,
+    "goroutinesMax": 84
+  }
+]

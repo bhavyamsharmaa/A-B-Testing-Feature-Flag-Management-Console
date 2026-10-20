@@ -57,7 +57,100 @@ did 18,400 req/s (p99 18 ms) and `/track` 4,800 req/s (p99 73 ms): the queue sit
   saturated instead of an unbounded queue (see "Track").
 * **Streams are cheap.** 500 streams cost 2,500 goroutines (5 per stream) and a few MB; the CPU is idle.
 
-## Decisions
+## What was changed, and the numbers
 
-See the sections below as each change lands: the config cache, the key-verification single flight, the track writer bound and
-backpressure. Things deliberately NOT optimised are listed at the end.
+Same machine, same seed, 20 s runs, 32 workers unless stated. "Before" is the baseline above (and a control run of the new
+binary with the cache switched off, `CONFIG_CACHE_TTL=off`, which matched it: 18,700 req/s).
+
+| | before | after | change |
+|---|---|---|---|
+| `/evaluate` throughput, 32 workers | 17,400-18,900 req/s | 42,100 req/s | **2.4x** |
+| `/evaluate` p50 / p95 / p99 | 1.8 / 2.4 / 2.9 ms | 0.7 / 1.1 / 1.7 ms | -60% / -54% / -41% |
+| `/evaluate` at 256 workers | 18,400 req/s, p99 17.6 ms | 36,300 req/s, p99 9.9 ms | 2.0x |
+| `/evaluate` in the mixed run | 11,200 req/s, p99 5.2 ms | 25,400 req/s, p99 3.0 ms | 2.3x |
+| API memory (RSS) while serving | 520-750 MB | 66-130 MB | **-85%** |
+| `/track`, 25 events per batch | 4,540 req/s (113,400 events/s) | 4,300 req/s (107,900 events/s) | -5% (the price of the bound, see below) |
+| stream edit-to-client p50 / p95 | 6.8 / 9.7 ms | 6.9 / 9.8 ms | none |
+
+### 1. Flag configuration cache (`internal/dataplane/configcache`)
+
+The profile put 96% of `/evaluate`'s handler time in two queries. The first, the flags' configuration, is cached per
+instance; the second, segment membership, is not (below). `CONFIG_CACHE_TTL` (default 10 s; `off` disables it),
+`CONFIG_CACHE_MAX_ENTRIES` (1,000 environments) and `CONFIG_CACHE_MAX_MB` (32).
+
+**How it stays correct.** Every flag mutation already published to the flag-change channel after it commits. The cache listens
+two ways: **in process, synchronously** (the publisher the handlers use invalidates this instance's cache before it forwards to
+Redis, so an edit is visible to the next request on the instance that took it whether or not Redis is up), and from other
+instances through **one pattern subscription** (`flags:*`) per instance. Any message for an environment drops that
+environment's entry. A **kill** takes exactly that path and never waits for anything else. Every entry also expires after the TTL, so a
+lost message heals itself. Beyond that:
+
+* **No stale load wins.** A load that began before an invalidation is marked stale and not stored, and a request that arrives
+  after the invalidation starts a new load instead of joining the old one. A message that carries a flag's version sets a
+  floor: a snapshot below it is not stored. A snapshot older than the one held (by any flag's version) never replaces it.
+* **One loader per environment** (stampede protection), detached from any one caller, so a client that gives up does not fail the
+  others. 100 simultaneous cold requests make one database read (tested).
+* **Bounded:** entries and estimated bytes, least recently used out first. **Errors are never cached.** An environment with no
+  flags is cached for 2 s only.
+* **Never for a revoked key or a deleted workspace.** The SDK key is verified first, so a revoked key never reaches the
+  cache. Deleting a workspace announces on the revocation channel and every instance drops all its environments; the load query
+  itself reads nothing for a workspace scheduled for deletion.
+* **Something that did not publish before now does:** starting or stopping an experiment changes which experiment `/evaluate`
+  reports (and issues exposure tokens for), so those two actions now publish to the flag channel.
+
+**Segment membership is deliberately not cached.** It is per subject and unbounded, and a stale membership would silently
+change who gets a feature. `/evaluate` still reads it live (one indexed probe, only when a requested flag's rules use a segment);
+that probe is now 92% of what is left of the handler and the next thing to look at if `/evaluate` needs to go faster.
+
+**Staleness bounds** (measured by `internal/integration/config_cache_test.go`, two instances over one database and a real Redis,
+TTL one hour so only the mechanism under test can explain a fresh answer):
+
+| change | the instance that took it | the other instance, broker healthy | broker down, message lost, or writer did not publish |
+|---|---|---|---|
+| flag edit, promotion | next request | 1-2 ms measured (asserted under 500 ms) | at most `CONFIG_CACHE_TTL` (10 s) |
+| **kill** | next request | 1-2 ms measured (asserted under 500 ms), never the TTL | at most the TTL |
+| flag deleted | next request | within 2 s asserted (1-2 ms measured) | at most the TTL |
+| scheduled change run by `cmd/scheduler` (another process) | n/a | 1 ms measured | at most the TTL |
+| experiment started or stopped | next request | within 2 s asserted | at most the TTL |
+| SDK key revoked | next request | within 1 s (existing broadcast) | the SDK-key cache TTL (15 s) |
+| workspace deleted | next request (key refused, entries dropped) | entries dropped within 2 s asserted | key cache TTL (15 s); config TTL (10 s) |
+| direct SQL change (a writer that does not publish) | at most the TTL | at most the TTL | at most the TTL |
+| segment membership or segment rules | not cached: always current | | |
+
+When the Redis connection drops and comes back, the cache is flushed on every (re)subscribe, because messages in the gap are gone.
+
+### 2. One Argon2id verification per key at a time (`internal/platform/apikey`)
+
+SDK keys are verified with Argon2id (64 MiB per hash) and cached for 15 s. At expiry every request in flight used to run its
+own hash. Now the first request verifies and the rest wait for its answer: 100 concurrent cold requests make one
+verification (tested), the failure of a wrong key is shared and never cached, and a caller that gives up does not fail the
+others. This is the whole of the memory difference above (520-750 MB to 66-130 MB under the same load). It also closes a small
+race: a verification already under way when a key is revoked could put the revoked key back in the cache; an invalidation
+counter now stops that, and a request arriving after the revocation does not join the earlier verification.
+
+### 3. `/track`: a bound and a fast refusal (`internal/dataplane/track/gate.go`)
+
+The profile said the write path has room: one multi-row `INSERT ... ON CONFLICT DO NOTHING` per batch (already how it
+worked) at 113,000 events/s, so **no change to how events are written**, and nothing that could lose one. Exactly as before, a
+batch is answered only after its `INSERT` has returned (tested with a 600 ms insert: no answer, and no row, until it
+finishes). What was missing is a limit. Without one a burst queues inside the connection pool without bound, each batch is
+answered after the SDK has given up, and the pool that `/evaluate` and the console share is full.
+
+Now at most `TRACK_MAX_WRITERS` batches (default: pool size minus 2) touch the database at once. A batch that cannot get a turn
+within `TRACK_MAX_WAIT` (500 ms) is refused immediately with **503 `TRACK_BUSY` and a `Retry-After` of 1-3 seconds** (spread, so
+retries do not return together); nothing was written, the events carry ids, and the retry stores each exactly once (tested). A
+refused batch is given its rate-limit tokens back so the retry is not charged twice. A database error now also carries
+`Retry-After`. Default tuning, measured: half the pool cost 11% of `/track` throughput, pool minus two about 5% (4,300 against
+4,540 req/s), which is the price of keeping two connections for everything else. If an asynchronous buffer ever looks
+necessary: it would acknowledge events that are not yet durable, so a crash loses them (everything in the buffer, up to the
+flush interval). That trade was not needed here and was not made.
+
+### Decided NOT to optimise
+
+* **Segment membership reads:** correctness over speed (above).
+* **The `/track` insert and experiment lookup:** 15% and 8% of a handler that is nowhere near its limit; caching the lookup would
+  need invalidation on experiment state for no measurable gain.
+* **JSON decoding, GC settings, response encoding:** under 10% each and not the constraint.
+* **Streams:** 500 streams are 2,500 goroutines and an idle CPU.
+* **Argon2id parameters:** they are the security of the keys; only the number of concurrent hashes was changed.
+* **Indexes:** every query in the profile is an index lookup and none is slow, so there is no migration for performance.

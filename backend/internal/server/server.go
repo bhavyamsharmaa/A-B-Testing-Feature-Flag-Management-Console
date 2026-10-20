@@ -102,7 +102,7 @@ type Deps struct {
 	ConfigCacheTTL        time.Duration
 	ConfigCacheMaxEntries int
 	ConfigCacheMaxBytes   int64
-	// TrackMaxWriters bounds how many /track batches use the database at once (zero: half the pool, at least 2);
+	// TrackMaxWriters bounds how many /track batches use the database at once (zero: the pool size minus 2, at least 2);
 	// TrackMaxWait is how long a batch waits for a turn before a fast 503 (zero: no bound, used by tests that
 	// want the pre-gate behaviour; the binary sets 500 ms).
 	TrackMaxWriters int
@@ -483,7 +483,9 @@ func New(d Deps) *Router {
 	if d.TrackMaxWait > 0 {
 		writers := d.TrackMaxWriters
 		if writers <= 0 {
-			writers = int(d.Pool.Config().MaxConns) / 2
+			// Leave two connections of the pool for /evaluate (segment reads), the console and the jobs' endpoints.
+			// Measured on the load test: half the pool cost 11% of /track throughput, pool-2 about 5% (docs/PERFORMANCE.md).
+			writers = int(d.Pool.Config().MaxConns) - 2
 		}
 		trackGate = track.NewGate(max(writers, 2), d.TrackMaxWait)
 	}
