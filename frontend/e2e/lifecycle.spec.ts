@@ -202,6 +202,7 @@ test('audit export for admins and a flag history with who, when and what', async
 
   // a viewer has no export
   await v.page.goto('/console/audit')
+  await expect(v.page.getByRole('heading', { name: /Audit log in/ })).toBeVisible() // loaded, so the absence below means something
   await expect(v.page.getByRole('button', { name: 'Export…' })).toHaveCount(0)
   expect((await api.get(`${API}/environments/${dev}/audit-logs/export`, bearer(await jwt(api, viewer)))).status()).toBe(403)
 
