@@ -7,6 +7,37 @@ You need Go 1.24+, Node 22+ and a local Postgres 16 (Docker's `postgres:16` work
 too: `docker compose up -d postgres` applies every migration in
 `backend/db/migrations/` on first start).
 
+## 0. The whole stack with one script
+
+```bash
+backend/scripts/local_stack.sh start        # Postgres, Redis, migrate if empty, build, devauth :54321, API :8080, console :5173
+backend/scripts/local_stack.sh status
+backend/scripts/local_stack.sh stop         # devauth, API, console   (stop --all also stops Postgres and Redis)
+backend/scripts/local_stack.sh reset        # drop the database, migrate, restart
+eval "$(backend/scripts/local_stack.sh env)"   # HELIOS_TEST_DATABASE_URL, HELIOS_TEST_REDIS_URL, DATABASE_URL, the Playwright secrets
+```
+
+Every subcommand is idempotent (run `start` twice and the second run changes nothing; `stop` on a stopped stack is
+quiet). `migrate [db]` creates the database if it is missing and applies the migrations only to an *empty* one, so it
+never half-applies twice; `reset [db]` is the way to rebuild. `[db]` defaults to `helios_dev` (or `$HELIOS_DB`).
+`api` and `web` run the API (`go run`) and the Vite dev server in the foreground when you would rather see the logs.
+
+* **Data, logs, binaries, pid files and secrets** live in `${HELIOS_LOCAL_DIR:-$HOME/helios-local}` (`pg/`, `redis/`,
+  `bin/`, `run/`, `log/`, `secrets.env`). The script **refuses a directory inside the repository** (before creating
+  anything), so none of it can be committed; `HELIOS_LOCAL_DIR` can move it elsewhere. Deleting the directory is
+  safe: the next `start` rebuilds it.
+* **No secret is in a script.** The few local-only secrets (the webhook encryption key, and the outbox, purge, scheduler
+  and event-purge secrets) are generated with `openssl rand` on first use into `secrets.env` (mode 600) and loaded
+  from there. `eval "$(local_stack.sh env)"` prints the two the Playwright specs need.
+* **Loopback only.** It refuses any Postgres or Redis host that is not 127.0.0.1/localhost and any `LISTEN_ADDR` that is
+  not loopback, and the processes it starts bind 127.0.0.1.
+* It runs the API with `HELIOS_ENV=development` and the local-only conveniences (`WEBHOOK_ALLOW_INSECURE_LOCAL`);
+  see `docs/DEPLOYMENT.md` for why those must never be set in production.
+* The background jobs (scheduler, outbox, purges) are not started by it; run `$HELIOS_LOCAL_DIR/bin/<job>` or call the
+  guarded endpoints by hand (`docs/OPERATIONS.md`).
+
+The sections below are the same steps by hand.
+
 ## 1. A throwaway Postgres (no Docker)
 
 ```bash

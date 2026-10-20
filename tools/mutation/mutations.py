@@ -1064,3 +1064,9 @@ BACKEND += [
     ("dead end: the owned-workspaces message does not say pending deletions count", 'backend/internal/controlplane/quota/quota.go', "		if pending > 0 {", "		if pending > 1000 {", './internal/integration', 'PendingDeletion|OnlyPendingDeletion'),
     ("dead end: the owned-workspaces limit forgets pending deletions", 'backend/internal/controlplane/quota/quota.go', "FROM workspaces WHERE owner_id = $1::uuid`, userID).Scan(&have, &pending)", "FROM workspaces WHERE owner_id = $1::uuid AND deleted_at IS NULL`, userID).Scan(&have, &pending)", './internal/integration', 'PendingDeletion|OnlyPendingDeletion'),
 ]
+
+BACKEND += [
+    ("local stack: a data directory inside the repository is accepted", 'backend/scripts/local_stack.sh', '  "$REPO"/*) die "$BASE is inside the repository', '  "/nonexistent-never"/*) die "$BASE is inside the repository', './scripts', 'LocalStackRefuses'),
+    ("local stack: a non-loopback LISTEN_ADDR is accepted", 'backend/scripts/local_stack.sh', 'case "${API_ADDR%:*}" in 127.*|localhost|"[::1]") ;; *) die', 'case "${API_ADDR%:*}" in *) ;; esac; case "x" in 127.*|localhost|"[::1]") ;; *) die', './scripts', 'LocalStackRefuses'),
+    ("local stack: a remote database host is accepted", 'backend/scripts/local_stack.sh', "case \"$h\" in 127.0.0.1|localhost) ;; *) die", "case \"$h\" in *) ;; esac; case \"x\" in 127.0.0.1|localhost) ;; *) die", './scripts', 'LocalStackRefuses'),
+]
