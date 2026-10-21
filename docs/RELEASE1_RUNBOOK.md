@@ -1,148 +1,157 @@
 # Release 1 runbook: multi-tenancy (by hand, one step at a time)
 
-For the owner doing the live release. It is a plain checklist made from `docs/ROLLOUT.md` and checked against the code.
+For the owner doing the live release. A plain checklist made from `docs/ROLLOUT.md`, **executed end to end on a local copy on
+2026-10-21** (a synthetic "old production", see the last section) and corrected where reality differed. Times marked *measured* were
+measured on this laptop with 250,000 audit rows and 250,000 event rows: production will differ, Step 6 gives you your own numbers.
 **Release 1 only:** branch `feature/workspaces-ui` (HEAD `1e2f5e6`, 25 commits on top of `main` = `6c90844`), migrations **0004, 0006, 0007**.
-Migration **0005 is NOT part of this**: it removes defaults the old backend needs. Nothing after release 1 is in here.
+Migration **0005 is NOT part of this** (it removes defaults the old backend needs; a later, separate gate). Nothing after release 1 is here.
 
-How to read a step: **Do** (one sentence) / **Type** / **Where** / **Good** / **Wrong -> then**.
-`<ANGLE BRACKETS>` are placeholders you fill in. Never paste a password, key or URL with a password into chat, a file or a commit.
-Rule for every step: if the result is not exactly "Good", **stop and ask**. Do not try fixes on production.
+How to read a step: **Do** / **Type** / **Where** / **Good** / **Wrong -> then**. `<ANGLE BRACKETS>` are placeholders you fill in.
+Never paste a password, key or URL with a password into chat, a file or a commit. If a result is not exactly "Good": **stop and ask**.
+The commands work in macOS's default shell (zsh) and in bash.
 
 ---
 
 ## Step 0. Get the release code into its own folder (no switching branches)
 **Do:** make a second checkout of the release branch so every command below runs the release's own scripts.
 **Type:** `cd <YOUR REPO FOLDER> && git worktree add ~/helios-release1 feature/workspaces-ui && cd ~/helios-release1 && git log --oneline -1`
-**Where:** your terminal. **Good:** the last line starts with `1e2f5e6`. **Wrong:** a different id, or "already exists" -> stop and ask.
-All "Type" lines below that say `~/helios-release1` run from that folder.
+**Good:** the last line starts with `1e2f5e6`. **Wrong:** a different id, or "already exists" -> stop and ask.
+All commands below that mention `~/helios-release1` run from that folder.
 
 ## Step 1. Read-only sanity check of production (G1, part 1)
-**Do:** prove the connection works and write down how much data there is.
-**Type:** `psql "service=helios_prod" -At -c "select 'environments',count(*) from environments union all select 'flags',count(*) from flags union all select 'flag_configs',count(*) from flag_configs union all select 'api_keys',count(*) from api_keys union all select 'experiments',count(*) from experiments union all select 'experiment_metrics',count(*) from experiment_metrics union all select 'events',count(*) from events union all select 'audit_logs',count(*) from audit_logs union all select 'user_environment_roles',count(*) from user_environment_roles" | tee ~/helios-release1-counts-before.txt`
-**Where:** your terminal (`helios_prod` is your `~/.pg_service.conf` entry; the password comes from `~/.pgpass`). It only reads.
-**Good:** nine `name|number` lines, saved in the file. Keep them: you compare against them later.
+**Do:** prove the connection works, write down how much data there is, and see who and what the release will change.
+**Type:** `psql "service=helios_prod" -At -c "select 'environments',count(*) from environments union all select 'flags',count(*) from flags union all select 'flag_configs',count(*) from flag_configs union all select 'api_keys',count(*) from api_keys union all select 'experiments',count(*) from experiments union all select 'experiment_metrics',count(*) from experiment_metrics union all select 'events',count(*) from events union all select 'audit_logs',count(*) from audit_logs union all select 'user_environment_roles',count(*) from user_environment_roles order by 1" | tee ~/helios-release1-counts-before.txt`
+**Where:** your terminal (`helios_prod` is your `~/.pg_service.conf` entry; the password comes from `~/.pgpass`). It only reads. *(Measured: 0.04 s.)*
+**Good:** nine `name|number` lines, in alphabetical order (the `order by 1` matters: without it the two files you compare later can list the same numbers in a different order).
+Now read three **limits** the new backend enforces on every workspace, including the one your old data moves into: **at most 50 flags**, **3 environments when a workspace is created**, **20 members plus open invites**, **10 active SDK keys**. Existing data is never deleted for being over a limit, but you then cannot *add* to it. If `flags` is 50 or more, creating a new flag will be refused (Step 9 expects that); decide if that is acceptable.
+Then see who **gains access** (see "Decide before" below): `psql "service=helios_prod" -At -c "select u.email, string_agg(e.key||':'||r.role, ', ' order by e.key) from user_environment_roles r join environments e on e.id=r.environment_id join auth.users u on u.id=r.user_id group by u.email having count(distinct r.role) > 1 or count(*) < (select count(*) from environments)"`
 **Wrong:** "service not found", "password authentication failed", or an error naming a missing table -> stop and ask.
 
 ## Step 2. Take the production dump (G1, part 2)
-**Do:** save a full copy of the data (the `public` schema, in a compressed format).
+**Do:** save a full copy of the data (the `public` schema, compressed).
 **Type:** `cd ~/helios-release1 && PGSERVICE=helios_prod backend/scripts/backup_db.sh`
-**Where:** your terminal. **Good:** it prints `wrote .../backend/backups/helios-<time>.dump (<bytes> bytes)`, the size is more than a few KB, no error. The file is private (mode 600) and git-ignored: never share it, it holds your users' data.
-**Wrong:** "pg_dump not found", a "server version mismatch" message, or a tiny file -> stop and ask (the dump tool must be the same major version as the server or newer).
+**Good:** `wrote .../backend/backups/helios-<time>.dump (<bytes> bytes)`; private (mode 600) and git-ignored. Never share it: it holds your users' data. *(Measured: 1.2 s, 4.4 MB.)*
+**Wrong:** "pg_dump not found", a "server version mismatch", or a tiny file -> stop and ask (the dump tool must be the same major version as the server or newer; check with `pg_dump --version` and `psql "service=helios_prod" -Atc "show server_version"`).
 
 ## Step 3. Prove the dump can be restored (on your own computer only)
-**Do:** restore it into a throwaway local database and compare the counts with Step 1.
-The dump has no `auth.users` (that table belongs to Supabase), so the restore is done in three parts and fake users are filled in.
-**Type**, one at a time (`<DUMP>` = the file from Step 2; the local database server must be running: `<YOUR REPO FOLDER>/backend/scripts/local_pg.sh ensure`):
+**Do:** restore it into a throwaway local database and compare the counts with Step 1. The dump has no `auth.users` (Supabase owns that table), so the restore runs in three parts with a stand-in table filled with the user ids the data refers to.
+**Where:** your terminal, local only. The local database server must be running (`<YOUR REPO FOLDER>/backend/scripts/local_pg.sh ensure`). `<DUMP>` = the file from Step 2. **Type** one line at a time:
 ```
-P="-h 127.0.0.1 -p 55432 -U helios"          # the local throwaway server, never production
-createdb $P helios_rehearsal
-psql $P -d helios_rehearsal -c "CREATE SCHEMA IF NOT EXISTS auth; CREATE TABLE IF NOT EXISTS auth.users (id uuid primary key default gen_random_uuid(), email text unique)"
-pg_restore $P -d helios_rehearsal --no-owner --no-privileges --exit-on-error --section=pre-data <DUMP>
-pg_restore $P -d helios_rehearsal --no-owner --no-privileges --exit-on-error --section=data <DUMP>
-psql $P -d helios_rehearsal -c "INSERT INTO auth.users (id, email) SELECT u, u||'@rehearsal.invalid' FROM (SELECT created_by u FROM flags UNION SELECT created_by FROM api_keys UNION SELECT created_by FROM experiments UNION SELECT user_id FROM user_environment_roles) x WHERE u IS NOT NULL ON CONFLICT DO NOTHING"
-pg_restore $P -d helios_rehearsal --no-owner --no-privileges --exit-on-error --section=post-data <DUMP>
+LOCAL="postgres://helios@127.0.0.1:55432/helios_rehearsal"; ADMIN="postgres://helios@127.0.0.1:55432/postgres"
+psql "$ADMIN" -c "DROP DATABASE IF EXISTS helios_rehearsal WITH (FORCE)" -c "CREATE DATABASE helios_rehearsal"
+psql "$LOCAL" -c "DROP SCHEMA public CASCADE" -c "CREATE SCHEMA auth" -c "CREATE TABLE auth.users (id uuid primary key default gen_random_uuid(), email text unique)"
+pg_restore --dbname="$LOCAL" --no-owner --no-privileges --exit-on-error --section=pre-data <DUMP>
+pg_restore --dbname="$LOCAL" --no-owner --no-privileges --exit-on-error --section=data <DUMP>
+psql "$LOCAL" -c "INSERT INTO auth.users (id, email) SELECT u, u||'@rehearsal.invalid' FROM (SELECT created_by u FROM flags UNION SELECT created_by FROM api_keys UNION SELECT created_by FROM experiments UNION SELECT user_id FROM user_environment_roles) x WHERE u IS NOT NULL ON CONFLICT DO NOTHING"
+pg_restore --dbname="$LOCAL" --no-owner --no-privileges --exit-on-error --section=post-data <DUMP>
 ```
-Then run the Step 1 query against it: replace `psql "service=helios_prod"` with `psql $P -d helios_rehearsal` and save to `~/helios-release1-counts-restored.txt`, then `diff ~/helios-release1-counts-before.txt ~/helios-release1-counts-restored.txt && echo SAME`.
-**Where:** your terminal, local only. **Good:** the last command prints `SAME`. **Wrong:** any `pg_restore` error, or a difference -> stop; the dump is not proven. Do not go on.
+Then the same Step 1 count query with `psql "$LOCAL" -At -c "..."` into `~/helios-release1-counts-restored.txt` and `diff ~/helios-release1-counts-before.txt ~/helios-release1-counts-restored.txt && echo SAME`. *(Measured: 1.2 s in total.)*
+**Good:** the last command prints `SAME`. **Wrong:** any `pg_restore` error or a difference -> stop; the dump is not proven. (`DROP SCHEMA public` is needed because the dump creates it; the first recipe in this file did not have that line and failed on "schema public already exists".)
+Notes: only users that appear in the data are recreated, with placeholder emails; people who signed up but never held a role are not in the copy (they exist in Supabase, so production is unaffected). The legacy workspace is named after its owner's email *at migration time*, so on the copy it will show a placeholder; that does not matter for the migrations.
 
 ## Step 4. Turn off automatic deploys
 **Do:** make sure nothing deploys by itself while you work.
-**Where:** Render dashboard -> your backend service -> Settings -> Build & Deploy -> Auto-Deploy = **Off**. Vercel dashboard -> your project -> Settings -> Git: check production deploys come only from `main` (menu names can differ slightly).
-**Good:** Render shows Auto-Deploy off. **Wrong:** you cannot find it -> stop and ask. (ROLLOUT.md notes Render auto-deploy was already off and Vercel previews skip non-main branches; confirm, do not assume.)
+**Where:** Render dashboard -> your backend service -> Settings -> Build & Deploy -> Auto-Deploy = **Off**. Vercel -> project -> Settings -> Git: production deploys come only from `main` (menu names may differ).
+**Good:** Auto-Deploy shows off. **Wrong:** you cannot find it -> stop and ask.
 
 ## Step 5. Set the environment variables (names only; you type the values)
-**Do:** add the settings the release code reads. **Where:** Render dashboard -> Environment (backend); Vercel -> Settings -> Environment Variables (console). Save, but on Render choose **not** to redeploy yet.
+**Do:** add the settings the release code reads. **Where:** Render -> Environment (backend); Vercel -> Settings -> Environment Variables (console). Save; on Render choose **not** to redeploy yet.
 
 | Where | Name | Needed? |
 |---|---|---|
-| Render | `DATABASE_URL`, `SUPABASE_URL`, `CORS_ALLOWED_ORIGINS` | **required**, already set: check they still exist |
-| Render | `REDIS_URL` | already set (optional, flag-change push uses it) |
-| Render | `SUPABASE_ANON_KEY` | recommended: the project's **public** anon key; with it, email checking is strict |
-| Render | `INVITES_BY_ID` = `false` | recommended (invites only by their one-time link) |
-| Render | `TRUSTED_PROXY_HOPS` = `1` | recommended (also defaults to 1 on Render) |
-| Render | `HELIOS_ENV` = `production` | you asked for it; **release 1 ignores it** (see QUESTIONS); harmless, used by later releases |
+| Render | `DATABASE_URL`, `SUPABASE_URL`, `CORS_ALLOWED_ORIGINS` | **required**, already set: check they exist |
+| Render | `REDIS_URL` | already set (optional) |
+| Render | `SUPABASE_ANON_KEY` | recommended: the project's **public** anon key; with it, email checking is strict (the rehearsal ran in this mode) |
+| Render | `INVITES_BY_ID` = `false`, `TRUSTED_PROXY_HOPS` = `1` | recommended |
+| Render | `HELIOS_ENV` = `production` | you asked for it; **release 1's code ignores it** (checked: no log line, no effect). Harmless |
 | Render | `EMAIL_CONFIRMATION`, `RATE_LIMITS`, `RATE_LIMIT_DISABLED`, `STREAMS_PER_KEY` | leave **unset** |
 | Vercel | `VITE_API_BASE_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_HELIOS_SDK_KEY` | required, already set; **no new ones** |
 
-**Good:** every "required" name is present. **Wrong:** one is missing, or `RATE_LIMIT_DISABLED` / `EMAIL_CONFIRMATION=off` is set -> fix or ask before going on.
+**Wrong:** a required name is missing, or `RATE_LIMIT_DISABLED` / `EMAIL_CONFIRMATION=off` is set -> fix or ask.
 
 ## Step 6. Rehearse the migrations on the restored copy
 **Do:** run exactly the three migrations, in order, on the Step 3 copy. **Where:** your terminal, local only.
-**Type:**
 ```
-cd ~/helios-release1 && P="-h 127.0.0.1 -p 55432 -U helios -d helios_rehearsal"
-psql $P -v ON_ERROR_STOP=1 -f backend/db/migrations/0004_workspaces.sql && psql $P -f backend/db/verify_0004.sql
-psql $P -v ON_ERROR_STOP=1 -f backend/db/migrations/0006_workspace_roles_invites.sql && psql $P -f backend/db/verify_0006.sql
-psql $P -v ON_ERROR_STOP=1 -f backend/db/migrations/0007_workspace_keeps_an_owner.sql && psql $P -f backend/db/verify_0007.sql
+cd ~/helios-release1 && LOCAL="postgres://helios@127.0.0.1:55432/helios_rehearsal"
+psql "$LOCAL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0004_workspaces.sql && psql "$LOCAL" -f backend/db/verify_0004.sql
+psql "$LOCAL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0006_workspace_roles_invites.sql && psql "$LOCAL" -f backend/db/verify_0006.sql
+psql "$LOCAL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0007_workspace_keeps_an_owner.sql && psql "$LOCAL" -f backend/db/verify_0007.sql
 ```
-Then repeat the Step 1 query on the copy and `diff` it against `~/helios-release1-counts-before.txt`; also write down how long each file took.
-**Good:** every verify row says `PASS` and ends `SUMMARY: N of N checks passed`; the count lines are identical.
-**Wrong:** a migration prints `ERROR` or `RAISE`, or any `FAIL` row -> stop and ask. One known error: 0004 says `user_environment_roles has rows but no user is admin in every environment` -> production has no single admin of all environments; stop, do not edit data yourself. (Do **not** run 0005 or its verify: `verify_0005` is expected to fail.)
+Put `time` in front of each `psql ... -f ...migrations/...` to get your own numbers. Then repeat the Step 1 count query on the copy and `diff` it against the "before" file.
+*(Measured on 250k audit + 250k event rows: 0004 = 0.22 s, 0006 = 0.03 s, 0007 = 0.02 s; verify scripts: 39 of 39, 16 of 16, 7 of 7 PASS; counts identical; every environment, key, flag, flag config, experiment and role id and content identical.)*
+**Good:** every verify row says `PASS` and ends `SUMMARY: N of N checks passed`; the counts are identical. **Wrong:** `ERROR`, `RAISE`, any `FAIL` row, or a count difference -> stop and ask. Known error: 0004 says `no user is admin in every environment` -> nobody holds the admin role in all environments; do not edit data yourself. Do **not** run 0005 or `verify_0005` (it is expected to fail).
+**What the migrations do to people** *(measured)*: one workspace is created, owned by the person who is admin in every environment, and holds all existing environments, flags, experiments, keys and audit rows (none left without a workspace). Everyone who held any role becomes a member of it, with their **highest** old role: admin or approver -> `admin`, editor -> `editor`, otherwise `viewer`. People who had no role are in no workspace; each gets their own private one at first sign-in. No invites exist afterwards (the old system had none).
+**Optional but recommended:** run the app against the copy and the click-through below as automated tests: `tools/release1-dryrun/README.md`.
 
 ## Step 7. Announce, then the window: migrate production (G4)
 **Do:** post the "before" message (below), then apply the three files **one at a time, in this order**, each in its own run (never `psql -1`).
-**Where:** your terminal. **Type**, one line at a time, reading the result before the next:
 ```
 cd ~/helios-release1
 psql "service=helios_prod" -v ON_ERROR_STOP=1 -f backend/db/migrations/0004_workspaces.sql   && psql "service=helios_prod" -f backend/db/verify_0004.sql
 psql "service=helios_prod" -v ON_ERROR_STOP=1 -f backend/db/migrations/0006_workspace_roles_invites.sql && psql "service=helios_prod" -f backend/db/verify_0006.sql
 psql "service=helios_prod" -v ON_ERROR_STOP=1 -f backend/db/migrations/0007_workspace_keeps_an_owner.sql && psql "service=helios_prod" -f backend/db/verify_0007.sql
 ```
-Then run the Step 1 query again into `~/helios-release1-counts-after.txt` and `diff` it with the "before" file.
-**Good:** each migration ends `COMMIT` with no `ERROR`; every verify row is `PASS`; counts are identical to Step 1. The old site keeps working (rehearsed: old backend runs fine on 0004+0006+0007).
-**Wrong:** any `ERROR`, `FAIL`, or a count that differs -> **stop; do not run the next file**; ask. Each file is one transaction, so a failing file changes nothing, but a count difference after a "successful" run means ask before anything else.
+Then the Step 1 count query again into `~/helios-release1-counts-after.txt` and `diff` it with the "before" file.
+**What it locks** *(measured, held until each file commits)*: 0004 takes an exclusive lock on `audit_logs`, `environments`, `experiments`, `flag_configs`, `flags` and `user_environment_roles` for the whole file (**reads and writes of those tables wait**; 0.22 s here, and the old backend kept answering: 3,000 requests during the three files, 0 failures, the slowest 181 ms). 0006 locks `api_keys`, `workspaces`, `workspace_members`, `workspace_invites`. 0007 only `workspace_members`. The `audit_logs` index build in 0004 grows with that table (a few seconds for millions of rows is plausible, not measured).
+**Good:** each ends `COMMIT`, every verify row `PASS`, counts identical. The old site keeps working. **Wrong:** any `ERROR`/`FAIL`/count difference -> **stop; do not run the next file**; ask. A failing file changes nothing (one transaction each).
 
 ## Step 8. Deploy backend and console together (G5)
 **Do:** merge the release into `main` on GitHub, then deploy Render by hand at once.
-**Where:** GitHub: open a pull request `feature/workspaces-ui` -> `main`, check it shows the 25 commits, merge it **in GitHub** (never `git push` to main: your local hook blocks it on purpose). Vercel starts its own build from the merge. Render dashboard -> Manual Deploy -> **Deploy latest commit**.
-**Good:** both deploys finish "Live"; `curl -i https://<API URL>/healthz` returns `200` and `ok`; the console loads.
-**Wrong:** a failed build, or `/healthz` not 200 after 5 minutes -> go to Rollback, Step 8 row.
+**Where:** GitHub: pull request `feature/workspaces-ui` -> `main`, check it shows 25 commits, merge **in GitHub** (never `git push` to main: your local hook blocks it on purpose). Vercel starts its build on the merge. Render -> Manual Deploy -> **Deploy latest commit**.
+**Good:** both "Live"; `curl -i https://<API URL>/healthz` returns `200` and `ok`; the console loads. **Wrong:** failed build, or no 200 after 5 minutes -> Rollback, "Step 8".
+**The window is the gap between the two going live** *(measured by running every pairing)*: **old console + new backend:** existing users sign in and see *"This account has no environment access yet. Ask an admin to grant you a role"*; the old console has no sign-up at all. **New console + old backend:** existing and new users see *"This workspace has no environments you can see yet."* and new accounts get no workspace. Either way nothing is lost and SDK `/evaluate` keeps working throughout. So: click Render's deploy the moment you merge, and expect a few minutes of that message; do not keep the two apart. Open `/sdk/stream` connections do **not** receive flag changes made through the other side while old and new instances overlap (the channel name changed): SDKs pick the change up when they reconnect or poll.
 
-## Step 9. Click through the live site (smoke list)
-1. Open `https://<CONSOLE URL>` in a private window and **sign in as an existing user**: login works; their old flags, environments (dev, staging, production), experiments and audit log are all still there (compare a flag you know).
-2. As that user: open the workspace menu: one workspace (the old data lives in it); you are Owner.
-3. Create a flag `smoke-test-1`; toggle it on in dev; delete it.
-4. **Sign up a brand-new account** (a fresh email). It lands in an empty private workspace with dev, staging, production, owned by the new user.
-5. As the new user, confirm none of the old user's flags show. (Old user's data must be invisible to them.)
-6. From your terminal, use an **existing SDK key**: `curl -s -X POST https://<API URL>/evaluate -H "Content-Type: application/json" -H "X-Helios-SDK-Key: <EXISTING SDK KEY>" -d '{"context":{"subjectKey":"smoke"},"flagKeys":["<EXISTING FLAG KEY>"]}'`. **Good:** JSON with an `evaluations` list and the same value as before. **Wrong:** 401/500 -> Rollback.
-7. Delete the test account and `smoke-test-1` if left (Step 9 is also the point to remove test data).
-**Wrong anywhere** -> Rollback table, row "Step 8".
+## Step 9. Click through the live site (smoke list; automated as `tools/release1-dryrun/e2e/runbook-clickthrough.spec.ts`)
+1. In a private window sign in as an **existing user**: the old flags, the environment tabs and the audit log are there; Settings -> Members lists everyone who held a role.
+2. The workspace menu shows one workspace and you are Owner.
+3. Create a flag `smoke-test-1` and switch it on and off. **If you had 50 or more flags, creation is refused with "limit reached: at most 50 flags per workspace"** (expected, see Step 1); switch an existing flag on and off instead.
+4. **Sign up a brand-new account** (a fresh email): it lands in an empty private workspace (dev, staging, production) with the onboarding card.
+5. As the new user confirm none of the old flags show, and that the old workspace's data is not reachable (404).
+6. With an **existing SDK key**: `curl -s -X POST https://<API URL>/evaluate -H "Content-Type: application/json" -H "X-Helios-SDK-Key: <EXISTING SDK KEY>" -d '{"context":{"subjectKey":"smoke"},"flagKeys":["<EXISTING FLAG KEY>"]}'` -> JSON with an `evaluations` list and the same values as before; a **revoked** key still gives 401.
+7. Open Settings as a former dev-only viewer or admin and check what they can now do (see "Decide before").
+8. Delete the test account's data and `smoke-test-1` if created.
+**Wrong anywhere** -> Rollback, row "Step 8".
 
 ## Step 10. The first hour
-Stay for **about 30-60 minutes** (ROLLOUT: ~30 minutes clean, then you may relax). Every 10 minutes: Render -> Logs: look for `500`, `panic`, `error`; `curl -i https://<API URL>/healthz` is 200; do one SDK `evaluate` (Step 9.6); open the console. Watch for: a flood of 500s, users reporting they "see no data" or "cannot log in", SDK 401s. **Any of these -> Rollback.** Calm for an hour -> post the "after" message. **Do not apply 0005 now** (it is a separate, later decision after a clean observation period).
+Stay about 30-60 minutes. Every 10 minutes: Render -> Logs: look for `500`, `panic`, `error`; `curl -i https://<API URL>/healthz` is 200; one SDK `evaluate` (Step 9.6); open the console. Trouble signs: a flood of 500s, "cannot log in" or "see no data" reports, SDK 401s -> Rollback. Calm for an hour -> post the "after" message. **Do not apply 0005 now.**
 
-## Rollback: pick the row for how far you got
+## Rollback: pick the row for how far you got *(each "old backend" result was measured by running the old backend on the migrated copy)*
 | You are at | Undo with | Data restore needed? |
 |---|---|---|
-| Steps 0-6 (nothing live changed) | nothing to undo; drop the local copy: `dropdb -h 127.0.0.1 -p 55432 -U helios helios_rehearsal` | no |
+| Steps 0-6 | nothing live changed; `dropdb`/drop the local copy | no |
 | Step 7, a file failed | that file made no change (one transaction each). Stop, ask | no |
-| Step 7 done, new code **not** deployed | nothing: the old backend runs on the migrated database (rehearsed). Just leave it, or ask before undoing the migrations | no (a restore is only for putting the schema itself back) |
-| Step 8, deployed, **no new signups yet** | Render: redeploy the previous deploy (Events/Deploys -> previous -> Rollback/Redeploy); Vercel: promote the previous production deployment; revert the new variables if you like (inert for old code). The old code works on the new schema | no |
-| Step 8, new users have signed up and **made their own workspaces** | **Point of no return for a simple redeploy.** The old code can run, but the commented rollback block in `0004` is destructive once any other workspace exists. Stop and ask: the clean way back is the Step 2 dump, which loses everything written since | **yes: restore from the dump** (people who signed up since would be lost) |
-| Anything after 0005 | not in this release; if you ever applied 0005 by mistake: stop, ask immediately | yes |
+| Step 7 done, new code **not** deployed, no new accounts | leave it. The old backend works on the migrated database: SDK evaluation, logins, reads, flag create/toggle/kill/delete, experiments, audit log. **One thing breaks: adding a member (500)**, because members must now be workspace members first | no |
+| Step 8 deployed, **no new account has signed up** | redeploy the previous Render deploy and Vercel deployment (revert the new variables if you like). Same result as the row above | no |
+| Step 8, **new accounts exist** (each has its own workspace) | redeploying the old backend still works for the old users' reads, edits of existing flags, experiments and SDK, but **creating a flag fails (500)** and adding a member fails (500), and the new accounts see nothing (no roles, and the old console has no sign-up). In the one check made, another workspace's flag did not show up in the old backend's list, and the failed writes were rolled back whole. **So a redeploy is a degraded rollback, fine for hours, not for days.** Undoing the migrations is no longer possible (the commented block in `0004` is destructive once another workspace exists). The only way back to a fully working old system is the Step 2 dump | **yes, to be fully back: restore from the dump; it loses everything written since** (accounts, workspaces, flag edits) |
+| After 0005 | not this release. If it was applied by mistake: **every old-backend write fails (500)**; stop and ask at once | yes |
 
-Whenever you roll back: write down what was created since the dump (new users, workspaces, flags) first. Never restore over production without asking (see QUESTIONS 5).
+Whenever you roll back: first write down what was created since the dump. Never restore over production without asking (QUESTIONS 1).
 
 ## Timing, what users see, messages
-- **Expected total:** about **2.5-3.5 hours** end to end: Steps 1-3 about 30 min, Step 5 about 15, Step 6 about 20, Step 7 about 10-15 (the files only touch small tables; real timings come from Step 6), Step 8 about 10-20, Step 9 about 15, Step 10 about 60. Estimates, not measured on production.
-- **During Step 7 users see:** normally nothing; writes (saving a flag) may pause for a moment while a file runs. **During Step 8:** the console may reload; the API may be briefly unavailable while Render swaps instances (SDKs keep their last values).
-- **Before** (post 24 h ahead): "Helios maintenance on <DATE> at <TIME> <TIMEZONE>, about 30 minutes. The console and API may be briefly slow or unavailable. SDKs keep serving their last known flag values. No action needed."
-- **After:** "Helios maintenance is complete. New: every account now has its own private workspace; existing flags, SDK keys and experiments are unchanged. Tell us if anything looks missing."
+- **Expected total: about 2 to 3 hours** end to end. Measured pieces on this laptop: dump 1.2 s, restore 1.2 s, the three migrations 0.3 s, verify under a second each. The rest is you: Steps 1-3 about 20 min, Step 5 about 15, Step 6 about 15, Step 7 about 10, Step 8 about 10-20 (Render's build), Step 9 about 15, Step 10 about 60. Production data may be larger or smaller than the rehearsal's.
+- **Users see:** during Step 7 nothing, or a writes pause under a second; during Step 8 the "no environment access" / "no environments" message until both sides are live (a few minutes); SDKs see nothing.
+- **Before** (24 h ahead): "Helios maintenance on <DATE> at <TIME> <TIMEZONE>, about 30 minutes. The console may show a short error and flag edits may pause. SDKs keep serving their last flag values. No action needed."
+- **After:** "Maintenance is complete. New: every account now has its own private workspace; your existing flags, SDK keys and experiments are unchanged."
+
+## Decide before (found by the rehearsal; not in ROLLOUT.md)
+**Roles are flattened.** The old system gave roles per environment; the new one gives each person ONE role for the whole workspace, from their highest old role. Measured: a person who was viewer in dev only can now read production flags (HTTP 200); one who was admin in dev only can now switch a production flag (200) and is an `admin` everywhere; an old production-only viewer is now a viewer in dev too (the same rule; not separately tested). Run the Step 1 "gains access" query and decide whether to change roles (or accept) **before** the window; afterwards, in Settings -> Members.
 
 ## Do not do this
-- Do not `git push` to `main` or force-push anything; merge in GitHub. Do not run commands from a different branch's folder (use `~/helios-release1`).
-- **Do not apply 0005 now**, and do not run 0008 or any later migration (0008-0015 belong to later releases and the new code needs them only then).
-- Do not run a migration with `psql -1`, a pasted URL containing a password, or against `helios_prod` from a script you have not read; do not run Step 6 commands on `helios_prod`.
-- Do not deploy the console and backend on different days; do not skip Steps 2-3 (a dump you never restored is not a backup).
+- Do not `git push` to `main` or force-push; merge in GitHub. Do not run commands from another branch's folder (use `~/helios-release1`).
+- **Do not apply 0005 now**, and no migration after 0007 (0008-0015 belong to later releases).
+- Do not use `psql -1`, a URL with a password, or run Step 6 commands against `helios_prod`.
+- Do not deploy the console and backend on different days; do not skip Steps 2-3.
 - Do not edit production rows by hand to make a migration pass; do not delete the dump after the release.
 
-## QUESTIONS (unclear or contradicting the code; please answer before the live day)
-1. **`HELIOS_ENV=production`** does not exist in release 1's code (it was added later, on `feature/ops-readiness`), so setting it now does nothing. Keep it in the list anyway?
-2. **Maintenance banner:** ROLLOUT.md plans a "banner on/off", but the console has no maintenance banner (the only banner is the invite one). Do you post only the messages above?
-3. **Counts file:** ROLLOUT G1 says per-table counts and max ids are written next to the dump, but `backup_db.sh` only writes the dump. I made the counts a manual query (Step 1); say if you want max ids too.
-4. **Restore needs `auth.users`:** the repo says so but gives no recipe (`rehearsal.md` assumes a second Supabase project). The three-part restore in Step 3 is mine and was not run against your real dump.
-5. **Restoring over production** is not documented anywhere (`backup_db.sh` says restore into an empty local database only). I gave no command on purpose.
-6. **`rehearsal.md` step 5 says apply 0005 "immediately" after the deploy**, contradicting ROLLOUT.md (0005 is a later, separate gate). I followed ROLLOUT.md.
-7. **ROLLOUT G2** asks for three heavier rehearsals (old and new backend binaries, `/sdk/stream` on Redis); `rehearse_migration.sh` needs those binaries built. This runbook uses the simpler migration-only rehearsal. Do you want the full one?
-8. **Render and Vercel menu names** and the Render rollback button are written from memory of the dashboards, not from the repo; check them on the day. Whether Vercel can hold its production deploy until Render is ready is unknown (it builds on merge).
-9. **Server version:** unknown from the repo; `pg_dump` must be at least the production major version.
+## QUESTIONS (need your decision; the rest were answered by running the code)
+1. **Restoring over production** is documented nowhere (`backup_db.sh` says restore into an empty local database only). I gave no command on purpose. Do you want a procedure written and rehearsed?
+2. **Flattened roles** (above): change them first, or accept as is?
+3. **The 50-flag limit** (and 20 members): is production under them? If not, raise the limits in `quota.go` before the release, or accept?
+4. **Maintenance banner:** none exists in the console (checked). Post the messages only, or build one?
+5. **`HELIOS_ENV=production`** does nothing in release 1; keep it in the variable list?
+6. **Dashboard menu names** and the Render rollback button are from memory; check them on the day. Can Vercel hold its production build until Render is ready? Unknown.
+7. **Server version:** `pg_dump` must be at least production's major version; Step 2 shows both.
+
+---
+## What the rehearsal used
+**A synthetic "old production", not your dump** (no dump path was provided): the schema of `main` (6c90844), 10 users (7 with roles of different breadth, 3 with none), 5 environments, 60 flags, 300 flag configs, 6 experiments, 3 SDK keys minted by the old code (one revoked), 250,000 audit rows, 250,000 events. Scripts, the automated click-through and the findings' evidence: `tools/release1-dryrun/`. Answered by running it: the restore recipe (fixed twice: zsh word-splitting, `schema public exists`), the 0005 order (ROLLOUT.md was right, `rehearsal.md` was wrong and is fixed), the lockstep effects, the stream overlap, and what the old backend does on the migrated database.
