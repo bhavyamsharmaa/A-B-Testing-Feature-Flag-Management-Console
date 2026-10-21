@@ -1,5 +1,8 @@
 # Rehearsing migrations 0001-0005 on a second Supabase project
 
+> **Superseded for release 1 by `docs/RELEASE1_RUNBOOK.md`** (0004, 0006, 0007 on a local restore of the dump; 0005 is a separate later gate, see
+> section 5 below). This file describes the older rehearsal on a second Supabase project and does not cover 0006 and 0007.
+
 Goal: prove 0004 (workspaces) and 0005 on a throwaway copy of your setup before
 touching the live database. Nothing here uses your production project.
 
@@ -105,20 +108,23 @@ result as `/tmp/eval.before` (`diff`), the console (pointed at it) still logs
 in, and creating a flag through the old backend works (it lands in the legacy
 workspace through the temporary default).
 
-## 5. Deploy the new backend, then 0005 immediately
+## 5. Deploy the new backend; 0005 comes LATER, as its own gate
 
 1. Start the new backend (`cd backend && go run ./cmd/api`) against the database.
 2. `GET /me` as `owner@test.dev`: must return the **legacy** workspace and the
    original three environment UUIDs, not a new workspace.
-3. Apply 0005 right away and verify:
+3. Do NOT apply 0005 at this point of a real release: apply it only after the new backend has been live and observed (docs/ROLLOUT.md, gate G6b).
+   On this rehearsal copy you may apply it now to see what it does:
 
 ```bash
 psql "$REHEARSAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0005_drop_workspace_defaults.sql
 psql "$REHEARSAL_DATABASE_URL" -f backend/db/verify_0005.sql      # every row PASS
 ```
 
-4. Confirm the old backend can no longer insert (expected after 0005): that is
-   why 0005 follows the deploy immediately.
+4. Confirm the old backend can no longer write (expected after 0005; measured 2026-10-21: every old-backend write answers 500 with
+   `null value in column "workspace_id" ... violates not-null constraint`, even toggling an existing flag, because its audit row has no workspace).
+   That is exactly why 0005 must NOT run until you no longer want the option of redeploying the old backend: before 0005 a redeploy
+   is the rollback; after it, only restoring the dump is.
 
 ## 6. Provisioning, isolation and concurrency
 

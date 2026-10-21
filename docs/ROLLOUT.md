@@ -215,6 +215,14 @@ Until 0005 is applied, rolling back is redeploying the old backend and console
 | + 0005 | ok / ok / **500** |
 
 The new backend was rehearsed on 0004+0006+0007 (no 0005): all checks pass.
+
+**Correction from the dry run of 2026-10-21 (docs/RELEASE1_RUNBOOK.md, "Rollback"):** the table above is true for flag reads, SDK evaluation and the
+common writes, but two old-backend writes fail on the migrated database: *adding a member* answers 500 from 0006 on (the person must already be a
+workspace member), and, as soon as **a second workspace exists**, *creating a flag* answers 500 as well (the old code adds a config for every
+environment of every workspace). So "redeploy the old backend" is a full rollback only until the first new account signs up; afterwards it is a
+degraded one (reads, edits of existing flags, experiments and SDK work; creating flags and adding members do not) and the new accounts see nothing.
+Also measured: the per-environment roles are flattened into one workspace role per person (highest old role), which widens access for people who
+held a role in only some environments.
 Caveat: the old `mkkey` CLI fails after 0006 (`api_keys.workspace_id` NOT NULL); CLI only.
 
 ## Release 1 environment variables (detail)
