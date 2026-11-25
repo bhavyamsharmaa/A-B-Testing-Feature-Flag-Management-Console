@@ -4,7 +4,7 @@
 # unsets DATABASE_URL and every PG* variable, and only ever talks to the
 # throwaway Postgres on 127.0.0.1:55432 (PGPORT below).
 #
-#   rehearse_migration.sh --db NAME [--seed | --admin-email EMAIL] [--order 0004,0005,0006,0007]
+#   rehearse_migration.sh --db NAME [--seed | --admin-email EMAIL] [--order 0004,0006,0007]
 #
 #   --seed          build a legacy-shaped database (migrations 0001-0003 plus
 #                   realistic data and keys minted by the OLD code) in NAME.
@@ -12,13 +12,16 @@
 #                   restored copy of production; keys are then minted into the
 #                   copy with the old code, and --admin-email names an existing
 #                   admin whose login is rehearsed.
-#   --order         the order migrations are applied in (default: 0004,0005,0006,0007).
+#   --order         the order migrations are applied in. Default: 0004,0006,0007, the release 1 window
+#                   (docs/RELEASE1_RUNBOOK.md). 0005 is a later gate (G6b); add it, last, to see what it does:
+#                   --order 0004,0006,0007,0005
+#                   Each migration's verify script runs right after it is applied.
 #
 # Needs these binaries (set in the environment):
 #   OLD_API OLD_MKKEY   built from the code that is in production now
 #   NEW_API DEVAUTH     built from this branch
 #   PGBIN               PostgreSQL client/server binaries
-#   MIGRATIONS          directory with 0001..0007 *.sql
+#   MIGRATIONS          directory with 0001..0007 *.sql (the verify scripts are one level up)
 #   WORK                scratch directory
 #
 # After every migration the OLD backend (still running, as it would be during
@@ -28,7 +31,7 @@
 set -u
 unset DATABASE_URL PGHOST PGPORT PGUSER PGPASSWORD PGSERVICE PGSERVICEFILE PGPASSFILE PGDATABASE
 
-DB=""; SEED=0; ADMIN_EMAIL="admin@legacy.test"; ORDER="0004,0005,0006,0007"
+DB=""; SEED=0; ADMIN_EMAIL="admin@legacy.test"; ORDER="0004,0006,0007"
 while [ $# -gt 0 ]; do
   case "$1" in
     --db) DB="$2"; shift 2;; --seed) SEED=1; shift;; --admin-email) ADMIN_EMAIL="$2"; shift 2;; --order) ORDER="$2"; shift 2;;
@@ -172,22 +175,20 @@ old_checks() { # label
 }
 
 # ------------------------------------------------------------- migrations
+# A verify script describes the state right after its own migration, so it is run there and nowhere else.
+verify() { # migration number
+  local vf="$MIGRATIONS/../verify_$1.sql" out
+  [ -f "$vf" ] || { bad "no verify script $vf"; return; }
+  out=$(psqlq -f "$vf" 2>&1 | grep -E 'FAIL|SUMMARY|ERROR' | tr '\n' ' ')
+  case "$out" in *"|FAIL"*|*ERROR*|"") bad "verify_$1: $out";; *) ok "verify_$1: $out";; esac
+}
 say ""; say "== control: the old backend before any migration"; old_checks before-migration
 say ""; say "== migrations in the order: $ORDER (the OLD backend keeps serving throughout)"
 for m in ${ORDER//,/ }; do
   f=$(ls "$MIGRATIONS"/${m}_*.sql); t0=$(now_ms)
   if psqlq -f "$f" >>"$WORK/rehearsal.log" 2>&1; then ok "applied $m in $(( $(now_ms) - t0 )) ms"; else bad "migration $m failed; see $WORK/rehearsal.log"; break; fi
+  verify "$m"
   old_checks "after-$m"
-done
-say ""; say "== verify scripts"
-for v in 0004 0005 0006 0007; do
-  vf="$MIGRATIONS/../verify_$v.sql"; [ -f "$vf" ] || continue
-  out=$(psqlq -f "$vf" 2>&1 | grep -E 'FAIL|SUMMARY' | tr '\n' ' ')
-  case "$v" in
-    0004) # only meaningful before 0005/0006 change the keys and defaults: report, do not fail
-      say "      verify_$v (expected to differ once 0005/0006 ran): $out";;
-    *) case "$out" in *"|FAIL"*) bad "verify_$v: $out";; *) ok "verify_$v: $out";; esac;;
-  esac
 done
 snapshot > "$WORK/ids-after.txt"; counts > "$WORK/counts-after.txt"
 if diff -q "$WORK/ids-before.txt" "$WORK/ids-after.txt" >/dev/null; then ok "environment, api_key, flag, flag_config and audit ids and contents are identical before and after ($(wc -l < "$WORK/ids-after.txt" | tr -d ' ') rows)"; else bad "ids or contents changed"; diff "$WORK/ids-before.txt" "$WORK/ids-after.txt" | head -10; fi
