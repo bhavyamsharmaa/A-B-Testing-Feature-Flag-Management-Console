@@ -1,8 +1,9 @@
 // The runbook's Step 9 click-through (docs/RELEASE1_RUNBOOK.md) as a Playwright run against the release 1 console and backend.
-// It is meant to be copied into the e2e/ folder of a checkout of feature/workspaces-ui (it uses that branch's helpers.ts)
+// It is meant to be copied into frontend/e2e/ of a checkout of release/1 (it uses helpers.ts there)
 // and run against a LOCAL copy of the database that migrations 0004, 0006 and 0007 were applied to. The people in it are the
 // synthetic users of tools/release1-dryrun/synth_old_prod.sql (alice: owner of everything; erin: viewer in dev only; bob:
-// admin in dev only). Needs: HELIOS_KEYS = a file with KEY_PRODUCTION=... and KEY_STAGING=... (the revoked one).
+// admin in dev only). Needs: HELIOS_KEYS = a file with KEY_PRODUCTION=..., KEY_DEV=... and KEY_STAGING=... (the revoked one);
+// the backend needs REDIS_URL (9.5) and the tests run in file order, as the runbook's: the sign-ups come last.
 import { expect, request as pwRequest, test, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { API, AUTH, signUp, stamp } from './helpers'
@@ -64,7 +65,55 @@ test('9.1-9.3 an existing user signs in and finds everything; creates and enable
   await expect(page.getByRole('switch', { name: 'Enable flag-001' })).toBeVisible()
 })
 
-test('9.4-9.5 a brand-new account gets a private workspace and sees none of the old data', async ({ page }) => {
+test('9.4 SDK keys minted before the release still work; the revoked one still does not', async () => {
+  const api = await pwRequest.newContext({ baseURL: API })
+  const body = { context: { subjectKey: 'smoke', attributes: { plan: 'pro' } }, flagKeys: ['flag-001', 'flag-003', 'flag-005', 'missing'] }
+  const ok = await api.post('/evaluate', { headers: { 'X-Helios-SDK-Key': keys.KEY_PRODUCTION }, data: body })
+  expect(ok.status()).toBe(200)
+  expect(((await ok.json()) as { evaluations: unknown[] }).evaluations).toHaveLength(4)
+  const revoked = await api.post('/evaluate', { headers: { 'X-Helios-SDK-Key': keys.KEY_STAGING }, data: body })
+  expect(revoked.status()).toBe(401)
+})
+
+test('9.5 an SDK key minted before the release gets live updates on /sdk/stream', async () => {
+  const ws = (await me('alice@synthetic.invalid')).workspaces[0]
+  const devId = ws.environments.find((e) => e.key === 'dev')!.id
+  const auth = { Authorization: `Bearer ${await token('alice@synthetic.invalid')}` }
+  const res = await fetch(`${API}/sdk/stream`, { headers: { 'X-Helios-SDK-Key': keys.KEY_DEV }, signal: AbortSignal.timeout(15_000) })
+  expect(res.status).toBe(200)
+  expect(res.headers.get('content-type')).toContain('text/event-stream')
+  const api = await pwRequest.newContext({ baseURL: API })
+  for (const enabled of [true, false]) expect((await api.patch(`/environments/${devId}/flags/flag-004`, { headers: auth, data: { enabled } })).status()).toBe(200)
+  const reader = res.body!.getReader()
+  let seen = ''
+  while (!seen.includes('event: flag_update')) {
+    const { value, done } = await reader.read()
+    expect(done, 'the stream ended before an update arrived').toBe(false)
+    seen += new TextDecoder().decode(value)
+  }
+  await reader.cancel()
+  const revoked = await fetch(`${API}/sdk/stream`, { headers: { 'X-Helios-SDK-Key': keys.KEY_STAGING }, signal: AbortSignal.timeout(5_000) })
+  expect(revoked.status).toBe(401)
+})
+
+// What the move to ONE workspace role per person does to people who had
+// different roles in different environments. Prints what it finds; asserts only what the code promises.
+test('9.6 people who held a role in only some environments now hold it in all of them', async ({ browser }) => {
+  const ws = (await me('erin@synthetic.invalid')).workspaces[0]
+  expect(ws.role).toBe('viewer')                                       // erin: viewer in dev only before
+  const prod = ws.environments.find((e) => e.key === 'production')!
+  const api = await pwRequest.newContext({ baseURL: API })
+  const erin = await api.get(`/environments/${prod.id}/flags`, { headers: { Authorization: `Bearer ${await token('erin@synthetic.invalid')}` } })
+  console.log(`erin (viewer in dev only before the release) reading production flags now: HTTP ${erin.status()}`)
+  const bobWs = (await me('bob@synthetic.invalid')).workspaces[0]
+  const bobProd = bobWs.environments.find((e) => e.key === 'production')!
+  const bob = await api.patch(`/environments/${bobProd.id}/flags/flag-010`, { headers: { Authorization: `Bearer ${await token('bob@synthetic.invalid')}` }, data: { enabled: true } })
+  console.log(`bob (admin in dev only before the release) switching a production flag now: HTTP ${bob.status()} (role ${bobWs.role})`)
+  expect([200, 403]).toContain(bob.status())
+  void browser
+})
+
+test('9.7-9.8 a brand-new account gets a private workspace and sees none of the old data', async ({ page }) => {
   const fresh = { email: `fresh-${stamp}@test.dev`, password: 'password123' }
   await signUp(page, fresh)
   await expect(page.getByTestId('workspace-name')).toHaveText(`fresh-${stamp}'s workspace`)
@@ -81,29 +130,14 @@ test('9.4-9.5 a brand-new account gets a private workspace and sees none of the 
   expect(res.status()).toBe(404)
 })
 
-test('9.6 SDK keys minted before the release still work; the revoked one still does not', async () => {
+test('9.9 an unconfirmed email is refused and gets no workspace', async ({ page }) => {
+  // devauth treats "+unconfirmed" like a project that lets people sign in before confirming.
+  const walkin = { email: `walkin+unconfirmed-${stamp}@test.dev`, password: 'password123' }
+  await signUp(page, walkin)
+  await expect(page.getByTestId('confirm-email-screen')).toBeVisible()
+  await expect(page.getByTestId('workspace-switcher')).toHaveCount(0)
   const api = await pwRequest.newContext({ baseURL: API })
-  const body = { context: { subjectKey: 'smoke', attributes: { plan: 'pro' } }, flagKeys: ['flag-001', 'flag-003', 'flag-005', 'missing'] }
-  const ok = await api.post('/evaluate', { headers: { 'X-Helios-SDK-Key': keys.KEY_PRODUCTION }, data: body })
-  expect(ok.status()).toBe(200)
-  expect(((await ok.json()) as { evaluations: unknown[] }).evaluations).toHaveLength(4)
-  const revoked = await api.post('/evaluate', { headers: { 'X-Helios-SDK-Key': keys.KEY_STAGING }, data: body })
-  expect(revoked.status()).toBe(401)
-})
-
-// Not in the runbook's list before this rehearsal: what the move to ONE workspace role per person does to people who had
-// different roles in different environments. Prints what it finds; asserts only what the code promises.
-test('9.7 people who held a role in only some environments now hold it in all of them', async ({ browser }) => {
-  const ws = (await me('erin@synthetic.invalid')).workspaces[0]
-  expect(ws.role).toBe('viewer')                                       // erin: viewer in dev only before
-  const prod = ws.environments.find((e) => e.key === 'production')!
-  const api = await pwRequest.newContext({ baseURL: API })
-  const erin = await api.get(`/environments/${prod.id}/flags`, { headers: { Authorization: `Bearer ${await token('erin@synthetic.invalid')}` } })
-  console.log(`erin (viewer in dev only before the release) reading production flags now: HTTP ${erin.status()}`)
-  const bobWs = (await me('bob@synthetic.invalid')).workspaces[0]
-  const bobProd = bobWs.environments.find((e) => e.key === 'production')!
-  const bob = await api.patch(`/environments/${bobProd.id}/flags/flag-010`, { headers: { Authorization: `Bearer ${await token('bob@synthetic.invalid')}` }, data: { enabled: true } })
-  console.log(`bob (admin in dev only before the release) switching a production flag now: HTTP ${bob.status()} (role ${bobWs.role})`)
-  expect([200, 403]).toContain(bob.status())
-  void browser
+  const res = await api.get('/me', { headers: { Authorization: `Bearer ${await token(walkin.email, walkin.password)}` } })
+  expect(res.status()).toBe(403)
+  expect(((await res.json()) as { code: string }).code).toBe('EMAIL_NOT_CONFIRMED')
 })

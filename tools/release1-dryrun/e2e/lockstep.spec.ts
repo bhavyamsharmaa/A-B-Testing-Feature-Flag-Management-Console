@@ -1,7 +1,7 @@
 // What a person sees when the console and the backend are NOT on the same release (the deploys and the migration are not in
 // lockstep). Run against whichever pair is up: CONSOLE_URL is the console under test. Prints a one-line verdict per scenario and
 // asserts nothing about the outcome (the outcome IS the finding); it only fails if the run itself is broken.
-//   copy into frontend/e2e/ of a release-1 checkout, then: CONSOLE_URL=http://127.0.0.1:5174 npx playwright test e2e/lockstep.spec.ts
+//   copy into frontend/e2e/ of a release/1 checkout, then: CONSOLE_URL=http://127.0.0.1:5174 npx playwright test e2e/lockstep.spec.ts
 import { test, request as pwRequest, type Page } from '@playwright/test'
 import { AUTH, stamp } from './helpers'
 
