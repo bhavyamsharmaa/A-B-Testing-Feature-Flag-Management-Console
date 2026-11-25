@@ -35,13 +35,17 @@ them (rehearsed). The files are left byte-for-byte as rehearsed.
 What the **old** backend can do on each database state (`backend/scripts/rehearse_migration.sh` for the flag writes; the member and second-workspace
 results from the dry run, `tools/release1-dryrun/`):
 
-| Database state | SDK evaluate / reads | Flag create | Flag toggle, kill, delete; experiments | Add a member |
-|---|---|---|---|---|
-| before any migration | ok / ok | ok | ok | ok |
-| 0004 | ok / ok | ok | ok | ok |
-| 0004+0006 and 0004+0006+0007, one workspace | ok / ok | ok | ok | **500** |
-| 0004+0006+0007, **a second workspace exists** | ok / ok | **500** | ok | **500** |
-| + 0005 | ok / ok | **500** | **500** | **500** |
+| Database state | SDK evaluate / reads | Flag create | Flag toggle, kill; experiments | Flag delete | Add a member |
+|---|---|---|---|---|---|
+| before any migration | ok / ok | ok | ok | ok | ok |
+| 0004 | ok / ok | ok | ok | ok | ok |
+| 0004+0006 and 0004+0006+0007, one workspace | ok / ok | ok | ok | ok | **500** |
+| 0004+0006+0007, **a second workspace exists** | ok / ok (**but see below**) | **500** | ok (see below) | **403** | **500** |
+| + 0005 | ok / ok | **500** | **500** | **500** | **500** |
+
+**With a second workspace the old console cannot be relied on at all.** The old backend finds an environment by its key without saying which workspace,
+and which row the database returns is not guaranteed. In one state every request worked as in the table; after one row was rewritten, every console
+request for that environment answered 403. SDK evaluation was unaffected, and no other workspace's flags were shown or changed in the checks made.
 
 Caveat: the old `mkkey` CLI fails after 0006 (`api_keys.workspace_id` NOT NULL); CLI only.
 The new backend also changes who may do what: the per-environment roles are flattened into one workspace role per person (the highest old role), which
@@ -96,7 +100,7 @@ rows with the detail; "workspaces" means `select count(*) from workspaces`.
 |---|---|---|
 | G4 done (0004/0006/0007 applied), new code not deployed | nothing to redeploy; the old backend runs on the migrated schema, except adding a member (500) | no |
 | G5 deployed, 0005 not applied, **still 1 workspace** | redeploy the previous backend and console (Render and Vercel keep prior deploys); revert env vars (the new ones are inert for old code). Adding a member still fails | no |
-| G5 deployed, 0005 not applied, **2 or more workspaces** (first new sign-up, a role-less user's first sign-in, or a created workspace) | **not a clean rollback**: redeploying the old backend gives a degraded system (no flag creation, no member adding, new accounts see nothing) | yes, to be fully back |
+| G5 deployed, 0005 not applied, **2 or more workspaces** (first new sign-up, a role-less user's first sign-in, or a created workspace) | **not a clean rollback**: redeploying the old backend gives a degraded system (no flag creation or deletion, no member adding, new accounts see nothing, and the old console may answer 403 for whole environments) | yes, to be fully back |
 | G6b done (0005 applied) | the old backend **cannot write at all** (reads and SDK evaluation work). Running the commented ROLLBACK block at the bottom of `0005` re-adds the defaults and returns to the matching row above; do not redeploy the old code before that | no for that block |
 
 A restore from the G1 dump loses everything written after it was taken: new

@@ -41,5 +41,6 @@ Owner: connection is now PGSERVICE=helios_prod (~/.pg_service.conf + ~/.pgpass);
 ## Correction: what the old backend can still do (recorded 2026-11-25)
 The G0 result above covered the old backend's flag writes with **one** workspace. The later dry run on synthetic data (`tools/release1-dryrun/`, local only) found two
 writes that fail on the migrated database: **adding a member** (500 from 0006 on) and, **once a second workspace exists, creating a flag** (500). So redeploying the
-old backend is a full rollback of the flag features only while there is one workspace; after the first new sign-up it is a degraded one. After 0005 the old backend
+old backend is a full rollback of the flag features only while there is one workspace; after the first new sign-up it is a degraded one. With a second workspace, deleting a flag is also refused (403) and
+the old backend can pick the wrong workspace's environment by key, answering 403 for everything in it (measured 2026-11-25). After 0005 the old backend
 cannot write at all (reads, sign-in and SDK evaluation work). The tables in `docs/ROLLOUT.md` and `docs/RELEASE1_RUNBOOK.md` say this. Nothing ran against production.

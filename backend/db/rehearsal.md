@@ -153,7 +153,8 @@ curl -s localhost:8080/me -H "Authorization: Bearer $TOKEN"
    and leave the database unchanged (`verify_0004.sql` reports the tables missing).
 2. **Fresh database, no users:** apply 0001-0004, 0006, 0007 to an empty database. The legacy workspace is created with no owner and keeps the seed
    environments; the first user to call `/me` still gets their own workspace.
-3. **Rollback warning:** with two workspaces present, try the rollback block at the bottom of 0004. It must fail or merge tenants, which is why the file
+3. **Old backend with two workspaces:** start the old backend again and try creating and deleting a flag (500 and 403), and see the runbook's rollback table.
+4. **Rollback warning:** with two workspaces present, try the rollback block at the bottom of 0004. It must fail or merge tenants, which is why the file
    says to restore from backup instead.
 
 ## 8. 0005: a later, separate step (gate G6b)
