@@ -15,14 +15,18 @@ Never put a dump in the repository: `backup_db.sh` writes it to the git-ignored 
 | `streamoverlap.py` | does a flag change cross between an old and a new instance on `/sdk/stream`? |
 | `e2e/runbook-clickthrough.spec.ts`, `e2e/lockstep.spec.ts` | the runbook's Step 9 as Playwright, and the mismatched-release checks |
 
-To redo it (paths are examples; build the binaries from the commits named in the runbook):
+To redo it, from the root of a checkout of `release/1` (paths are examples; build the old binaries from `6c90844`, the new ones from this branch):
 
 ```bash
-D=~/helios-local/dryrun                                   # binaries: old-api, old-mkkey (from 6c90844), new-api, new-devauth (from 1e2f5e6)
+D=~/helios-local/dryrun     # binaries: old-api, old-mkkey (from 6c90844), new-api, new-devauth (this branch); plus a checkout of 6c90844 in $D/old-main
 tools/release1-dryrun/build_synthetic.sh $D/old-main/backend/db/migrations dryrun_src      # or use your own dump instead
-# mint SDK keys with the old code into dryrun_src, put them in $D/work/keys.env as KEY_PRODUCTION= / KEY_DEV= / KEY_STAGING=
-PGSERVICEFILE=$D/pg_service.conf PGSERVICE=helios_prod ~/helios-release1/backend/scripts/backup_db.sh   # a service named helios_prod pointing at dryrun_src
-tools/release1-dryrun/prep_migrated.sh <DUMP> helios_new ~/helios-release1
-# stack: new-devauth on :54321, new-api on :8080 (production-style variables, dummy values), vite from ~/helios-release1/frontend on :5173
-cp tools/release1-dryrun/e2e/*.spec.ts ~/helios-release1/frontend/e2e/ && (cd ~/helios-release1/frontend && HELIOS_KEYS=$D/work/keys.env npx playwright test e2e/runbook-clickthrough.spec.ts)
+# mint SDK keys with the old code into dryrun_src, put them in $D/work/keys.env as KEY_PRODUCTION= / KEY_DEV= / KEY_STAGING= (staging revoked)
+# apply synthetic_logins.sql to dryrun_src, and describe it as a service named helios_prod in a pg_service.conf of its own
+PGSERVICEFILE=$D/pg_service.conf PGSERVICE=helios_prod backend/scripts/backup_db.sh
+tools/release1-dryrun/prep_migrated.sh <DUMP> helios_new "$PWD"
+# stack: new-devauth on :54321, new-api on :8080 (with REDIS_URL and the runbook's variables, dummy values), vite from frontend/ on :5173
+cp tools/release1-dryrun/e2e/*.spec.ts frontend/e2e/ && (cd frontend && HELIOS_KEYS=$D/work/keys.env npx playwright test e2e/runbook-clickthrough.spec.ts)
+# then remove the two copied specs from frontend/e2e/
 ```
+
+The click-through signs people up and so makes a second workspace: run it on a fresh copy each time.

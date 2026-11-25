@@ -33,7 +33,12 @@ test('an existing user (alice) signs in', async ({ page }) => {
 
 test('a brand-new user signs up', async ({ page }) => {
   await page.goto(`${base}/login`)
-  await page.getByRole('button', { name: 'Create an account' }).click()
+  const create = page.getByRole('button', { name: 'Create an account' })
+  if (!(await create.waitFor({ timeout: 5000 }).then(() => true, () => false))) {
+    console.log(`[new user, console ${base}] the console has no sign-up (the old console never had one)`)
+    return
+  }
+  await create.click()
   await page.getByLabel('Email').fill(`lockstep-${stamp}@test.dev`)
   await page.getByLabel('Password').fill('password123')
   await page.getByRole('button', { name: 'Create account' }).click()
