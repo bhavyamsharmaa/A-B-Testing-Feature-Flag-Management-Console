@@ -3,8 +3,8 @@
 For the owner doing the live release. A plain checklist made from `docs/ROLLOUT.md`, **executed end to end on a local copy on
 2026-10-21** (a synthetic "old production", see the last section) and corrected where reality differed. Times marked *measured* were
 measured on this laptop with 250,000 audit rows and 250,000 event rows: production will differ, Step 6 gives you your own numbers.
-**Release 1 only:** branch `feature/workspaces-ui` (HEAD `1e2f5e6`, 25 commits on top of `main` = `6c90844`), migrations **0004, 0006, 0007**.
-Migration **0005 is NOT part of this** (it removes defaults the old backend needs; a later, separate gate). Nothing after release 1 is here.
+**Release 1 only:** branch `release/1`: the code of `feature/workspaces-ui` (`1e2f5e6`, on top of `main` = `6c90844`) plus documents, scripts and CI; **no application code or migration differs from `1e2f5e6`**. Migrations **0004, 0006, 0007**.
+Migration **0005 is NOT part of this** (it removes defaults the old backend needs; a later, separate gate, G6b in `docs/ROLLOUT.md`). Everything else belongs to later releases.
 
 How to read a step: **Do** / **Type** / **Where** / **Good** / **Wrong -> then**. `<ANGLE BRACKETS>` are placeholders you fill in.
 Never paste a password, key or URL with a password into chat, a file or a commit. If a result is not exactly "Good": **stop and ask**.
@@ -12,10 +12,12 @@ The commands work in macOS's default shell (zsh) and in bash.
 
 ---
 
-## Step 0. Get the release code into its own folder (no switching branches)
+## Step 0. Get the release code into its own folder
 **Do:** make a second checkout of the release branch so every command below runs the release's own scripts.
-**Type:** `cd <YOUR REPO FOLDER> && git worktree add ~/helios-release1 feature/workspaces-ui && cd ~/helios-release1 && git log --oneline -1`
-**Good:** the last line starts with `1e2f5e6`. **Wrong:** a different id, or "already exists" -> stop and ask.
+**Type:** `cd <YOUR REPO FOLDER> && git worktree add --detach ~/helios-release1 release/1 && cd ~/helios-release1 && git log --oneline -1`
+then: `git diff --stat 1e2f5e6 -- backend/internal backend/cmd frontend/src backend/db/migrations && python3 tools/release1-docs-check/check.py`
+**Good:** the log line is the commit id you were given for `release/1` (write it down); `git diff` prints **nothing** (the code and migrations are exactly the rehearsed ones); the check ends with `OK`.
+**Wrong:** a different id, any line from `git diff`, a failed check, or "already exists" -> stop and ask.
 All commands below that mention `~/helios-release1` run from that folder.
 
 ## Step 1. Read-only sanity check of production (G1, part 1)
@@ -35,7 +37,7 @@ Then see who **gains access** (see "Decide before" below): `psql "service=helios
 
 ## Step 3. Prove the dump can be restored (on your own computer only)
 **Do:** restore it into a throwaway local database and compare the counts with Step 1. The dump has no `auth.users` (Supabase owns that table), so the restore runs in three parts with a stand-in table filled with the user ids the data refers to.
-**Where:** your terminal, local only. The local database server must be running (`<YOUR REPO FOLDER>/backend/scripts/local_pg.sh ensure`). `<DUMP>` = the file from Step 2. **Type** one line at a time:
+**Where:** your terminal, local only. Start the local database server with `~/helios-release1/backend/scripts/local_pg.sh ensure`. `<DUMP>` = the file from Step 2. **Type** one line at a time:
 ```
 LOCAL="postgres://helios@127.0.0.1:55432/helios_rehearsal"; ADMIN="postgres://helios@127.0.0.1:55432/postgres"
 psql "$ADMIN" -c "DROP DATABASE IF EXISTS helios_rehearsal WITH (FORCE)" -c "CREATE DATABASE helios_rehearsal"
@@ -49,10 +51,12 @@ Then the same Step 1 count query with `psql "$LOCAL" -At -c "..."` into `~/helio
 **Good:** the last command prints `SAME`. **Wrong:** any `pg_restore` error or a difference -> stop; the dump is not proven. (`DROP SCHEMA public` is needed because the dump creates it; the first recipe in this file did not have that line and failed on "schema public already exists".)
 Notes: only users that appear in the data are recreated, with placeholder emails; people who signed up but never held a role are not in the copy (they exist in Supabase, so production is unaffected). The legacy workspace is named after its owner's email *at migration time*, so on the copy it will show a placeholder; that does not matter for the migrations.
 
-## Step 4. Turn off automatic deploys
-**Do:** make sure nothing deploys by itself while you work.
+## Step 4. Turn off automatic deploys, then publish the branch for review (G3)
+**Do:** make sure nothing deploys by itself, then put `release/1` on GitHub and let CI check it. Nothing here changes production.
 **Where:** Render dashboard -> your backend service -> Settings -> Build & Deploy -> Auto-Deploy = **Off**. Vercel -> project -> Settings -> Git: production deploys come only from `main` (menu names may differ).
-**Good:** Auto-Deploy shows off. **Wrong:** you cannot find it -> stop and ask.
+**Then type:** `cd <YOUR REPO FOLDER> && git push -u origin release/1` and open a **draft** pull request `release/1` -> `main` on GitHub. Do not merge it yet.
+**Good:** Auto-Deploy shows off; the pull request's `CI` checks are all green. **The CI workflow has never run on GitHub** (its commands were run locally), so a first-run failure may be the workflow's own.
+**Wrong:** you cannot find the setting, or a check is red -> stop and ask.
 
 ## Step 5. Set the environment variables (names only; you type the values)
 **Do:** add the settings the release code reads. **Where:** Render -> Environment (backend); Vercel -> Settings -> Environment Variables (console). Save; on Render choose **not** to redeploy yet.
@@ -77,6 +81,7 @@ psql "$LOCAL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0004_workspaces.sql &&
 psql "$LOCAL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0006_workspace_roles_invites.sql && psql "$LOCAL" -f backend/db/verify_0006.sql
 psql "$LOCAL" -v ON_ERROR_STOP=1 -f backend/db/migrations/0007_workspace_keeps_an_owner.sql && psql "$LOCAL" -f backend/db/verify_0007.sql
 ```
+(The same rehearsal as one script, with old-and-new backend checks: `backend/scripts/rehearse_migration.sh`, usage in its header.)
 Put `time` in front of each `psql ... -f ...migrations/...` to get your own numbers. Then repeat the Step 1 count query on the copy and `diff` it against the "before" file.
 *(Measured on 250k audit + 250k event rows: 0004 = 0.22 s, 0006 = 0.03 s, 0007 = 0.02 s; verify scripts: 39 of 39, 16 of 16, 7 of 7 PASS; counts identical; every environment, key, flag, flag config, experiment and role id and content identical.)*
 **Good:** every verify row says `PASS` and ends `SUMMARY: N of N checks passed`; the counts are identical. **Wrong:** `ERROR`, `RAISE`, any `FAIL` row, or a count difference -> stop and ask. Known error: 0004 says `no user is admin in every environment` -> nobody holds the admin role in all environments; do not edit data yourself. Do **not** run 0005 or `verify_0005` (it is expected to fail).
@@ -93,37 +98,42 @@ psql "service=helios_prod" -v ON_ERROR_STOP=1 -f backend/db/migrations/0007_work
 ```
 Then the Step 1 count query again into `~/helios-release1-counts-after.txt` and `diff` it with the "before" file.
 **What it locks** *(measured, held until each file commits)*: 0004 takes an exclusive lock on `audit_logs`, `environments`, `experiments`, `flag_configs`, `flags` and `user_environment_roles` for the whole file (**reads and writes of those tables wait**; 0.22 s here, and the old backend kept answering: 3,000 requests during the three files, 0 failures, the slowest 181 ms). 0006 locks `api_keys`, `workspaces`, `workspace_members`, `workspace_invites`. 0007 only `workspace_members`. The `audit_logs` index build in 0004 grows with that table (a few seconds for millions of rows is plausible, not measured).
-**Good:** each ends `COMMIT`, every verify row `PASS`, counts identical. The old site keeps working. **Wrong:** any `ERROR`/`FAIL`/count difference -> **stop; do not run the next file**; ask. A failing file changes nothing (one transaction each).
+**Good:** each ends `COMMIT`, every verify row `PASS`, counts identical. The old site keeps working, with one exception from 0006 on: **adding a member answers 500** until Step 8. **Wrong:** any `ERROR`/`FAIL`/count difference -> **stop; do not run the next file**; ask. A failing file changes nothing (one transaction each).
 
 ## Step 8. Deploy backend and console together (G5)
 **Do:** merge the release into `main` on GitHub, then deploy Render by hand at once.
-**Where:** GitHub: pull request `feature/workspaces-ui` -> `main`, check it shows 25 commits, merge **in GitHub** (never `git push` to main: your local hook blocks it on purpose). Vercel starts its build on the merge. Render -> Manual Deploy -> **Deploy latest commit**.
+**Where:** GitHub: the Step 4 pull request. Mark it ready; its commit count must equal what `git rev-list --count 6c90844..release/1` prints; merge **in GitHub** (never `git push` to main: your local hook blocks it on purpose). Vercel starts its build on the merge. Render -> Manual Deploy -> **Deploy latest commit**.
 **Good:** both "Live"; `curl -i https://<API URL>/healthz` returns `200` and `ok`; the console loads. **Wrong:** failed build, or no 200 after 5 minutes -> Rollback, "Step 8".
 **The window is the gap between the two going live** *(measured by running every pairing)*: **old console + new backend:** existing users sign in and see *"This account has no environment access yet. Ask an admin to grant you a role"*; the old console has no sign-up at all. **New console + old backend:** existing and new users see *"This workspace has no environments you can see yet."* and new accounts get no workspace. Either way nothing is lost and SDK `/evaluate` keeps working throughout. So: click Render's deploy the moment you merge, and expect a few minutes of that message; do not keep the two apart. Open `/sdk/stream` connections do **not** receive flag changes made through the other side while old and new instances overlap (the channel name changed): SDKs pick the change up when they reconnect or poll.
 
 ## Step 9. Click through the live site (smoke list; automated as `tools/release1-dryrun/e2e/runbook-clickthrough.spec.ts`)
-1. In a private window sign in as an **existing user**: the old flags, the environment tabs and the audit log are there; Settings -> Members lists everyone who held a role.
+**Do checks 1-6 first, in order. Check 7 creates a second workspace, and from then on redeploying the old backend is only a degraded rollback** (see Rollback; a real user signing up does the same).
+1. In a private window sign in as an **existing user** (this is `/me`): the old flags, the environment tabs and the audit log are there; Settings -> Members lists everyone who held a role.
 2. The workspace menu shows one workspace and you are Owner.
 3. Create a flag `smoke-test-1` and switch it on and off. **If you had 50 or more flags, creation is refused with "limit reached: at most 50 flags per workspace"** (expected, see Step 1); switch an existing flag on and off instead.
-4. **Sign up a brand-new account** (a fresh email): it lands in an empty private workspace (dev, staging, production) with the onboarding card.
-5. As the new user confirm none of the old flags show, and that the old workspace's data is not reachable (404).
-6. With an **existing SDK key**: `curl -s -X POST https://<API URL>/evaluate -H "Content-Type: application/json" -H "X-Helios-SDK-Key: <EXISTING SDK KEY>" -d '{"context":{"subjectKey":"smoke"},"flagKeys":["<EXISTING FLAG KEY>"]}'` -> JSON with an `evaluations` list and the same values as before; a **revoked** key still gives 401.
-7. Open Settings as a former dev-only viewer or admin and check what they can now do (see "Decide before").
-8. Delete the test account's data and `smoke-test-1` if created.
-**Wrong anywhere** -> Rollback, row "Step 8".
+4. With an **existing SDK key**: `curl -s -X POST https://<API URL>/evaluate -H "Content-Type: application/json" -H "X-Helios-SDK-Key: <EXISTING SDK KEY>" -d '{"context":{"subjectKey":"smoke"},"flagKeys":["<EXISTING FLAG KEY>"]}'` -> JSON with an `evaluations` list and the same values as before; a **revoked** key still gives 401.
+5. **Live updates**, same old key: `curl -N -i --max-time 60 -H "X-Helios-SDK-Key: <EXISTING SDK KEY>" https://<API URL>/sdk/stream`, and while it waits, switch a flag of that key's environment in the console (then back). Good: status `200`, `text/event-stream`, then `event: flag_update`; curl stopping after 60 s is normal. `503 STREAM_UNAVAILABLE` means the backend has no Redis (check `REDIS_URL`, and the log line `connected to Redis`).
+6. Open Settings -> Members and check what a former dev-only viewer or admin can now do (see "Decide before").
+7. **Sign up a brand-new account** (a fresh email, confirm it): it lands in an empty private workspace (dev, staging, production) with the onboarding card.
+8. As the new user confirm none of the old flags show, and that the old workspace's data is not reachable.
+9. **Unconfirmed email is refused:** sign up another fresh address, do **not** click the confirmation link, and try to get in. Good: Supabase refuses the sign-in, or the console shows "Please confirm your email first"; no workspace appears. **If you land in a workspace**, Supabase's "Confirm email" is off and Helios cannot detect that: stop and ask (and keep `INVITES_BY_ID=false`).
+10. Clean up: delete `smoke-test-1` in the console and the test users in Supabase -> Authentication -> Users. **Release 1 cannot delete a workspace**, so the test account's empty workspace stays; leave it (do not delete rows by hand).
+**Wrong anywhere** -> Rollback, the "Step 8" row that fits.
 
 ## Step 10. The first hour
 Stay about 30-60 minutes. Every 10 minutes: Render -> Logs: look for `500`, `panic`, `error`; `curl -i https://<API URL>/healthz` is 200; one SDK `evaluate` (Step 9.6); open the console. Trouble signs: a flood of 500s, "cannot log in" or "see no data" reports, SDK 401s -> Rollback. Calm for an hour -> post the "after" message. **Do not apply 0005 now.**
 
-## Rollback: pick the row for how far you got *(each "old backend" result was measured by running the old backend on the migrated copy)*
+## Rollback: pick the row for how far you got *(each "old backend" result was measured by running the old backend on a migrated copy)*
+Which Step 8 row applies: `psql "service=helios_prod" -Atc "select count(*) from workspaces"`. A second workspace appears with a new sign-up, with the first sign-in of a user who held no role, or when anyone creates a workspace.
+
 | You are at | Undo with | Data restore needed? |
 |---|---|---|
-| Steps 0-6 | nothing live changed; `dropdb`/drop the local copy | no |
+| Steps 0-6 | nothing live changed; drop the local copy (and close the draft pull request) | no |
 | Step 7, a file failed | that file made no change (one transaction each). Stop, ask | no |
-| Step 7 done, new code **not** deployed, no new accounts | leave it. The old backend works on the migrated database: SDK evaluation, logins, reads, flag create/toggle/kill/delete, experiments, audit log. **One thing breaks: adding a member (500)**, because members must now be workspace members first | no |
-| Step 8 deployed, **no new account has signed up** | redeploy the previous Render deploy and Vercel deployment (revert the new variables if you like). Same result as the row above | no |
-| Step 8, **new accounts exist** (each has its own workspace) | redeploying the old backend still works for the old users' reads, edits of existing flags, experiments and SDK, but **creating a flag fails (500)** and adding a member fails (500), and the new accounts see nothing (no roles, and the old console has no sign-up). In the one check made, another workspace's flag did not show up in the old backend's list, and the failed writes were rolled back whole. **So a redeploy is a degraded rollback, fine for hours, not for days.** Undoing the migrations is no longer possible (the commented block in `0004` is destructive once another workspace exists). The only way back to a fully working old system is the Step 2 dump | **yes, to be fully back: restore from the dump; it loses everything written since** (accounts, workspaces, flag edits) |
-| After 0005 | not this release. If it was applied by mistake: **every old-backend write fails (500)**; stop and ask at once | yes |
+| Step 7 done, new code **not** deployed | leave it. The old backend works on the migrated database: SDK evaluation, logins, reads, flag create/toggle/kill/delete, experiments, audit log. **One thing breaks: adding a member (500)**, because members must now be workspace members first | no |
+| Step 8 deployed, **still 1 workspace** | redeploy the previous Render deploy and Vercel deployment (revert the new variables if you like). Same result as the row above: adding a member still fails | no |
+| Step 8 deployed, **2 or more workspaces** | **not a clean rollback.** The old backend still serves the old users' reads, edits of existing flags, experiments and SDK, but **creating a flag fails (500)**, adding a member fails (500), and accounts created since see nothing (no roles, and the old console has no sign-up). In the one check made, another workspace's flag did not show up in the old backend's list, and the failed writes were rolled back whole. **Fine for hours, not for days.** Deleting the extra users does not remove their workspaces, and undoing the migrations is destructive once another workspace exists. The only way back to a fully working old system is the Step 2 dump | **yes, to be fully back: restore from the dump; it loses everything written since** (accounts, workspaces, flag edits) |
+| After 0005 (not this release) | **every old-backend write fails (500)**, even toggling a flag; its sign-in, reads and SDK evaluation still work. Do not redeploy the old backend like this; stop and ask. The commented ROLLBACK block at the bottom of `0005` puts the defaults back, which returns you to the row above that fits (tested on a local copy) | no for that block |
 
 Whenever you roll back: first write down what was created since the dump. Never restore over production without asking (QUESTIONS 1).
 
@@ -136,9 +146,11 @@ Whenever you roll back: first write down what was created since the dump. Never 
 ## Decide before (found by the rehearsal; not in ROLLOUT.md)
 **Roles are flattened.** The old system gave roles per environment; the new one gives each person ONE role for the whole workspace, from their highest old role. Measured: a person who was viewer in dev only can now read production flags (HTTP 200); one who was admin in dev only can now switch a production flag (200) and is an `admin` everywhere; an old production-only viewer is now a viewer in dev too (the same rule; not separately tested). Run the Step 1 "gains access" query and decide whether to change roles (or accept) **before** the window; afterwards, in Settings -> Members.
 
+**Unconfirmed addresses.** With `SUPABASE_ANON_KEY` set, an **existing** user whose address Supabase does not report as confirmed gets the "confirm your email" screen instead of the console. Look at Supabase -> Authentication -> Users before the window. (Read from the code; the rehearsal had no such existing user.)
+
 ## Do not do this
 - Do not `git push` to `main` or force-push; merge in GitHub. Do not run commands from another branch's folder (use `~/helios-release1`).
-- **Do not apply 0005 now**, and no migration after 0007 (0008-0015 belong to later releases).
+- **Do not apply 0005 now.** The comments at the top of the `0004` and `0005` files say to apply it "IMMEDIATELY"; that is superseded by this runbook (the files are left byte-for-byte as rehearsed). There is no migration after 0007 in this release; later ones belong to later releases.
 - Do not use `psql -1`, a URL with a password, or run Step 6 commands against `helios_prod`.
 - Do not deploy the console and backend on different days; do not skip Steps 2-3.
 - Do not edit production rows by hand to make a migration pass; do not delete the dump after the release.
@@ -146,11 +158,12 @@ Whenever you roll back: first write down what was created since the dump. Never 
 ## QUESTIONS (need your decision; the rest were answered by running the code)
 1. **Restoring over production** is documented nowhere (`backup_db.sh` says restore into an empty local database only). I gave no command on purpose. Do you want a procedure written and rehearsed?
 2. **Flattened roles** (above): change them first, or accept as is?
-3. **The 50-flag limit** (and 20 members): is production under them? If not, raise the limits in `quota.go` before the release, or accept?
-4. **Maintenance banner:** none exists in the console (checked). Post the messages only, or build one?
+3. **The 50-flag limit** (and 20 members): is production under them? If not, accept, or have the limits in `quota.go` raised (a code change: it needs a new rehearsal)?
+4. **Maintenance banner:** **none exists** in the console and this release does not add one; the messages below are the only announcement. Is that enough?
 5. **`HELIOS_ENV=production`** does nothing in release 1; keep it in the variable list?
 6. **Dashboard menu names** and the Render rollback button are from memory; check them on the day. Can Vercel hold its production build until Render is ready? Unknown.
 7. **Server version:** `pg_dump` must be at least production's major version; Step 2 shows both.
+8. **CI** runs for the first time when you push `release/1` (Step 4). Do you want its actions pinned to commit SHAs first (a TODO in `.github/workflows/ci.yml`)?
 
 ---
 ## What the rehearsal used

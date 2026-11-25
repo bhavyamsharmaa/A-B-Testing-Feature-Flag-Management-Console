@@ -11,7 +11,7 @@ A control plane for feature flags and A/B experiments — decouples deploying co
 
 ## Prerequisites
 
-- Go 1.24+
+- Go 1.25+
 - Node 22+
 - Docker + Docker Compose
 
@@ -38,7 +38,7 @@ target the docker-compose services:
 | --- | --- |
 | `PORT` | `8080` |
 | `DATABASE_URL` | `postgres://helios:helios@localhost:5432/helios?sslmode=disable` |
-| `REDIS_ADDR` | `localhost:6379` |
+| `REDIS_URL` | unset (no push to `/sdk/stream`) |
 
 ## Run
 
@@ -72,12 +72,9 @@ which also shows how to run the whole stack locally without Supabase
 [docs/screenshots/](docs/screenshots/).
 
 **Database:** migrations `0004`-`0007` add workspaces (roles, invites, the last-owner guarantee) and are **not applied
-to any shared database yet**. Apply them in order, after a backup and a rehearsal on a
-copy (`backend/db/rehearsal.md`, `backend/scripts/backup_db.sh`), with the matching
-`db/verify_000N.sql` after each. `0005` must follow the backend deploy of the 0004
-version immediately; if you go straight to this version, apply 0004-0007 together and
-then deploy. The console and backend in this branch must be deployed together: the old
-console calls routes that no longer exist.
+to any shared database yet**. Release 1 is done by following [docs/RELEASE1_RUNBOOK.md](docs/RELEASE1_RUNBOOK.md): back up, rehearse, apply **0004, 0006,
+0007** with the matching `db/verify_000N.sql` after each, then deploy the console and backend together (the old console calls routes that no longer exist).
+**`0005` is applied later, as its own step**, once you no longer want to redeploy the old backend ([docs/ROLLOUT.md](docs/ROLLOUT.md), gate G6b).
 
 ## Where the code lives
 

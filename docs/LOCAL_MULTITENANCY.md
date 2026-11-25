@@ -3,7 +3,7 @@
 Everything here runs on your machine. Nothing touches Supabase, Render or any
 shared database.
 
-You need Go 1.24+, Node 22+ and a local Postgres 16 (Docker's `postgres:16` works
+You need Go 1.25+, Node 22+ and a local Postgres 16 (Docker's `postgres:16` works
 too: `docker compose up -d postgres` applies every migration in
 `backend/db/migrations/` on first start).
 
@@ -63,7 +63,7 @@ cd frontend && npx playwright install chromium && npm run e2e   # needs the stac
 ```
 
 `internal/integration` mounts the real routes on a fresh database per test (migrations
-0001-0006), refuses a non-local server, and checks that user B gets 404 on every one
+0001-0007), refuses a non-local server, and checks that user B gets 404 on every one
 of user A's flags, experiments, SDK keys, audit log, members and invites, with none of
 A's data in any response B receives.
 

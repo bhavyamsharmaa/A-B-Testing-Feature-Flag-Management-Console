@@ -19,7 +19,7 @@ All against local throwaway services (Postgres 127.0.0.1:55432, no production ac
 
 SDK-key continuity (keys minted by the OLD code, one revoked, 20 subjects x 5 flags, byte-for-byte baseline):
 - order 0004,0005,0006,0007: SDK evaluation identical after every migration (old backend) and on the new backend; revoked key still 401; ids and row counts identical; verify_0005/6/7 pass. Old-backend writes: 500 after 0005.
-- order 0004,0006,0007 (0005 deferred): old-backend SDK, reads and writes ok at every step; new backend ok.
+- order 0004,0006,0007 (0005 deferred): old-backend SDK, reads and writes ok at every step; new backend ok. *(Corrected below, 2026-11-25: only flag writes with a single workspace were tried.)*
 - order 0004,0006,0007,0005: same, writes break only after 0005.
 
 Findings: ROLLOUT.md did not exist (draft written); 0005 breaks old-backend writes; `backend/backups/` was not git-ignored (now is); `DATABASE_URL` is not visible to the tool shell.
@@ -37,3 +37,9 @@ Stopped. Waiting for "go 1".
 Owner: connection is now PGSERVICE=helios_prod (~/.pg_service.conf + ~/.pgpass); DATABASE_URL no longer needed; Render auto-deploy off, Vercel previews skipped for non-main, nothing is pushed before G3.
 - backend/scripts/backup_db.sh now takes no URL at all: `pg_dump --dbname "service=$PGSERVICE"`; it unsets DATABASE_URL and PG* connection variables. No credential can appear in `ps`.
 - BLOCKED again before touching the database: from the tool shell neither ~/.pg_service.conf nor ~/.pgpass exists (HOME=/Users/bhavyamsharmaa), so the service cannot resolve. No sanity check, no dump, nothing run against production.
+
+## Correction: what the old backend can still do (recorded 2026-11-25)
+The G0 result above covered the old backend's flag writes with **one** workspace. The later dry run on synthetic data (`tools/release1-dryrun/`, local only) found two
+writes that fail on the migrated database: **adding a member** (500 from 0006 on) and, **once a second workspace exists, creating a flag** (500). So redeploying the
+old backend is a full rollback of the flag features only while there is one workspace; after the first new sign-up it is a degraded one. After 0005 the old backend
+cannot write at all (reads, sign-in and SDK evaluation work). The tables in `docs/ROLLOUT.md` and `docs/RELEASE1_RUNBOOK.md` say this. Nothing ran against production.
