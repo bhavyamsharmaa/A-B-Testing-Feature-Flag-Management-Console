@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { getFlag, setFlagRollout } from '../api/flags'
 import { describeError } from '../lib/errors'
-import { toggleDisabledReason } from '../lib/permissions'
+import { BANNER_FLAG } from '../lib/bannerDiscount'
+import { canCreate, toggleDisabledReason } from '../lib/permissions'
 import {
   booleanVariations,
   describeSplit,
@@ -12,6 +13,7 @@ import {
 } from '../lib/rollout'
 import { SLOW_HINT, useSlowHint } from '../lib/useSlowHint'
 import type { EnvironmentRole, Flag, Role } from '../types'
+import { BannerDiscountSection } from './BannerDiscountSection'
 import { ConfirmDialog } from './ConfirmDialog'
 import { DeleteFlagSection, type DeleteState } from './DeleteFlagSection'
 import { ProductionStrip } from './ProductionStrip'
@@ -209,6 +211,17 @@ export function FlagDrawer({ flag, env, prod, role, roles, canEdit, onClose, onS
         </dl>
 
         <VariationsList flag={current} />
+
+        {current.key === BANNER_FLAG && (
+          <BannerDiscountSection
+            key={env}
+            env={env}
+            prod={prod}
+            canEdit={canEdit}
+            disabledReason={reason}
+            canCreate={canCreate(role)}
+          />
+        )}
 
         <TargetingSection
           flag={current}

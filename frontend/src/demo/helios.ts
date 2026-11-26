@@ -14,21 +14,20 @@ interface EvaluationResult {
   value: unknown
 }
 
-/** Evaluates one boolean flag. Throws on any failure; callers serve their fallback. */
-export async function evaluateFlag(flagKey: string): Promise<boolean> {
+/** Evaluates flags in one request: key -> value (null if disabled or missing). Throws on any failure. */
+export async function evaluateFlags(flagKeys: string[]): Promise<Map<string, unknown>> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), EVALUATE_TIMEOUT_MS)
   try {
     const res = await fetch(`${config.apiBaseUrl}/evaluate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Helios-SDK-Key': heliosSdkKey },
-      body: JSON.stringify({ context: { subjectKey: SUBJECT_KEY }, flagKeys: [flagKey] }),
+      body: JSON.stringify({ context: { subjectKey: SUBJECT_KEY }, flagKeys }),
       signal: controller.signal,
     })
     if (!res.ok) throw new Error(`evaluate failed (${res.status})`)
     const body = (await res.json()) as { evaluations: EvaluationResult[] }
-    // Only an explicit `true` turns the feature on; null (disabled/missing) is the fallback.
-    return body.evaluations.find((e) => e.flagKey === flagKey)?.value === true
+    return new Map(body.evaluations.map((e) => [e.flagKey, e.value]))
   } finally {
     clearTimeout(timer)
   }
