@@ -1,0 +1,17 @@
+Alice's SDK key (hsdk_…, dev) evaluating both flags:
+{
+  "alice-secret-banner": {
+    "flagKey": "alice-secret-banner",
+    "variationId": "on",
+    "value": true,
+    "reason": "FALLTHROUGH",
+    "experimentId": null
+  },
+  "bobs-private-flag": {
+    "flagKey": "bobs-private-flag",
+    "variationId": null,
+    "value": null,
+    "reason": "FLAG_NOT_FOUND",
+    "experimentId": null
+  }
+}

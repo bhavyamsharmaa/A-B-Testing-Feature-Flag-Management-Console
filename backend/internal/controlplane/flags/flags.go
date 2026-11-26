@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"helios/backend/internal/controlplane/audit"
+	"helios/backend/internal/controlplane/quota"
 	"helios/backend/internal/controlplane/rbac"
 	"helios/backend/internal/dataplane/evaluation"
 	"helios/backend/internal/platform/events"
@@ -49,13 +50,13 @@ type flagEvent struct {
 // committed: a Redis hiccup here must never look like the mutation itself
 // failed, so errors are logged, not returned to the caller (PRD: Redis down
 // degrades propagation, never correctness).
-func (h *Handlers) publish(ctx context.Context, environmentID, action, flagKey string, enabled bool, version int64) {
+func (h *Handlers) publish(ctx context.Context, workspaceID, environmentID, action, flagKey string, enabled bool, version int64) {
 	payload, err := json.Marshal(flagEvent{Action: action, FlagKey: flagKey, Enabled: enabled, Version: version})
 	if err != nil {
 		log.Printf("flags: marshal event for %s: %v", flagKey, err)
 		return
 	}
-	if err := h.events.Publish(ctx, events.FlagsChannel(environmentID), payload); err != nil {
+	if err := h.events.Publish(ctx, events.FlagsChannel(workspaceID, environmentID), payload); err != nil {
 		log.Printf("flags: publish event for %s: %v", flagKey, err)
 	}
 }
@@ -111,10 +112,17 @@ func scanFlagView(row scanner, envKey string) (flagView, error) {
 	return v, err
 }
 
-// Create handles POST /environments/{env}/flags. The flag is defined once
-// and gets a config in every environment, disabled everywhere, so creating a
-// flag never changes user-visible behaviour (US-01 AC-1). Fallthrough
-// defaults to the first variation; change it with PATCH.
+// Create handles POST /environments/{envId}/flags. The flag is defined once
+// per workspace and gets a config in every environment OF THAT WORKSPACE,
+// disabled everywhere, so creating a flag never changes user-visible
+// behaviour (US-01 AC-1). Fallthrough defaults to the first variation;
+// change it with PATCH.
+//
+// Lock order: workspace row FOR UPDATE (quota check, serialises concurrent
+// creates), then the flag and flag_config inserts, then the audit insert.
+// Nothing else takes the workspace row after another lock, so it can't form
+// a cycle with delete (flags row, then cascades) or experiment start (flags
+// row FOR SHARE, experiment, flag_config).
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	access := rbac.AccessFrom(ctx)
@@ -139,18 +147,22 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var view flagView
+	workspaceID := access.Env.WorkspaceID
 	err = pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		if err := quota.CheckFlag(ctx, tx, workspaceID); err != nil {
+			return err
+		}
 		var flagID string
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO flags (key, name, description, variation_type, variations, created_by)
-			VALUES ($1, $2, NULLIF($3, ''), $4::variation_type, $5::jsonb, $6::uuid)
+			INSERT INTO flags (workspace_id, key, name, description, variation_type, variations, created_by)
+			VALUES ($1::uuid, $2, $3, NULLIF($4, ''), $5::variation_type, $6::jsonb, $7::uuid)
 			RETURNING id::text`,
-			req.Key, req.Name, req.Description, req.VariationType, string(variations), access.User.ID,
+			workspaceID, req.Key, req.Name, req.Description, req.VariationType, string(variations), access.User.ID,
 		).Scan(&flagID); err != nil {
 			return err
 		}
 
-		rows, err := tx.Query(ctx, `SELECT id::text FROM environments`)
+		rows, err := tx.Query(ctx, `SELECT id::text FROM environments WHERE workspace_id = $1::uuid`, workspaceID)
 		if err != nil {
 			return err
 		}
@@ -164,15 +176,16 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO flag_configs (flag_id, environment_id, salt, fallthrough_variation_id)
-				VALUES ($1::uuid, $2::uuid, $3, $4)`,
-				flagID, envID, salt, req.Variations[0].ID,
+				INSERT INTO flag_configs (workspace_id, flag_id, environment_id, salt, fallthrough_variation_id)
+				VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5)`,
+				workspaceID, flagID, envID, salt, req.Variations[0].ID,
 			); err != nil {
 				return err
 			}
 		}
 
 		if err := audit.Write(ctx, tx, audit.Entry{
+			WorkspaceID:  workspaceID,
 			ActorID:      access.User.ID,
 			ActorEmail:   access.User.Email,
 			Action:       "flag.create",
@@ -186,6 +199,9 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		view, err = scanFlagView(tx.QueryRow(ctx, selectFlagView+` WHERE f.id = $2::uuid`, access.Env.ID, flagID), access.Env.Key)
 		return err
 	})
+	if quota.WriteError(w, err) {
+		return
+	}
 	if isUniqueViolation(err, "flags_key_key") {
 		httpx.WriteError(w, http.StatusConflict, "FLAG_KEY_EXISTS", "a flag with key "+req.Key+" already exists")
 		return
@@ -194,14 +210,15 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternal(w, r, err)
 		return
 	}
-	h.publish(ctx, access.Env.ID, "created", view.Key, view.Config.Enabled, view.Config.Version)
+	h.publish(ctx, access.Env.WorkspaceID, access.Env.ID, "created", view.Key, view.Config.Enabled, view.Config.Version)
 	httpx.WriteJSON(w, http.StatusCreated, view)
 }
 
-// List handles GET /environments/{env}/flags.
+// List handles GET /environments/{envId}/flags.
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	access := rbac.AccessFrom(r.Context())
-	rows, err := h.pool.Query(r.Context(), selectFlagView+` ORDER BY f.key`, access.Env.ID)
+	rows, err := h.pool.Query(r.Context(), selectFlagView+` WHERE f.workspace_id = $2::uuid ORDER BY f.key`,
+		access.Env.ID, access.Env.WorkspaceID)
 	if err != nil {
 		httpx.WriteInternal(w, r, err)
 		return
@@ -223,11 +240,12 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"flags": flags})
 }
 
-// Get handles GET /environments/{env}/flags/{key}.
+// Get handles GET /environments/{envId}/flags/{key}.
 func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
 	access := rbac.AccessFrom(r.Context())
 	key := r.PathValue("key")
-	view, err := scanFlagView(h.pool.QueryRow(r.Context(), selectFlagView+` WHERE f.key = $2`, access.Env.ID, key), access.Env.Key)
+	view, err := scanFlagView(h.pool.QueryRow(r.Context(), selectFlagView+` WHERE f.key = $2 AND f.workspace_id = $3::uuid`,
+		access.Env.ID, key, access.Env.WorkspaceID), access.Env.Key)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeFlagNotFound(w, key)
 		return
@@ -249,7 +267,7 @@ type configSnapshot struct {
 
 type validationError struct{ error }
 
-// Update handles PATCH /environments/{env}/flags/{key}. Absent fields are
+// Update handles PATCH /environments/{envId}/flags/{key}. Absent fields are
 // left alone; targetingRules or rollout set to null are cleared.
 func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -274,9 +292,9 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 			       COALESCE(fc.rollout::text, 'null'), fc.fallthrough_variation_id
 			FROM flag_configs fc
 			JOIN flags f ON f.id = fc.flag_id
-			WHERE f.key = $1 AND fc.environment_id = $2::uuid
+			WHERE f.key = $1 AND fc.environment_id = $2::uuid AND f.workspace_id = $3::uuid
 			FOR UPDATE OF fc`,
-			key, access.Env.ID,
+			key, access.Env.ID, access.Env.WorkspaceID,
 		).Scan(&configID, &variationsText, &before.Enabled, &rulesText, &rolloutText, &before.FallthroughVariationID)
 		if err != nil {
 			return err
@@ -337,6 +355,7 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := audit.Write(ctx, tx, audit.Entry{
+			WorkspaceID:   access.Env.WorkspaceID,
 			ActorID:       access.User.ID,
 			ActorEmail:    access.User.Email,
 			EnvironmentID: access.Env.ID,
@@ -349,7 +368,8 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		view, err = scanFlagView(tx.QueryRow(ctx, selectFlagView+` WHERE f.key = $2`, access.Env.ID, key), access.Env.Key)
+		view, err = scanFlagView(tx.QueryRow(ctx, selectFlagView+` WHERE f.key = $2 AND f.workspace_id = $3::uuid`,
+			access.Env.ID, key, access.Env.WorkspaceID), access.Env.Key)
 		return err
 	})
 	var invalid validationError
@@ -361,7 +381,7 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		httpx.WriteInternal(w, r, err)
 	default:
-		h.publish(ctx, access.Env.ID, "updated", view.Key, view.Config.Enabled, view.Config.Version)
+		h.publish(ctx, access.Env.WorkspaceID, access.Env.ID, "updated", view.Key, view.Config.Enabled, view.Config.Version)
 		httpx.WriteJSON(w, http.StatusOK, view)
 	}
 }
@@ -369,10 +389,6 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 type errInUse struct{ environments []string }
 
 func (e errInUse) Error() string { return "in use" }
-
-type errNotAdminEverywhere struct{ environments []string }
-
-func (e errNotAdminEverywhere) Error() string { return "not admin everywhere" }
 
 // errHasRunningExperiment lists "env/experiment-key" for each running
 // experiment on the flag.
@@ -387,12 +403,18 @@ func writeHasRunningExperiment(w http.ResponseWriter, running []string) {
 		"flag has a running experiment ("+strings.Join(running, ", ")+"); stop it before deleting the flag")
 }
 
-// Delete handles DELETE /environments/{env}/flags/{key}.
+// Delete handles DELETE /environments/{envId}/flags/{key}.
 //
-// A flag's definition is shared by every environment, so deleting it removes
-// it everywhere. The route requires admin in {env}; this handler additionally
-// requires admin in every other environment, so a dev-only admin can't
-// delete a flag that production depends on.
+// A flag's definition is shared by every environment of its workspace, so
+// deleting it removes it from all of them. The route requires admin in
+// {envId}. Workspace roles apply to every environment of the workspace, so
+// an owner or admin there is an admin everywhere in it.
+//
+// Lock order: the flags row FOR UPDATE first (which conflicts with
+// experiment start's FOR SHARE on the same row), then plain reads (admin
+// check, running-experiment check, in-use check), then the DELETE and its
+// cascades. It never takes the workspace row, so it can't deadlock with flag
+// create (workspace row first, then inserts of rows that don't exist yet).
 //
 // It's refused with 409 HAS_RUNNING_EXPERIMENT while any environment has a
 // running experiment on the flag, even with ?force=true.
@@ -415,31 +437,13 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 		var variations string
 		if err := tx.QueryRow(ctx, `
 			SELECT id::text, name, variation_type::text, variations::text
-			FROM flags WHERE key = $1 FOR UPDATE`, key,
+			FROM flags WHERE key = $1 AND workspace_id = $2::uuid FOR UPDATE`, key, access.Env.WorkspaceID,
 		).Scan(&flagID, &snapshot.Name, &snapshot.VariationType, &variations); err != nil {
 			return err
 		}
 		snapshot.Variations = json.RawMessage(variations)
 
 		rows, err := tx.Query(ctx, `
-			SELECT e.key FROM environments e
-			WHERE NOT EXISTS (
-				SELECT 1 FROM user_environment_roles r
-				WHERE r.environment_id = e.id AND r.user_id = $1::uuid AND r.role = 'admin'
-			)
-			ORDER BY e.key`, access.User.ID)
-		if err != nil {
-			return err
-		}
-		notAdmin, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return err
-		}
-		if len(notAdmin) > 0 {
-			return errNotAdminEverywhere{notAdmin}
-		}
-
-		rows, err = tx.Query(ctx, `
 			SELECT e.key || '/' || x.key FROM experiments x
 			JOIN environments e ON e.id = x.environment_id
 			WHERE x.flag_id = $1::uuid AND x.status = 'running'
@@ -482,6 +486,7 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 			action, severity = "flag.force_delete", audit.SeverityCritical
 		}
 		return audit.Write(ctx, tx, audit.Entry{
+			WorkspaceID:   access.Env.WorkspaceID,
 			ActorID:       access.User.ID,
 			ActorEmail:    access.User.Email,
 			EnvironmentID: access.Env.ID,
@@ -494,14 +499,10 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 	})
 
 	var inUse errInUse
-	var notAdmin errNotAdminEverywhere
 	var hasRunning errHasRunningExperiment
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		writeFlagNotFound(w, key)
-	case errors.As(err, &notAdmin):
-		httpx.WriteError(w, http.StatusForbidden, "FORBIDDEN",
-			"deleting a flag removes it from every environment; you are not an admin in: "+strings.Join(notAdmin.environments, ", "))
 	case errors.As(err, &hasRunning):
 		writeHasRunningExperiment(w, hasRunning.experiments)
 	case errors.As(err, &inUse):
@@ -510,12 +511,12 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		httpx.WriteInternal(w, r, err)
 	default:
-		h.publish(ctx, access.Env.ID, "deleted", key, false, 0)
+		h.publish(ctx, access.Env.WorkspaceID, access.Env.ID, "deleted", key, false, 0)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-// Kill handles POST /environments/{env}/flags/{key}/kill: disable the flag
+// Kill handles POST /environments/{envId}/flags/{key}/kill: disable the flag
 // in this environment immediately. Idempotent, and audited at
 // severity=critical every time, even when the flag was already off (US-08).
 func (h *Handlers) Kill(w http.ResponseWriter, r *http.Request) {
@@ -531,9 +532,9 @@ func (h *Handlers) Kill(w http.ResponseWriter, r *http.Request) {
 			SELECT fc.id::text, fc.enabled
 			FROM flag_configs fc
 			JOIN flags f ON f.id = fc.flag_id
-			WHERE f.key = $1 AND fc.environment_id = $2::uuid
+			WHERE f.key = $1 AND fc.environment_id = $2::uuid AND f.workspace_id = $3::uuid
 			FOR UPDATE OF fc`,
-			key, access.Env.ID,
+			key, access.Env.ID, access.Env.WorkspaceID,
 		).Scan(&configID, &wasEnabled); err != nil {
 			return err
 		}
@@ -547,6 +548,7 @@ func (h *Handlers) Kill(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := audit.Write(ctx, tx, audit.Entry{
+			WorkspaceID:   access.Env.WorkspaceID,
 			ActorID:       access.User.ID,
 			ActorEmail:    access.User.Email,
 			EnvironmentID: access.Env.ID,
@@ -560,7 +562,8 @@ func (h *Handlers) Kill(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		var err error
-		view, err = scanFlagView(tx.QueryRow(ctx, selectFlagView+` WHERE f.key = $2`, access.Env.ID, key), access.Env.Key)
+		view, err = scanFlagView(tx.QueryRow(ctx, selectFlagView+` WHERE f.key = $2 AND f.workspace_id = $3::uuid`,
+			access.Env.ID, key, access.Env.WorkspaceID), access.Env.Key)
 		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -571,7 +574,7 @@ func (h *Handlers) Kill(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteInternal(w, r, err)
 		return
 	}
-	h.publish(ctx, access.Env.ID, "killed", view.Key, view.Config.Enabled, view.Config.Version)
+	h.publish(ctx, access.Env.WorkspaceID, access.Env.ID, "killed", view.Key, view.Config.Enabled, view.Config.Version)
 	httpx.WriteJSON(w, http.StatusOK, view)
 }
 

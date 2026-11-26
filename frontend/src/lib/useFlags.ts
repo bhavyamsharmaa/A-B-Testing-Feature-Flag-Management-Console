@@ -3,7 +3,8 @@ import { listFlags } from '../api/flags'
 import type { Flag } from '../types'
 import { describeError } from './errors'
 
-export function useFlags(env: string | null) {
+/** Flags of one environment. `workspaceId` is part of the identity: another workspace's "dev" is a different list. */
+export function useFlags(env: string | null, workspaceId: string | null) {
   const [flags, setFlags] = useState<Flag[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -22,7 +23,7 @@ export function useFlags(env: string | null) {
     } finally {
       if (id === seq.current) setLoading(false)
     }
-  }, [env])
+  }, [env, workspaceId])
 
   useEffect(() => {
     setFlags(null) // never show another environment's flags while loading

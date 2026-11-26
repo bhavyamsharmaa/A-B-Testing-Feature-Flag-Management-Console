@@ -19,6 +19,9 @@ const (
 // Entry is one audit_logs row. Before/After are marshaled to JSON; pass nil
 // for "didn't exist" (creates) or "no longer exists" (deletes).
 type Entry struct {
+	// WorkspaceID is the tenant the entry belongs to. Required: an audit row
+	// with no workspace would be invisible to every tenant.
+	WorkspaceID   string
 	ActorID       string
 	ActorEmail    string
 	EnvironmentID string // empty for changes not scoped to one environment
@@ -32,6 +35,9 @@ type Entry struct {
 
 // Write inserts e using tx. Callers must use the same tx as the mutation.
 func Write(ctx context.Context, tx pgx.Tx, e Entry) error {
+	if e.WorkspaceID == "" {
+		return fmt.Errorf("audit: write %s: WorkspaceID is required", e.Action)
+	}
 	before, err := toJSON(e.Before)
 	if err != nil {
 		return err
@@ -46,10 +52,10 @@ func Write(ctx context.Context, tx pgx.Tx, e Entry) error {
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO audit_logs
-			(actor_id, actor_email, environment_id, action, resource_type, resource_id, severity, diff_before, diff_after)
+			(workspace_id, actor_id, actor_email, environment_id, action, resource_type, resource_id, severity, diff_before, diff_after)
 		VALUES
-			(NULLIF($1, '')::uuid, $2, NULLIF($3, '')::uuid, $4, $5, $6, $7, $8::jsonb, $9::jsonb)`,
-		e.ActorID, e.ActorEmail, e.EnvironmentID, e.Action, e.ResourceType, e.ResourceID, severity, before, after,
+			($1::uuid, NULLIF($2, '')::uuid, $3, NULLIF($4, '')::uuid, $5, $6, $7, $8, $9::jsonb, $10::jsonb)`,
+		e.WorkspaceID, e.ActorID, e.ActorEmail, e.EnvironmentID, e.Action, e.ResourceType, e.ResourceID, severity, before, after,
 	)
 	if err != nil {
 		return fmt.Errorf("audit: write %s: %w", e.Action, err)

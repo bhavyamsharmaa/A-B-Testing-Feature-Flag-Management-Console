@@ -24,6 +24,9 @@ import (
 type User struct {
 	ID    string // Supabase auth.users.id
 	Email string
+	// EmailStatus is what the verified token says about the address; see
+	// EmailPolicy for how it is used and what it can and cannot prove.
+	EmailStatus EmailStatus
 }
 
 type ctxKey struct{}
@@ -42,7 +45,40 @@ func WithUser(ctx context.Context, u User) context.Context {
 type claims struct {
 	Email string `json:"email"`
 	Role  string `json:"role"`
+	// Confirmation signals. Documented Supabase access tokens carry none of
+	// these; in practice GoTrue puts email_verified in user_metadata, and a
+	// custom access-token hook can add the others. Only a token whose
+	// signature has been verified is ever read.
+	EmailVerified    *bool          `json:"email_verified"`
+	EmailConfirmedAt string         `json:"email_confirmed_at"`
+	ConfirmedAt      string         `json:"confirmed_at"`
+	UserMetadata     map[string]any `json:"user_metadata"`
 	jwt.RegisteredClaims
+}
+
+// emailStatus reads the confirmation signals of an already verified token.
+// Any signal that says "not verified" wins over one that says "verified": a
+// token that contradicts itself is treated as unconfirmed.
+func (c claims) emailStatus() EmailStatus {
+	status := EmailUnknown
+	note := func(verified bool) {
+		switch {
+		case !verified:
+			status = EmailUnconfirmed
+		case status == EmailUnknown:
+			status = EmailConfirmed
+		}
+	}
+	if c.EmailVerified != nil {
+		note(*c.EmailVerified)
+	}
+	if v, ok := c.UserMetadata["email_verified"].(bool); ok {
+		note(v)
+	}
+	if c.EmailConfirmedAt != "" || c.ConfirmedAt != "" {
+		note(true)
+	}
+	return status
 }
 
 var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -118,7 +154,7 @@ func (v *Verifier) Verify(raw string) (User, error) {
 	if c.Role != "authenticated" || !uuidRE.MatchString(c.Subject) {
 		return User{}, errNotUserSession
 	}
-	return User{ID: strings.ToLower(c.Subject), Email: c.Email}, nil
+	return User{ID: strings.ToLower(c.Subject), Email: c.Email, EmailStatus: c.emailStatus()}, nil
 }
 
 // Middleware rejects requests without a valid "Authorization: Bearer <jwt>"
@@ -135,6 +171,6 @@ func (v *Verifier) Middleware(next http.Handler) http.Handler {
 			httpx.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid or expired token")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), user)))
+		next.ServeHTTP(w, r.WithContext(withToken(WithUser(r.Context(), user), raw)))
 	})
 }

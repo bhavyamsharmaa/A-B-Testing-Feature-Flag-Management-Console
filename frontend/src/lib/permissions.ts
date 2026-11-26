@@ -1,7 +1,7 @@
 // Cosmetic only: hides or disables controls the user's role cannot use. The
 // backend (rbac package) is the real boundary and still answers 403.
 
-import type { EnvironmentRole, Role } from '../types'
+import type { EnvironmentRole, Role, WorkspaceRole } from '../types'
 
 const RANK: Record<Role, number> = { viewer: 1, editor: 2, approver: 3, admin: 4 }
 
@@ -43,4 +43,52 @@ export function deleteDisabledReason(roles: EnvironmentRole[], env: string): str
   if (roleIn(roles, env) !== 'admin') return 'Only admins can delete flags'
   const others = roles.filter((r) => r.role !== 'admin').map((r) => `${r.environment} (${r.role})`)
   return `Deleting removes a flag from every environment, so you must be an admin in all of them. You are not an admin in: ${others.join(', ')}`
+}
+
+// ---- Workspace roles -------------------------------------------------------
+// The workspace role applies to every environment of the workspace. The mapping
+// mirrors the backend's rbac.WorkspaceRole.EnvRole.
+
+/** What a workspace role may do inside each environment. */
+export function envRoleOf(role: WorkspaceRole): Role {
+  switch (role) {
+    case 'owner':
+    case 'admin':
+      return 'admin'
+    case 'editor':
+      return 'editor'
+    default:
+      return 'viewer'
+  }
+}
+
+const WS_RANK: Record<WorkspaceRole, number> = { viewer: 1, editor: 2, admin: 3, owner: 4 }
+
+export const wsAtLeast = (role: WorkspaceRole | null | undefined, min: WorkspaceRole) =>
+  !!role && WS_RANK[role] >= WS_RANK[min]
+
+/** Rename the workspace, invite people, change roles, manage SDK keys. */
+export const canManageWorkspace = (role: WorkspaceRole | null | undefined) => wsAtLeast(role, 'admin')
+
+/** Roles `actor` may give someone: owners any, admins everything but owner. */
+export function assignableRoles(actor: WorkspaceRole): WorkspaceRole[] {
+  return actor === 'owner' ? ['owner', 'admin', 'editor', 'viewer'] : ['admin', 'editor', 'viewer']
+}
+
+/** Whether `actor` may change `target`'s role or remove them (admins can't touch owners). */
+export const canModifyMember = (actor: WorkspaceRole, target: WorkspaceRole) =>
+  wsAtLeast(actor, 'admin') && (actor === 'owner' || target !== 'owner')
+
+export const ROLE_LABEL: Record<WorkspaceRole, string> = {
+  owner: 'Owner',
+  admin: 'Admin',
+  editor: 'Editor',
+  viewer: 'Viewer',
+}
+
+export const ROLE_HINT: Record<WorkspaceRole, string> = {
+  owner: 'Full control, including ownership and removing other owners',
+  admin: 'Manage members, invites, SDK keys and production flags',
+  editor: 'Create and edit flags outside production, and kill switches',
+  viewer: 'Read-only access',
 }

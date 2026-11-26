@@ -1,4 +1,4 @@
-// Shared API types. Mirrors ../../../api/openapi.yaml (Me, Role, Error).
+// Shared API types. Mirrors ../../../api/openapi.yaml (Me, Workspace, Role, Error).
 
 export type Role = 'viewer' | 'editor' | 'approver' | 'admin'
 
@@ -7,10 +7,66 @@ export interface EnvironmentRole {
   role: Role
 }
 
+export type WorkspaceRole = 'owner' | 'admin' | 'editor' | 'viewer'
+
+export interface WorkspaceEnvironment {
+  id: string
+  key: string
+  name: string
+  isProduction: boolean
+}
+
+/** A workspace as the signed-in user sees it: their role in it, and its environments. */
+export interface Workspace {
+  id: string
+  name: string
+  slug: string
+  role: WorkspaceRole
+  environments: WorkspaceEnvironment[]
+}
+
+/** An open invite addressed to the signed-in user's email. */
+export interface PendingInvite {
+  id: string
+  workspaceId: string
+  workspaceName: string
+  role: WorkspaceRole
+  invitedByEmail: string
+  expiresAt: string
+}
+
 export interface Me {
   id: string
   email: string
-  roles: EnvironmentRole[]
+  activeWorkspaceId: string
+  workspaces: Workspace[]
+  invites: PendingInvite[]
+}
+
+export interface Member {
+  userId: string
+  email: string
+  role: WorkspaceRole
+  joinedAt: string
+  isYou: boolean
+}
+
+export interface WorkspaceInvite {
+  id: string
+  email: string
+  role: WorkspaceRole
+  invitedByEmail: string
+  createdAt: string
+  expiresAt: string
+}
+
+export interface SdkKey {
+  id: string
+  name: string
+  kind: string
+  prefix: string
+  createdAt: string
+  revokedAt: string | null
 }
 
 export interface Variation {

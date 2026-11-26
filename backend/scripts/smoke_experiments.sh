@@ -5,8 +5,9 @@
 #
 #   API_BASE=http://localhost:8080 ENV_NAME=dev TOKEN=... backend/scripts/smoke_experiments.sh
 #
-# Needs: bash, curl. The caller must be admin in EVERY environment (flag
-# creation is global, and so is deletion) and at least approver in ENV_NAME.
+# Needs: bash, curl. ENV_NAME is an environment key ("dev"); it is looked up in
+# the caller's active workspace via GET /me. The caller must be an owner or
+# admin of that workspace (flag deletion and experiment stop need it).
 # The token is read from the environment only, is passed to curl through a
 # config file descriptor (so it never appears in the process list), and is
 # never printed.
@@ -68,8 +69,8 @@ check() {
 # someone else's flag.
 cleanup() {
   if [ "$CREATED_FLAG" = 1 ]; then
-    [ "$EXP_STARTED" = 1 ] && api POST "/environments/$ENV_NAME/experiments/$EXP_KEY/stop"
-    api DELETE "/environments/$ENV_NAME/flags/$FLAG_KEY"
+    [ "$EXP_STARTED" = 1 ] && api POST "/environments/$ENV_ID/experiments/$EXP_KEY/stop"
+    api DELETE "/environments/$ENV_ID/flags/$FLAG_KEY"
     if [ "$STATUS" = 204 ]; then echo "cleanup: removed $FLAG_KEY"; else
       echo "cleanup: could not remove $FLAG_KEY (HTTP $STATUS); delete it by hand" >&2; fi
   fi
@@ -77,8 +78,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-FLAGS="/environments/$ENV_NAME/flags"
-EXPS="/environments/$ENV_NAME/experiments"
+# Environments are addressed by id: find ENV_NAME's id in the active workspace.
+api GET /me
+[ "$STATUS" = 200 ] || { echo "ABORT GET /me failed (HTTP $STATUS); check API_BASE and TOKEN." >&2; exit 2; }
+ENV_ID="$(printf '%s' "$BODY" | grep -o '"id":"[^"]*","key":"'"$ENV_NAME"'"' | head -1 | sed 's/"id":"\([^"]*\)".*/\1/')"
+[ -n "$ENV_ID" ] || { echo "ABORT no environment \"$ENV_NAME\" in your active workspace." >&2; exit 2; }
+
+FLAGS="/environments/$ENV_ID/flags"
+EXPS="/environments/$ENV_ID/experiments"
 
 # 0. refuse to run if the flag already exists
 api GET "$FLAGS/$FLAG_KEY"

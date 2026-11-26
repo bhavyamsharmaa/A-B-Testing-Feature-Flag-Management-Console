@@ -1,12 +1,17 @@
 // Package rbac provides server-side role enforcement for the control plane
-// (viewer / editor / approver / admin), scoped per environment. The console
-// hiding a button is cosmetic; this package is the actual boundary (US-06 AC-1).
+// (viewer / editor / approver / admin), scoped per environment, and the
+// tenant boundary: an {envId} path segment only resolves to an environment
+// the caller holds a role in, so another workspace's environments are
+// indistinguishable from ones that don't exist. The console hiding a button
+// is cosmetic; this package is the actual boundary (US-06 AC-1).
 package rbac
 
 import (
 	"context"
 	"errors"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,8 +43,11 @@ func (r Role) AtLeast(min Role) bool {
 	return rank[r] >= rank[min]
 }
 
+// Environment is an environment as the guard resolved it. WorkspaceID is the
+// tenant it belongs to; every query a handler runs must be scoped by it.
 type Environment struct {
 	ID           string
+	WorkspaceID  string
 	Key          string
 	IsProduction bool
 }
@@ -63,10 +71,13 @@ func FlagWrite(env Environment) Role {
 }
 
 // Access is what Guard established about the caller for this request.
+// Role is what the caller may do inside the environment; it is derived from
+// WorkspaceRole, their role in the environment's workspace.
 type Access struct {
-	User auth.User
-	Env  Environment
-	Role Role
+	User          auth.User
+	Env           Environment
+	Role          Role
+	WorkspaceRole WorkspaceRole
 }
 
 type accessKey struct{}
@@ -77,16 +88,63 @@ func AccessFrom(ctx context.Context) Access {
 	return a
 }
 
-var ErrEnvironmentNotFound = errors.New("environment not found")
+var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// LoadEnvironment looks up an environment by its key (e.g. "production").
-func LoadEnvironment(ctx context.Context, q interface {
+// IsUUID reports whether s is shaped like a UUID.
+func IsUUID(s string) bool { return uuidRE.MatchString(s) }
+
+// environmentKeyRE allows at most 32 characters and must start with a letter,
+// so no valid key can be 36-character UUID-shaped.
+var environmentKeyRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+
+// ValidEnvironmentKey reports whether s may be used as an environment key.
+func ValidEnvironmentKey(s string) bool {
+	return environmentKeyRE.MatchString(s) && !IsUUID(s)
+}
+
+var (
+	ErrEnvironmentNotFound = errors.New("environment not found")
+	ErrWorkspaceNotFound   = errors.New("workspace not found")
+)
+
+// rowQuerier is the part of *pgxpool.Pool (or a pgx.Tx) the guard needs.
+type rowQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, key string) (Environment, error) {
+}
+
+// resolveEnvironment turns the {envId} path segment into an environment and
+// the caller's role in its workspace, in one query. The join on
+// workspace_members is what makes this the tenant boundary: an environment
+// the caller is not a member of (unknown, or another workspace's) matches no
+// row, and the response never says which. A segment that is not a UUID can't
+// match anything and never reaches the database.
+func resolveEnvironment(ctx context.Context, db rowQuerier, userID, segment string) (Environment, WorkspaceRole, error) {
+	if !IsUUID(segment) {
+		return Environment{}, "", ErrEnvironmentNotFound
+	}
 	var env Environment
-	err := q.QueryRow(ctx,
-		`SELECT id::text, key, is_production FROM environments WHERE key = $1`, key,
-	).Scan(&env.ID, &env.Key, &env.IsProduction)
+	var role WorkspaceRole
+	err := db.QueryRow(ctx, `
+		SELECT e.id::text, e.workspace_id::text, e.key, e.is_production, m.role::text
+		FROM environments e
+		JOIN workspace_members m ON m.workspace_id = e.workspace_id
+		WHERE e.id = $2::uuid AND m.user_id = $1::uuid`,
+		userID, segment,
+	).Scan(&env.ID, &env.WorkspaceID, &env.Key, &env.IsProduction, &role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Environment{}, "", ErrEnvironmentNotFound
+	}
+	return env, role, err
+}
+
+// LoadEnvironmentInWorkspace looks an environment up by key inside one
+// workspace, for tools like mkkey that run outside a request.
+func LoadEnvironmentInWorkspace(ctx context.Context, db rowQuerier, workspaceID, key string) (Environment, error) {
+	var env Environment
+	err := db.QueryRow(ctx, `
+		SELECT id::text, workspace_id::text, key, is_production
+		FROM environments WHERE workspace_id = $1::uuid AND key = $2`, workspaceID, key,
+	).Scan(&env.ID, &env.WorkspaceID, &env.Key, &env.IsProduction)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Environment{}, ErrEnvironmentNotFound
 	}
@@ -94,16 +152,17 @@ func LoadEnvironment(ctx context.Context, q interface {
 }
 
 type Guard struct {
-	pool *pgxpool.Pool
+	db rowQuerier
 }
 
 func NewGuard(pool *pgxpool.Pool) *Guard {
-	return &Guard{pool: pool}
+	return &Guard{db: pool}
 }
 
-// Require wraps a route that has an {env} path parameter. It must run after
-// auth.Middleware. It resolves the environment, looks up the caller's role
-// there, and rejects with 403 unless that role meets req.
+// Require wraps a route that has an {envId} path parameter. It must run after
+// auth.Middleware. It resolves the environment through the caller's own
+// workspace membership and rejects with 404 when the caller can't see it, or
+// 403 when they can but their role is too low.
 func (g *Guard) Require(req Requirement, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, ok := auth.FromContext(r.Context())
@@ -111,9 +170,9 @@ func (g *Guard) Require(req Requirement, next http.Handler) http.Handler {
 			httpx.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 			return
 		}
-		env, err := LoadEnvironment(r.Context(), g.pool, r.PathValue("env"))
+		env, wsRole, err := resolveEnvironment(r.Context(), g.db, user.ID, r.PathValue("envId"))
 		if errors.Is(err, ErrEnvironmentNotFound) {
-			httpx.WriteError(w, http.StatusNotFound, "ENVIRONMENT_NOT_FOUND", "unknown environment "+r.PathValue("env"))
+			httpx.WriteError(w, http.StatusNotFound, "ENVIRONMENT_NOT_FOUND", "environment not found")
 			return
 		}
 		if err != nil {
@@ -121,28 +180,73 @@ func (g *Guard) Require(req Requirement, next http.Handler) http.Handler {
 			return
 		}
 
-		var role Role
-		err = g.pool.QueryRow(r.Context(), `
-			SELECT role::text FROM user_environment_roles
-			WHERE user_id = $1::uuid AND environment_id = $2::uuid`,
-			user.ID, env.ID,
-		).Scan(&role)
-		if errors.Is(err, pgx.ErrNoRows) {
-			httpx.WriteError(w, http.StatusForbidden, "FORBIDDEN", "you have no role in environment "+env.Key)
-			return
-		}
-		if err != nil {
-			httpx.WriteInternal(w, r, err)
-			return
-		}
-
+		role := wsRole.EnvRole()
 		if need := req(env); !role.AtLeast(need) {
 			httpx.WriteError(w, http.StatusForbidden, "FORBIDDEN",
-				"requires "+string(need)+" role in "+env.Key+"; you are "+string(role))
+				"requires "+string(need)+" access in "+env.Key+"; your workspace role is "+string(wsRole))
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), accessKey{}, Access{User: user, Env: env, Role: role})
+		ctx := context.WithValue(r.Context(), accessKey{}, Access{User: user, Env: env, Role: role, WorkspaceRole: wsRole})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// WorkspaceAccess is what RequireWorkspace established for a {wsId} route.
+type WorkspaceAccess struct {
+	User        auth.User
+	WorkspaceID string
+	Role        WorkspaceRole
+}
+
+type workspaceAccessKey struct{}
+
+// WorkspaceAccessFrom returns the WorkspaceAccess stored by RequireWorkspace.
+func WorkspaceAccessFrom(ctx context.Context) WorkspaceAccess {
+	a, _ := ctx.Value(workspaceAccessKey{}).(WorkspaceAccess)
+	return a
+}
+
+func resolveWorkspace(ctx context.Context, db rowQuerier, userID, segment string) (WorkspaceRole, error) {
+	if !IsUUID(segment) {
+		return "", ErrWorkspaceNotFound
+	}
+	var role WorkspaceRole
+	err := db.QueryRow(ctx, `
+		SELECT m.role::text FROM workspace_members m
+		WHERE m.user_id = $1::uuid AND m.workspace_id = $2::uuid`, userID, segment).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrWorkspaceNotFound
+	}
+	return role, err
+}
+
+// RequireWorkspace wraps a route with a {wsId} path parameter. The workspace
+// comes from the path but is only honoured when the caller is a member:
+// anyone else gets the same 404 as for a workspace that doesn't exist.
+func (g *Guard) RequireWorkspace(min WorkspaceRole, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, ok := auth.FromContext(r.Context())
+		if !ok {
+			httpx.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+			return
+		}
+		wsID := strings.ToLower(r.PathValue("wsId"))
+		role, err := resolveWorkspace(r.Context(), g.db, user.ID, wsID)
+		if errors.Is(err, ErrWorkspaceNotFound) {
+			httpx.WriteError(w, http.StatusNotFound, "WORKSPACE_NOT_FOUND", "workspace not found")
+			return
+		}
+		if err != nil {
+			httpx.WriteInternal(w, r, err)
+			return
+		}
+		if !role.AtLeast(min) {
+			httpx.WriteError(w, http.StatusForbidden, "FORBIDDEN",
+				"requires the "+string(min)+" role in this workspace; you are "+string(role))
+			return
+		}
+		ctx := context.WithValue(r.Context(), workspaceAccessKey{}, WorkspaceAccess{User: user, WorkspaceID: wsID, Role: role})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

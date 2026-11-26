@@ -1,8 +1,8 @@
 // Command api is the entrypoint for the Helios backend HTTP server.
 //
 // It reads configuration from the environment, connects to Postgres, and
-// mounts the control-plane (Supabase JWT + per-environment RBAC) and
-// data-plane (SDK key) routes.
+// mounts the control-plane (Supabase JWT + workspace membership and roles) and
+// data-plane (SDK key) routes; see internal/server.
 package main
 
 import (
@@ -12,27 +12,25 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"helios/backend/internal/controlplane/auditlog"
-	"helios/backend/internal/controlplane/experiments"
-	"helios/backend/internal/controlplane/flags"
-	"helios/backend/internal/controlplane/rbac"
-	"helios/backend/internal/dataplane/evaluation"
-	"helios/backend/internal/dataplane/stream"
-	"helios/backend/internal/platform/apikey"
 	"helios/backend/internal/platform/auth"
 	"helios/backend/internal/platform/config"
 	"helios/backend/internal/platform/cors"
 	"helios/backend/internal/platform/db"
 	"helios/backend/internal/platform/events"
-	"helios/backend/internal/platform/health"
+	"helios/backend/internal/platform/ratelimit"
 	"helios/backend/internal/platform/redisx"
+	"helios/backend/internal/server"
 )
 
-// sdkKeyCacheTTL bounds how long a revoked SDK key keeps working.
-const sdkKeyCacheTTL = time.Minute
+// sdkKeyCacheTTL bounds how long a revoked SDK key keeps working on an
+// instance that did not process the revocation itself (the one that did drops
+// its cache entry at once). Argon2id costs tens of milliseconds, so a short TTL
+// is cheap: one verification per key per instance every 15 seconds.
+const sdkKeyCacheTTL = 15 * time.Second
 
 func main() {
 	cfg := config.Load()
@@ -72,53 +70,53 @@ func main() {
 		defer redisClient.Close()
 	}
 
-	authn := verifier.Middleware
-	guard := rbac.NewGuard(pool)
-	members := rbac.NewMemberHandlers(pool)
-	fl := flags.NewHandlers(pool, publisher)
-	al := auditlog.NewHandlers(pool)
-	ex := experiments.NewHandlers(pool)
-	sdkKeys := apikey.NewVerifier(pool, sdkKeyCacheTTL)
-
-	// protected wraps an /environments/{env}/... handler: verify the JWT,
-	// then check the caller's role in {env} against req.
-	protected := func(req rbac.Requirement, h http.HandlerFunc) http.Handler {
-		return authn(guard.Require(req, h))
+	mode, ok := auth.ParseEmailMode(cfg.EmailConfirmation)
+	if !ok {
+		log.Fatalf("EMAIL_CONFIRMATION must be off, enforce or strict, got %q", cfg.EmailConfirmation)
+	}
+	// With the public anon key the backend can ask Supabase itself whether an
+	// address is confirmed, so it can insist on a positive answer.
+	if mode == auth.EmailEnforce && cfg.SupabaseAnonKey != "" && cfg.EmailConfirmation == "" {
+		mode = auth.EmailStrict
+	}
+	emailPolicy := auth.NewEmailPolicy(mode, cfg.SupabaseURL, cfg.SupabaseAnonKey, nil)
+	switch {
+	case mode == auth.EmailOff:
+		log.Printf("WARNING: EMAIL_CONFIRMATION=off: users with unconfirmed emails can create workspaces and accept invites")
+	case !emailPolicy.HasLookup():
+		log.Printf("email confirmation: %s, reading only the token's own claims (set SUPABASE_ANON_KEY, which is public, to also ask Supabase)", mode)
+	default:
+		log.Printf("email confirmation: %s, asking Supabase's user endpoint", mode)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", health.Handler(pool))
+	limits, err := ratelimit.ParseConfig(cfg.RateLimitDisabled, cfg.RateLimits, cfg.TrustedProxyHops, cfg.StreamsPerKey)
+	if err != nil {
+		log.Fatalf("rate limit settings: %v", err)
+	}
+	switch {
+	case limits.Disabled:
+		log.Printf("WARNING: RATE_LIMIT_DISABLED=true: no rate limits")
+	case limits.TrustedProxyHops == 0:
+		log.Printf("rate limits on, keyed by the socket address (set TRUSTED_PROXY_HOPS=1 behind one reverse proxy such as Render, or every client shares one IP bucket)")
+	default:
+		log.Printf("rate limits on, client IP from X-Forwarded-For (%d trusted proxy hop(s))", limits.TrustedProxyHops)
+	}
 
-	mux.Handle("GET /me", authn(http.HandlerFunc(members.Me)))
-	mux.Handle("POST /environments/{env}/members", protected(rbac.Min(rbac.Admin), members.AddMember))
-	mux.Handle("DELETE /environments/{env}/members/{userId}", protected(rbac.Min(rbac.Admin), members.RemoveMember))
-
-	mux.Handle("GET /environments/{env}/flags", protected(rbac.Min(rbac.Viewer), fl.List))
-	mux.Handle("GET /environments/{env}/flags/{key}", protected(rbac.Min(rbac.Viewer), fl.Get))
-	mux.Handle("POST /environments/{env}/flags", protected(rbac.Min(rbac.Editor), fl.Create))
-	mux.Handle("PATCH /environments/{env}/flags/{key}", protected(rbac.FlagWrite, fl.Update))
-	mux.Handle("DELETE /environments/{env}/flags/{key}", protected(rbac.Min(rbac.Admin), fl.Delete))
-	// Editor+ in every environment, production included: an unnecessary
-	// kill costs a disabled feature, a blocked one during an incident costs
-	// prolonged user harm (PRD US-06).
-	mux.Handle("POST /environments/{env}/flags/{key}/kill", protected(rbac.Min(rbac.Editor), fl.Kill))
-
-	// Same requirement as listing flags: any role in {env}.
-	mux.Handle("GET /environments/{env}/audit-logs", protected(rbac.Min(rbac.Viewer), al.List))
-
-	// Editors create and start; stopping needs an approver; any role reads.
-	mux.Handle("GET /environments/{env}/experiments", protected(rbac.Min(rbac.Viewer), ex.List))
-	mux.Handle("GET /environments/{env}/experiments/{key}", protected(rbac.Min(rbac.Viewer), ex.Get))
-	mux.Handle("POST /environments/{env}/experiments", protected(rbac.Min(rbac.Editor), ex.Create))
-	mux.Handle("POST /environments/{env}/experiments/{key}/start", protected(rbac.Min(rbac.Editor), ex.Start))
-	mux.Handle("POST /environments/{env}/experiments/{key}/stop", protected(rbac.Min(rbac.Approver), ex.Stop))
-
-	mux.Handle("POST /evaluate", sdkKeys.Middleware(evaluation.Handler(pool)))
-	mux.Handle("GET /sdk/stream", sdkKeys.Middleware(stream.Handler(subscriber)))
+	router := server.New(server.Deps{
+		Context:        appCtx,
+		InvitesByID:    !strings.EqualFold(strings.TrimSpace(cfg.InvitesByID), "false"),
+		Limiter:        ratelimit.New(limits),
+		Email:          emailPolicy,
+		Pool:           pool,
+		Authn:          verifier.Middleware,
+		Publisher:      publisher,
+		Subscriber:     subscriber,
+		SDKKeyCacheTTL: sdkKeyCacheTTL,
+	})
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           cors.Middleware(cfg.CORSAllowedOrigins, mux),
+		Handler:           cors.Middleware(cfg.CORSAllowedOrigins, router.Mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

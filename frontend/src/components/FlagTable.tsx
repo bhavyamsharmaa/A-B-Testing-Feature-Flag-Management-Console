@@ -8,6 +8,8 @@ interface Props {
   toggleAllowed: boolean
   toggleDisabledReason: string
   killAllowed: boolean
+  /** Viewers: no switch, no kill, "View" instead of "Configure". */
+  readOnly?: boolean
   onToggle: (flag: Flag) => void
   onKill: (flag: Flag) => void
   onConfigure: (flag: Flag) => void
@@ -16,7 +18,7 @@ interface Props {
 const fmt = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDisabledReason, killAllowed, onToggle, onKill, onConfigure }: Props) {
+export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDisabledReason, killAllowed, readOnly = false, onToggle, onKill, onConfigure }: Props) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[720px] text-left text-sm">
@@ -45,7 +47,7 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
                 <td className={`px-3 py-3 ${enabled ? '' : 'opacity-60'}`}>
                   <button
                     onClick={() => onConfigure(flag)}
-                    title="Configure this flag"
+                    title={readOnly ? 'View this flag' : 'Configure this flag'}
                     className="text-left font-mono text-[13px] text-zinc-100 underline-offset-2 transition hover:text-accent hover:underline"
                   >
                     {flag.key}
@@ -61,6 +63,7 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
 
                 <td className="px-3 py-3">
                   <div className="flex items-center gap-3">
+                    {!readOnly && (
                     <button
                       role="switch"
                       aria-checked={enabled}
@@ -78,6 +81,7 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
                         }`}
                       />
                     </button>
+                    )}
                     {busy ? (
                       <span className="text-xs text-zinc-400">Updating…</span>
                     ) : killed ? (
@@ -121,8 +125,9 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
                       onClick={() => onConfigure(flag)}
                       className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-accent/60 hover:bg-accent/10 hover:text-white"
                     >
-                      Configure
+                      {readOnly ? 'View' : 'Configure'}
                     </button>
+                    {!readOnly && (
                     <button
                       onClick={() => onKill(flag)}
                       disabled={!killAllowed || !enabled || busy}
@@ -137,6 +142,7 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
                     >
                       Kill
                     </button>
+                    )}
                   </div>
                 </td>
               </tr>

@@ -108,12 +108,14 @@ func single(q url.Values, name string) (value string, present bool, err error) {
 // only ever travel as arguments, never as part of the SQL text. It selects
 // Limit+1 rows so the handler can tell whether another page exists.
 //
-// Entries with no environment are included in every environment's log and
-// marked scope = 'global'. Today that is flag.create: a flag is created in
-// every environment at once, so its audit entry belongs to none of them.
-func buildListQuery(environmentID string, p listParams) (string, []any) {
-	args := []any{environmentID}
-	where := []string{"(environment_id = $1::uuid OR environment_id IS NULL)"}
+// Every row is scoped to the caller's workspace first. Within it, entries
+// with no environment are included in every environment's log and marked
+// scope = 'global'. Today that is flag.create (a flag is created in every
+// environment of the workspace at once) and workspace.create. Without the
+// workspace filter those NULL-environment rows would belong to every tenant.
+func buildListQuery(workspaceID, environmentID string, p listParams) (string, []any) {
+	args := []any{workspaceID, environmentID}
+	where := []string{"workspace_id = $1::uuid", "(environment_id = $2::uuid OR environment_id IS NULL)"}
 	add := func(cond string, v any) {
 		args = append(args, v)
 		where = append(where, fmt.Sprintf(cond, len(args)))

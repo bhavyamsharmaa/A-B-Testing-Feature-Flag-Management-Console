@@ -30,7 +30,7 @@ export function AccessGate({ me, meLoading, meError, reloadMe, roleCount }: Prop
 
       {me && !meLoading && roleCount === 0 && (
         <p className="rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-zinc-300">
-          This account has no environment access yet. Ask an admin to grant you a role in an environment.
+          This workspace has no environments you can see yet.
         </p>
       )}
     </>

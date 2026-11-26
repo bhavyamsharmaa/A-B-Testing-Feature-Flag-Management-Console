@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { apiClient } from '../api/client'
+import { ApiError, apiClient } from '../api/client'
 import { supabase } from '../lib/supabase'
 import type { Me } from '../types'
 
@@ -12,7 +12,11 @@ interface AuthState {
   me: Me | null
   meLoading: boolean
   meError: string | null
+  /** True when the backend refused the account because its email is not confirmed yet. */
+  emailUnconfirmed: boolean
   reloadMe: () => void
+  /** Re-fetches /me in place (no loading state), e.g. after creating a workspace or accepting an invite. */
+  refreshMe: () => Promise<Me>
 }
 
 const AuthContext = createContext<AuthState | null>(null)
@@ -23,6 +27,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null)
   const [meLoading, setMeLoading] = useState(false)
   const [meError, setMeError] = useState<string | null>(null)
+  const [meErrorCode, setMeErrorCode] = useState<string | null>(null)
   const [meNonce, setMeNonce] = useState(0)
 
   useEffect(() => {
@@ -41,19 +46,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!userId) {
       setMe(null)
       setMeError(null)
+      setMeErrorCode(null)
       setMeLoading(false)
       return
     }
     let cancelled = false
     setMeLoading(true)
     setMeError(null)
+    setMeErrorCode(null)
     apiClient
       .get<Me>('/me')
       .then((result) => {
         if (!cancelled) setMe(result)
       })
       .catch((err: unknown) => {
-        if (!cancelled) setMeError(err instanceof Error ? err.message : 'Failed to load your account.')
+        if (cancelled) return
+        setMeError(err instanceof Error ? err.message : 'Failed to load your account.')
+        setMeErrorCode(err instanceof ApiError ? err.code : null)
       })
       .finally(() => {
         if (!cancelled) setMeLoading(false)
@@ -69,9 +78,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const reloadMe = useCallback(() => setMeNonce((n) => n + 1), [])
 
+  const refreshMe = useCallback(async () => {
+    const result = await apiClient.get<Me>('/me')
+    setMe(result)
+    setMeError(null)
+    setMeErrorCode(null)
+    return result
+  }, [])
+
   const value = useMemo<AuthState>(
-    () => ({ session, loading, signOut, me, meLoading, meError, reloadMe }),
-    [session, loading, signOut, me, meLoading, meError, reloadMe],
+    () => ({ session, loading, signOut, me, meLoading, meError, emailUnconfirmed: meErrorCode === 'EMAIL_NOT_CONFIRMED', reloadMe, refreshMe }),
+    [session, loading, signOut, me, meLoading, meError, meErrorCode, reloadMe, refreshMe],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

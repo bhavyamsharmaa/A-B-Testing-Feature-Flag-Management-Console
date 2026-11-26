@@ -13,9 +13,9 @@ import { useConsoleEnv } from '../lib/useConsoleEnv'
 import { SLOW_HINT, useSlowHint } from '../lib/useSlowHint'
 
 export default function AuditPage() {
-  const { email, me, meLoading, meError, reloadMe, signOut, roles, env, selectEnv, prod } = useConsoleEnv()
+  const { email, me, meLoading, meError, reloadMe, signOut, workspace, roles, env, selectEnv, prod } = useConsoleEnv()
   const [filters, setFilters] = useState<Filters>(NO_FILTERS)
-  const { entries, nextCursor, loading, loadingMore, error, moreError, reload, loadMore } = useAuditLog(env, filters)
+  const { entries, nextCursor, loading, loadingMore, error, moreError, reload, loadMore } = useAuditLog(env, workspace?.id ?? null, filters)
   const slow = useSlowHint(loading || loadingMore)
 
   // Filter options: every action the backend writes, plus any other seen in results.
@@ -48,6 +48,7 @@ export default function AuditPage() {
             <div>
               <h2 className="text-xs font-medium uppercase tracking-wider text-zinc-500">
                 Audit log in <span className={prod ? 'text-red-300' : 'text-zinc-300'}>{env}</span>
+                {workspace && <span className="text-zinc-500"> · {workspace.name}</span>}
               </h2>
               <p className="mt-1 text-xs text-zinc-500">Audit entries are append-only and cannot be edited or deleted.</p>
             </div>
