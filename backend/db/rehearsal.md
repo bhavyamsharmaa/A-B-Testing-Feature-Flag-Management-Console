@@ -5,8 +5,7 @@ your production project. This is the optional, longer rehearsal against a real S
 `docs/RELEASE1_RUNBOOK.md`, which rehearses on a **local restore of the production dump** and is not replaced by this file.
 
 Rules: never use the production connection here. Describe the rehearsal database once, as a service called `helios_rehearsal` in `~/.pg_service.conf`
-(host, port, dbname, user, sslmode) with its password in `~/.pgpass`; then no URL or password ever appears on a command line. `psql`, `backup_db.sh`
-and the Go programs (`DATABASE_URL="service=helios_rehearsal"`) all read it. Keep tokens and SDK keys in environment variables.
+(host, port, dbname, user, sslmode) with its password in `~/.pgpass`; then no URL or password ever appears on a command line. `psql` and the Go programs (`DATABASE_URL="service=helios_rehearsal"`) read it. Keep tokens and SDK keys in environment variables, and keep dumps outside the repository.
 Run the commands from the repository root, on branch `release/1`.
 
 ## 0. Prepare
@@ -69,7 +68,7 @@ psql "service=helios_rehearsal" -At -c "SELECT id, environment_id, key_prefix, r
 psql "service=helios_rehearsal" -At -c "SELECT id, key FROM flags ORDER BY id"          > /tmp/flags.before
 ```
 
-Row counts are **a query you run yourself** (`backup_db.sh` writes only the dump):
+Row counts are **a query you run yourself** (the dump command below writes only the dump):
 
 ```bash
 psql "service=helios_rehearsal" -At -c "select 'environments',count(*) from environments union all select 'flags',count(*) from flags union all select 'flag_configs',count(*) from flag_configs union all select 'api_keys',count(*) from api_keys union all select 'experiments',count(*) from experiments union all select 'experiment_metrics',count(*) from experiment_metrics union all select 'events',count(*) from events union all select 'audit_logs',count(*) from audit_logs union all select 'user_environment_roles',count(*) from user_environment_roles order by 1" > /tmp/counts.before
@@ -83,10 +82,10 @@ curl -s -X POST localhost:8080/evaluate -H "X-Helios-SDK-Key: $SDK_PROD" -H 'Con
   -d '{"context":{"subjectKey":"u1"},"flagKeys":["demo-banner","checkout-v2"]}' > /tmp/eval.before
 ```
 
-Back up (this rehearses `scripts/backup_db.sh`, which takes the connection from `PGSERVICE` only and ignores `DATABASE_URL`):
+Back up outside the repository (do not use `scripts/backup_db.sh`, which writes inside the checkout). Replace `<UTC_TIMESTAMP>` with a unique timestamp:
 
 ```bash
-PGSERVICE=helios_rehearsal backend/scripts/backup_db.sh
+python3 -c 'import os, pathlib, subprocess; d=pathlib.Path.home()/"helios-release1-backups"; d.mkdir(mode=0o700,exist_ok=True); d.chmod(0o700); p=d/"helios-rehearsal-<UTC_TIMESTAMP>.dump"; assert not p.exists(), f"refusing to overwrite {p}"; e={k:v for k,v in os.environ.items() if k not in {"DATABASE_URL","PGHOST","PGPORT","PGUSER","PGPASSWORD","PGDATABASE"}}; os.umask(0o077); subprocess.run(["pg_dump","--dbname","service=helios_rehearsal","--schema=public","--format=custom","--no-owner","--no-privileges","--file",str(p)],env=e,check=True); p.chmod(0o600); print(f"wrote {p} ({p.stat().st_size} bytes)")'
 ```
 
 Prove the dump restores with the runbook's Step 3 (or `tools/release1-dryrun/restore_copy.sh <DUMP> <NEW_LOCAL_DATABASE_NAME>`).
@@ -173,5 +172,5 @@ toggling an existing flag, because its audit row has no workspace. The commented
 
 ## 9. Clean up
 
-Delete the rehearsal Supabase project, the `../helios-old` worktree (`git worktree remove ../helios-old`), `backend/backups/*.dump`, the files in `/tmp`
+Delete the rehearsal Supabase project, the `../helios-old` worktree (`git worktree remove ../helios-old`), the specific rehearsal dump recorded above (not other dumps in that directory), the files in `/tmp`
 and the `helios_rehearsal` entry in `~/.pg_service.conf` and `~/.pgpass`.

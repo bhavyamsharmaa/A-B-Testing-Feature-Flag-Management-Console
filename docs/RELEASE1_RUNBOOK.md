@@ -26,13 +26,17 @@ All commands below that mention `~/helios-release1` run from that folder.
 **Where:** your terminal (`helios_prod` is your `~/.pg_service.conf` entry; the password comes from `~/.pgpass`). It only reads. *(Measured: 0.04 s.)*
 **Good:** nine `name|number` lines, in alphabetical order (the `order by 1` matters: without it the two files you compare later can list the same numbers in a different order).
 Now read three **limits** the new backend enforces on every workspace, including the one your old data moves into: **at most 50 flags**, **3 environments when a workspace is created**, **20 members plus open invites**, **10 active SDK keys**. Existing data is never deleted for being over a limit, but you then cannot *add* to it. If `flags` is 50 or more, creating a new flag will be refused (Step 9 expects that); decide if that is acceptable.
-Then see who **gains access** (see "Decide before" below): `psql "service=helios_prod" -At -c "select u.email, string_agg(e.key||':'||r.role, ', ' order by e.key) from user_environment_roles r join environments e on e.id=r.environment_id join auth.users u on u.id=r.user_id group by u.email having count(distinct r.role) > 1 or count(*) < (select count(*) from environments)"`
+Then count users whose role breadth changes when roles are flattened (see "Decide before" below); report counts only, never email addresses:
+`psql "service=helios_prod" -At -c "select count(*) from (select r.user_id from user_environment_roles r join environments e on e.id=r.environment_id group by r.user_id having count(distinct r.role) > 1 or count(*) < (select count(*) from environments)) affected"`
 **Wrong:** "service not found", "password authentication failed", or an error naming a missing table -> stop and ask.
 
 ## Step 2. Take the production dump (G1, part 2)
-**Do:** save a full copy of the data (the `public` schema, compressed).
-**Type:** `cd ~/helios-release1 && PGSERVICE=helios_prod backend/scripts/backup_db.sh`
-**Good:** `wrote .../backend/backups/helios-<time>.dump (<bytes> bytes)`; private (mode 600) and git-ignored. Never share it: it holds your users' data. *(Measured: 1.2 s, 4.4 MB.)*
+**Do:** save a full copy of the data (the `public` schema, compressed) outside the repository. Do not use `backend/scripts/backup_db.sh` here: it writes inside the checkout, even though that directory is git-ignored.
+**Type:** run this from `~/helios-release1`, replacing `<UTC_TIMESTAMP>` with a unique value such as `20261126T134700Z`:
+```
+python3 -c 'import os, pathlib, subprocess; d=pathlib.Path.home()/"helios-release1-backups"; d.mkdir(mode=0o700,exist_ok=True); d.chmod(0o700); p=d/"helios-<UTC_TIMESTAMP>.dump"; assert not p.exists(), f"refusing to overwrite {p}"; e={k:v for k,v in os.environ.items() if k not in {"DATABASE_URL","PGHOST","PGPORT","PGUSER","PGPASSWORD","PGDATABASE"}}; e["PGCONNECT_TIMEOUT"]="15"; os.umask(0o077); subprocess.run(["pg_dump","--dbname","service=helios_prod","--schema=public","--format=custom","--no-owner","--no-privileges","--file",str(p)],env=e,check=True); p.chmod(0o600); print(f"wrote {p} ({p.stat().st_size} bytes)")'
+```
+**Good:** `pg_dump` succeeds and the dump is private (mode 600) under `~/helios-release1-backups/`, not in or under the repository. Record the exact path and size locally; never share it because it holds your users' data. *(Measured: 1.2 s, 4.4 MB.)*
 **Wrong:** "pg_dump not found", a "server version mismatch", or a tiny file -> stop and ask (the dump tool must be the same major version as the server or newer; check with `pg_dump --version` and `psql "service=helios_prod" -Atc "show server_version"`).
 
 ## Step 3. Prove the dump can be restored (on your own computer only)
@@ -51,11 +55,11 @@ Then the same Step 1 count query with `psql "$LOCAL" -At -c "..."` into `~/helio
 **Good:** the last command prints `SAME`. **Wrong:** any `pg_restore` error or a difference -> stop; the dump is not proven. (`DROP SCHEMA public` is needed because the dump creates it; the first recipe in this file did not have that line and failed on "schema public already exists".)
 Notes: only users that appear in the data are recreated, with placeholder emails; people who signed up but never held a role are not in the copy (they exist in Supabase, so production is unaffected). The legacy workspace is named after its owner's email *at migration time*, so on the copy it will show a placeholder; that does not matter for the migrations.
 
-## Step 4. Turn off automatic deploys, then publish the branch for review (G3)
-**Do:** make sure nothing deploys by itself, then put `release/1` on GitHub and let CI check it. Nothing here changes production.
+## Step 4. Turn off automatic deploys, then prepare the branch for review (G3)
+**Do:** make sure nothing deploys by itself, then verify the existing GitHub branch and prepare the draft pull request. Nothing here changes production.
 **Where:** Render dashboard -> your backend service -> Settings -> Build & Deploy -> Auto-Deploy = **Off**. Vercel -> project -> Settings -> Git: production deploys come only from `main` (menu names may differ).
-**Then type:** `cd <YOUR REPO FOLDER> && git push -u origin release/1` and open a **draft** pull request `release/1` -> `main` on GitHub. Do not merge it yet.
-**Good:** Auto-Deploy shows off; the pull request's `CI` checks are all green. **The CI workflow has never run on GitHub** (its commands were run locally), so a first-run failure may be the workflow's own.
+**Then:** do not push `release/1` again; it is already pushed. Open a **draft** pull request `release/1` -> `main` on GitHub if one is not already open. Do not merge it yet.
+**Good:** Auto-Deploy shows off; the pull request's `CI` checks are all green. CI has already passed on GitHub for `release/1` at `a0f105f`; confirm the checks on the draft pull request as well.
 **Wrong:** you cannot find the setting, or a check is red -> stop and ask.
 
 ## Step 5. Set the environment variables (names only; you type the values)
