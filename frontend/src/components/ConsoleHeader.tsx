@@ -1,6 +1,5 @@
 import { NavLink } from 'react-router-dom'
 import { Logo } from './Logo'
-import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 
 const tab = ({ isActive }: { isActive: boolean }) =>
   `rounded-lg px-3.5 py-1.5 text-sm transition ${
@@ -10,14 +9,10 @@ const tab = ({ isActive }: { isActive: boolean }) =>
 export function ConsoleHeader({ email, onSignOut }: { email: string; onSignOut: () => void }) {
   return (
     <>
-      {/* relative z-30: the header and the card below each form a stacking context (fade-up animation); without this the workspace menu would open underneath the card. */}
-      <header className="relative z-30 flex animate-fade-up flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-4">
-          <h1>
-            <Logo className="text-xl" />
-          </h1>
-          <WorkspaceSwitcher />
-        </div>
+      <header className="flex animate-fade-up items-center justify-between">
+        <h1>
+          <Logo className="text-xl" />
+        </h1>
         <div className="flex items-center gap-3">
           <span className="hidden text-sm text-zinc-400 sm:inline">{email}</span>
           <button
@@ -34,9 +29,6 @@ export function ConsoleHeader({ email, onSignOut }: { email: string; onSignOut: 
         </NavLink>
         <NavLink to="/console/audit" className={tab}>
           Audit log
-        </NavLink>
-        <NavLink to="/console/settings" className={tab}>
-          Settings
         </NavLink>
       </nav>
     </>
