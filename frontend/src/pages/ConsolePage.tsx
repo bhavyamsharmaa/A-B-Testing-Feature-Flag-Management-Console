@@ -8,12 +8,10 @@ import { CreateFlagModal } from '../components/CreateFlagModal'
 import { EnvSwitcher } from '../components/EnvSwitcher'
 import { FlagDrawer } from '../components/FlagDrawer'
 import { FlagTable } from '../components/FlagTable'
-import { OnboardingCard } from '../components/OnboardingCard'
-import { PendingInvitesBanner } from '../components/PendingInvitesBanner'
 import { Notice, type NoticeState } from '../components/Notice'
 import { ProductionStrip } from '../components/ProductionStrip'
 import { describeError } from '../lib/errors'
-import { canCreate, canKill, canManageWorkspace, canToggle, toggleDisabledReason } from '../lib/permissions'
+import { canCreate, canKill, canToggle, toggleDisabledReason } from '../lib/permissions'
 import { useConsoleEnv } from '../lib/useConsoleEnv'
 import { useFlags } from '../lib/useFlags'
 import { SLOW_HINT, useSlowHint } from '../lib/useSlowHint'
@@ -22,9 +20,9 @@ import type { Flag } from '../types'
 type Pending = { kind: 'toggle'; flag: Flag; enable: boolean } | { kind: 'kill'; flag: Flag }
 
 export default function ConsolePage() {
-  const { email, me, meLoading, meError, reloadMe, signOut, workspace, workspaceRole, roles, env, selectEnv, role, prod } = useConsoleEnv()
+  const { email, me, meLoading, meError, reloadMe, signOut, roles, env, selectEnv, role, prod } = useConsoleEnv()
 
-  const { flags, loading, error, reload, replace } = useFlags(env, workspace?.id ?? null)
+  const { flags, loading, error, reload, replace } = useFlags(env)
 
   const [busyKeys, setBusyKeys] = useState<Set<string>>(new Set())
   const [killedKeys, setKilledKeys] = useState<Set<string>>(new Set())
@@ -137,7 +135,6 @@ export default function ConsolePage() {
       <ConsoleHeader email={email} onSignOut={() => void signOut()} />
 
       <ConsoleCard prod={prod}>
-        <PendingInvitesBanner />
         <AccessGate me={me} meLoading={meLoading} meError={meError} reloadMe={reloadMe} roleCount={roles.length} />
 
         {env && roles.length > 0 && (
@@ -147,7 +144,6 @@ export default function ConsolePage() {
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-xs font-medium uppercase tracking-wider text-zinc-500">
                 Flags in <span className={prod ? 'text-red-300' : 'text-zinc-300'}>{env}</span>
-                {workspace && <span className="text-zinc-500"> · {workspace.name}</span>}
               </h2>
               {canCreate(role) && (
                 <button
@@ -160,7 +156,7 @@ export default function ConsolePage() {
             </div>
 
             {role === 'viewer' && (
-              <p className="text-xs text-zinc-500">You have read-only access to this workspace.</p>
+              <p className="text-xs text-zinc-500">You have read-only access to {env}.</p>
             )}
 
             {notice && <Notice notice={notice} onDismiss={() => setNotice(null)} />}
@@ -184,12 +180,9 @@ export default function ConsolePage() {
             )}
 
             {flags !== null && flags.length === 0 && !error && (
-              <OnboardingCard
-                workspaceName={workspace?.name ?? ''}
-                canCreate={canCreate(role)}
-                canManage={canManageWorkspace(workspaceRole)}
-                onCreate={() => setCreating(true)}
-              />
+              <p className="rounded-lg border border-dashed border-white/10 px-4 py-10 text-center text-sm text-zinc-400">
+                No flags in this environment yet.
+              </p>
             )}
 
             {flags !== null && flags.length > 0 && (
@@ -200,7 +193,6 @@ export default function ConsolePage() {
                 toggleAllowed={toggleAllowed}
                 toggleDisabledReason={toggleDisabledReason(role, env)}
                 killAllowed={canKill(role)}
-                readOnly={role === 'viewer'}
                 onToggle={(f) => void onToggleClick(f)}
                 onKill={onKillClick}
                 onConfigure={setConfiguring}

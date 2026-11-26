@@ -1,8 +1,7 @@
 import type { Flag, TargetingRule } from '../types'
 import { apiClient } from './client'
-import { envPath } from './envPath'
 
-const flagsPath = (env: string) => `${envPath(env)}/flags`
+const flagsPath = (env: string) => `/environments/${encodeURIComponent(env)}/flags`
 const flagPath = (env: string, key: string) => `${flagsPath(env)}/${encodeURIComponent(key)}`
 
 export async function listFlags(env: string): Promise<Flag[]> {

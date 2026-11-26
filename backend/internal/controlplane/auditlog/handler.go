@@ -43,10 +43,9 @@ type listResponse struct {
 	NextCursor *int64  `json:"nextCursor"`
 }
 
-// List handles GET /environments/{envId}/audit-logs. It must run behind
+// List handles GET /environments/{env}/audit-logs. It must run behind
 // rbac.Guard.Require (viewer or above), which resolves the environment and
-// answers 404 for unknown environments, other tenants' environments and
-// environments the caller holds no role in.
+// rejects unknown environments (404) and role-less users (403).
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	access := rbac.AccessFrom(r.Context())
 	params, err := parseListParams(r.URL.Query())
@@ -55,7 +54,7 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query, args := buildListQuery(access.Env.WorkspaceID, access.Env.ID, params)
+	query, args := buildListQuery(access.Env.ID, params)
 	rows, err := h.pool.Query(r.Context(), query, args...)
 	if err != nil {
 		httpx.WriteInternal(w, r, err)
