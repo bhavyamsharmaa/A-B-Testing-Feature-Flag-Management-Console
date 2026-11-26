@@ -1,3 +1,4 @@
+import { Fragment, type ReactNode } from 'react'
 import { TOTAL_BP, booleanVariations, formatPercent, hasRollout, savedOnBp } from '../lib/rollout'
 import type { Flag } from '../types'
 
@@ -11,12 +12,14 @@ interface Props {
   onToggle: (flag: Flag) => void
   onKill: (flag: Flag) => void
   onConfigure: (flag: Flag) => void
+  /** Extra controls shown under a flag's row, or null. */
+  renderExtra: (flag: Flag) => ReactNode
 }
 
 const fmt = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDisabledReason, killAllowed, onToggle, onKill, onConfigure }: Props) {
+export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDisabledReason, killAllowed, onToggle, onKill, onConfigure, renderExtra }: Props) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[720px] text-left text-sm">
@@ -37,9 +40,10 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
             // Badge only for a boolean flag with a rollout set below 100%.
             const bools = booleanVariations(flag)
             const onBp = bools && hasRollout(flag) ? savedOnBp(flag, bools) : null
+            const extra = renderExtra(flag)
             return (
+              <Fragment key={flag.key}>
               <tr
-                key={flag.key}
                 className={`border-t border-white/5 transition ${killed ? 'bg-red-500/[0.06]' : ''}`}
               >
                 <td className={`px-3 py-3 ${enabled ? '' : 'opacity-60'}`}>
@@ -52,7 +56,9 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
                   </button>
                   <div className="text-xs text-zinc-400">{flag.name}</div>
                   <div className="mt-1 flex items-center gap-1.5 text-[11px] text-zinc-500">
-                    <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-zinc-400">{flag.variationType}</span>
+                    <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-zinc-400">
+                      {extra ? 'banner · discount' : flag.variationType}
+                    </span>
                     {(flag.variationType !== 'boolean' || flag.variations.length !== 2) && (
                       <span>{flag.variations.length} variations</span>
                     )}
@@ -140,6 +146,14 @@ export function FlagTable({ flags, busyKeys, killedKeys, toggleAllowed, toggleDi
                   </div>
                 </td>
               </tr>
+              {extra && (
+                <tr>
+                  <td colSpan={5} className="px-3 pb-4">
+                    {extra}
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             )
           })}
         </tbody>
