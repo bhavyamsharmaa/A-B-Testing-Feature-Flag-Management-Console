@@ -2,16 +2,15 @@ import type { ReactNode } from 'react'
 import { ConfigError } from '../components/ConfigError'
 import { Logo } from '../components/Logo'
 import { heliosSdkKey } from '../config'
-import { useFlag, type StreamStatus } from '../demo/useFlag'
-
-const FLAG_KEY = 'demo-banner'
+import { useBanner, type StreamStatus } from '../demo/useFlag'
+import { BANNER_FLAG as FLAG_KEY } from '../lib/bannerDiscount'
 
 // Shown in the "How this page is wired" panel. Keep in sync with DemoContent below.
-const SNIPPET = `const { on: showBanner } = useFlag('demo-banner')
-// on === true only if POST /evaluate says so; false if Helios is unreachable
+const SNIPPET = `const { on: showBanner, discount } = useBanner()
+// both come from POST /evaluate; the banner hides if Helios is unreachable
 
 <Reveal show={showBanner}>
-  <PromoBanner />
+  <PromoBanner discount={discount} />
 </Reveal>`
 
 export default function DemoPage() {
@@ -33,11 +32,11 @@ function Reveal({ show, children }: { show: boolean; children: ReactNode }) {
   )
 }
 
-function PromoBanner() {
+function PromoBanner({ discount }: { discount: number }) {
   return (
     <div className="bg-gradient-to-r from-accent via-indigo-500 to-fuchsia-500 px-4 py-3 text-center text-sm font-medium text-white shadow-[0_8px_40px_-8px_rgba(124,92,255,0.9)]">
       <span className="mr-2 rounded-full bg-white/20 px-2 py-0.5 text-xs font-semibold tracking-wide">NEW</span>
-      Launch week: 20% off every annual plan. Ends Sunday.
+      {discount > 0 ? `Launch week: ${discount}% off every annual plan. Ends Sunday.` : 'Launch week is on. Ends Sunday.'}
     </div>
   )
 }
@@ -60,12 +59,12 @@ function StatusChip({ status, lastUpdate }: { status: StreamStatus; lastUpdate: 
 }
 
 function DemoContent() {
-  const { on: showBanner, status, lastUpdate } = useFlag(FLAG_KEY)
+  const { on: showBanner, discount, status, lastUpdate } = useBanner()
 
   return (
     <div className="min-h-screen">
       <Reveal show={showBanner}>
-        <PromoBanner />
+        <PromoBanner discount={discount} />
       </Reveal>
 
       <header className="mx-auto flex max-w-4xl items-center justify-between px-4 py-5">

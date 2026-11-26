@@ -40,6 +40,11 @@ export function getFlag(env: string, key: string): Promise<Flag> {
   return apiClient.get<Flag>(flagPath(env, key))
 }
 
+/** Enables the flag and serves one variation to everyone (clears any percentage rollout). */
+export function setFlagServed(env: string, key: string, variationId: string): Promise<Flag> {
+  return apiClient.patch<Flag>(flagPath(env, key), { enabled: true, fallthroughVariationId: variationId, rollout: null })
+}
+
 /** PATCH is a partial update: sending only `rollout` leaves enabled, rules and fallthrough alone. */
 export function setFlagRollout(env: string, key: string, rollout: Record<string, number>): Promise<Flag> {
   return apiClient.patch<Flag>(flagPath(env, key), { rollout })
