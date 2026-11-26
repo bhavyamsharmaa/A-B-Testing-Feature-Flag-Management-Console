@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { createBooleanFlag, createFlag } from '../api/flags'
 import { ApiError } from '../api/client'
+import { DEFAULT_DISCOUNT, MAX_BANNER_KEY } from '../lib/bannerDiscount'
+import { saveDiscount } from '../lib/saveDiscount'
 import { describeError } from '../lib/errors'
 import { SLOW_HINT, useSlowHint } from '../lib/useSlowHint'
 import {
@@ -36,6 +38,8 @@ export function CreateFlagModal({ env, onClose, onCreated }: Props) {
   const [formError, setFormError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [type, setType] = useState<VariationType>('boolean')
+  const [banner, setBanner] = useState(false) // a banner is a boolean flag with extra controls
+  const [discount, setDiscount] = useState(DEFAULT_DISCOUNT)
   const [rows, setRows] = useState<DraftVariation[]>([])
   const [validation, setValidation] = useState<Validation | null>(null)
   const [serverRowError, setServerRowError] = useState<ServerRowError | null>(null)
@@ -61,7 +65,11 @@ export function CreateFlagModal({ env, onClose, onCreated }: Props) {
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
     const k = key.trim()
-    const kErr = KEY_RE.test(k) ? null : KEY_RULE
+    const kErr = !KEY_RE.test(k)
+      ? KEY_RULE
+      : banner && k.length > MAX_BANNER_KEY
+        ? `A banner key can be at most ${MAX_BANNER_KEY} characters.`
+        : null
     const nErr = name.trim() ? null : 'Name is required.'
     setKeyError(kErr)
     setNameError(nErr)
@@ -75,6 +83,12 @@ export function CreateFlagModal({ env, onClose, onCreated }: Props) {
     try {
       if (type === 'boolean') {
         await createBooleanFlag(env, { key: k, name, description })
+        if (banner) {
+          // The banner exists from here on; its slider in the list can retry a failed discount.
+          await saveDiscount(env, k, { tens: undefined, ones: undefined }, discount, () => {}).catch(() => {
+            window.alert(`Created ${k}, but the discount was not saved. Set it with the slider in the list.`)
+          })
+        }
       } else {
         await createFlag(env, { key: k, name, description, variationType: type, variations: toVariations(type, rows) })
       }
@@ -120,7 +134,7 @@ export function CreateFlagModal({ env, onClose, onCreated }: Props) {
           Create flag
         </h2>
         <p className="mt-1 text-sm text-zinc-400">
-          Creates a {type} flag in <span className="font-medium text-zinc-200">every</span> environment, disabled
+          Creates a {banner ? 'discount banner' : `${type} flag`} in <span className="font-medium text-zinc-200">every</span> environment, disabled
           everywhere. Turning it on is a separate step.
         </p>
 
@@ -182,16 +196,47 @@ export function CreateFlagModal({ env, onClose, onCreated }: Props) {
         </label>
         <select
           id="flag-type"
-          value={type}
-          onChange={(e) => onTypeChange(e.target.value as VariationType)}
+          value={banner ? 'banner' : type}
+          onChange={(e) => {
+            const next = e.target.value
+            setBanner(next === 'banner')
+            onTypeChange(next === 'banner' ? 'boolean' : (next as VariationType))
+          }}
           disabled={submitting}
           className={`${input} ${ok}`}
         >
           <option value="boolean">Boolean (on / off)</option>
+          <option value="banner">Banner</option>
           <option value="string">String</option>
           <option value="number">Number</option>
           <option value="json">JSON</option>
         </select>
+
+        {banner && (
+          <>
+            <label htmlFor="banner-kind" className="mt-4 block text-sm text-zinc-300">
+              Banner type
+            </label>
+            <select id="banner-kind" disabled={submitting} className={`${input} ${ok}`}>
+              <option value="discount">Discount</option>
+            </select>
+            <label htmlFor="banner-discount" className="mt-4 flex justify-between text-sm text-zinc-300">
+              <span>Discount</span>
+              <span className="font-semibold text-white">{discount}% off</span>
+            </label>
+            <input
+              id="banner-discount"
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={discount}
+              onChange={(e) => setDiscount(Number(e.target.value))}
+              disabled={submitting}
+              className="mt-2 w-full accent-accent"
+            />
+          </>
+        )}
 
         {type !== 'boolean' && (
           <div className="mt-4">

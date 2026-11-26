@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
-import { killFlag, setFlagEnabled } from '../api/flags'
+import { deleteFlag, killFlag, setFlagEnabled } from '../api/flags'
 import { AccessGate } from '../components/AccessGate'
 import { ConsoleCard } from '../components/ConsoleCard'
 import { ConsoleHeader } from '../components/ConsoleHeader'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { CreateFlagModal } from '../components/CreateFlagModal'
+import { DiscountSlider } from '../components/DiscountSlider'
 import { EnvSwitcher } from '../components/EnvSwitcher'
 import { FlagDrawer } from '../components/FlagDrawer'
 import { FlagTable } from '../components/FlagTable'
 import { Notice, type NoticeState } from '../components/Notice'
 import { ProductionStrip } from '../components/ProductionStrip'
+import { groupBanners } from '../lib/bannerDiscount'
 import { describeError } from '../lib/errors'
 import { canCreate, canKill, canToggle, toggleDisabledReason } from '../lib/permissions'
 import { useConsoleEnv } from '../lib/useConsoleEnv'
@@ -127,6 +129,18 @@ export default function ConsolePage() {
 
   const dialogBusy = pending !== null && busyKeys.has(pending.flag.key)
   const toggleAllowed = env ? canToggle(role, env) : false
+  const { visible, banners } = groupBanners(flags ?? [])
+
+  /** A deleted banner takes its hidden discount flags with it. */
+  async function afterDelete(key: string) {
+    const banner = banners.get(key)
+    const parts = [banner?.tens, banner?.ones].filter((f) => f !== undefined)
+    const results = await Promise.allSettled(parts.map((f) => deleteFlag(env as string, f.key, true)))
+    if (results.some((r) => r.status === 'rejected')) {
+      setNotice({ kind: 'error', text: `Deleted ${key}, but some of its discount flags remain. Delete them from the list.` })
+    }
+    await reload()
+  }
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-10">
@@ -187,7 +201,23 @@ export default function ConsolePage() {
 
             {flags !== null && flags.length > 0 && (
               <FlagTable
-                flags={flags}
+                flags={visible}
+                renderExtra={(flag) => {
+                  const banner = banners.get(flag.key)
+                  if (!banner) return null
+                  return (
+                    <DiscountSlider
+                      key={`${env}:${flag.key}`}
+                      env={env}
+                      bannerKey={flag.key}
+                      banner={banner}
+                      disabled={!toggleAllowed}
+                      disabledReason={toggleDisabledReason(role, env)}
+                      onFlag={replace}
+                      onFailed={() => void reload()}
+                    />
+                  )
+                }}
                 busyKeys={busyKeys}
                 killedKeys={killedKeys}
                 toggleAllowed={toggleAllowed}
@@ -228,7 +258,7 @@ export default function ConsolePage() {
           onDeleted={(key) => {
             setConfiguring(null)
             setNotice({ kind: 'success', text: `Deleted ${key} from every environment.` })
-            void reload()
+            void afterDelete(key)
           }}
           onGone={() => {
             setConfiguring(null)

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { BANNER_FLAG, DEFAULT_DISCOUNT, ONES_FLAG, TENS_FLAG, joinDiscount } from '../lib/bannerDiscount'
+import { BANNER_FLAG, DEFAULT_DISCOUNT, joinDiscount, onesKey, tensKey } from '../lib/bannerDiscount'
 import { evaluateFlags, openStream } from './helios'
 
 export type StreamStatus = 'connecting' | 'live' | 'reconnecting'
@@ -7,6 +7,8 @@ export type StreamStatus = 'connecting' | 'live' | 'reconnecting'
 const POLL_MS = 30_000 // degraded fallback while the stream is down
 const RECONNECT_GRACE_MS = 1_500 // routine reconnects shouldn't flicker the chip
 const SETTLE_MS = 600 // the discount is two flags: wait for both updates before re-reading
+const TENS_FLAG = tensKey(BANNER_FLAG)
+const ONES_FLAG = onesKey(BANNER_FLAG)
 const KEYS = [BANNER_FLAG, TENS_FLAG, ONES_FLAG]
 
 /**

@@ -37,7 +37,10 @@ export function useFlags(env: string | null) {
     (flag: Flag) => {
       // A response for an environment the user has since left must not touch this list.
       if (flag.environment !== env) return
-      setFlags((prev) => prev && prev.map((f) => (f.key === flag.key ? flag : f)))
+      setFlags(
+        (prev) =>
+          prev && (prev.some((f) => f.key === flag.key) ? prev.map((f) => (f.key === flag.key ? flag : f)) : [...prev, flag]),
+      )
     },
     [env],
   )
